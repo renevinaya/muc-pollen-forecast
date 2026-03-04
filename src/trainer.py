@@ -1,18 +1,29 @@
 """
-Model trainer: trains one XGBoost regressor per pollen species.
+Model trainer: two-stage XGBoost pipeline per pollen species.
+
+Stage 1 – **Classifier**: predicts P(pollen > 0) for a given day.
+Stage 2 – **Regressor**: predicts log1p(pollen count) for active days.
+
+The combined prediction is:
+    if P(active) < 0.5 and not in-season  →  0
+    else  →  expm1(stage2_prediction)
 
 Key design decisions:
-  - Log-transform: trains on log1p(value) to handle extreme skew (Corylus 0→1700)
-  - Season-active feature: binary flag so the model learns dormancy periods
-  - Quantile regression: predicts the 75th percentile to avoid under-predicting peaks
+  - Log-transform on the target to handle extreme skew
+  - Season-active + NDVI + phenology features capture biological timing
+  - Sample weighting up-weights rare peak events
+  - Quantile regression (α = 0.80) biases toward higher predictions
 """
 
+from __future__ import annotations
+
+from dataclasses import dataclass
 from pathlib import Path
 
 import joblib
 import numpy as np
 import pandas as pd
-from xgboost import XGBRegressor
+from xgboost import XGBClassifier, XGBRegressor
 
 from .types import (
     ALL_SPECIES,
@@ -20,6 +31,7 @@ from .types import (
     LAG_FEATURES,
     GDD_T_BASE,
     is_season_active,
+    SPECIES_SEASON,
 )
 
 MODELS_DIR = Path(__file__).parent.parent / "models"
@@ -59,6 +71,38 @@ def _add_season_feature(df: pd.DataFrame, species: str) -> pd.DataFrame:
     df = df.copy()
     months = pd.to_datetime(df["date"]).dt.month
     df["season_active"] = months.apply(lambda m: 1.0 if is_season_active(species, m) else 0.0)
+    return df
+
+
+def _add_phenology_features(df: pd.DataFrame, species: str) -> pd.DataFrame:
+    """Add phenology-derived features: days since typical flowering onset, onset anomaly."""
+    df = df.copy()
+    window = SPECIES_SEASON.get(species)
+    if window is None:
+        df["days_since_typical_onset"] = 0.0
+        df["onset_anomaly"] = 0.0
+        return df
+
+    # Approximate mean onset as day 15 of start_month
+    start_month = window[0]
+    # Convert to approximate day-of-year
+    import calendar
+    mean_onset_doy = sum(calendar.monthrange(2025, m)[1] for m in range(1, start_month)) + 15
+
+    doys = pd.to_datetime(df["date"]).dt.dayofyear
+    df["days_since_typical_onset"] = (doys - mean_onset_doy).clip(lower=-60).astype(float)
+    # onset_anomaly: 0 by default; will be overwritten when real phenology data is loaded
+    df["onset_anomaly"] = 0.0
+    return df
+
+
+def _add_ndvi_features(df: pd.DataFrame) -> pd.DataFrame:
+    """Add NDVI features from cached satellite data."""
+    df = df.copy()
+    # Default to 0 — will be populated by collector; if columns already present, skip
+    for col in ("ndvi", "evi", "ndvi_delta"):
+        if col not in df.columns:
+            df[col] = 0.0
     return df
 
 
@@ -139,8 +183,10 @@ def prepare_training_data(
 
     species_df = species_df.sort_values("date").reset_index(drop=True)
     species_df = _add_weather_derived_features(species_df)
+    species_df = _add_ndvi_features(species_df)
     species_df = _add_lag_features(species_df)
     species_df = _add_season_feature(species_df, species)
+    species_df = _add_phenology_features(species_df, species)
 
     # Drop rows with missing lags (first 3 days)
     species_df = species_df.dropna(subset=LAG_FEATURES)
@@ -158,18 +204,66 @@ def prepare_training_data(
     return X, y, raw_values
 
 
-def train_species_model(X: pd.DataFrame, y: pd.Series, raw_values: pd.Series | None = None) -> XGBRegressor:
-    """
-    Train an XGBoost regressor for one species.
+@dataclass
+class TwoStageModel:
+    """Container for a two-stage (classifier + regressor) pollen model."""
+    classifier: XGBClassifier
+    regressor: XGBRegressor
+    species: str
 
-    Uses quantile regression (alpha=0.80) to bias toward higher predictions,
-    reducing the systematic under-prediction of pollen peaks.
+    def predict(self, X: pd.DataFrame | np.ndarray) -> np.ndarray:
+        """
+        Combined prediction in log-space.
 
-    When *raw_values* (original-scale pollen counts aligned with *y*) are
-    provided, high-pollen samples receive higher sample weights so the model
-    pays more attention to rare peak events.
+        Returns log1p(pollen_count) predictions.  Caller should apply
+        inv_log_transform() to get original-scale values.
+        """
+        prob_active = self.classifier.predict_proba(X)[:, 1]
+        reg_pred = self.regressor.predict(X)
+        # Blend: scale regression output by activation probability
+        # When prob_active < 0.3, strongly suppress
+        result = np.where(prob_active < 0.3, 0.0, reg_pred * np.clip(prob_active, 0.5, 1.0))
+        return np.maximum(0.0, result)
+
+
+def train_species_model(
+    X: pd.DataFrame,
+    y: pd.Series,
+    raw_values: pd.Series | None = None,
+    species: str = "",
+) -> TwoStageModel:
     """
-    model = XGBRegressor(
+    Train a two-stage model for one species.
+
+    Stage 1: XGBClassifier — is pollen > 0 today?
+    Stage 2: XGBRegressor  — how much? (quantile regression on active days)
+
+    When *raw_values* (original-scale pollen counts) are provided,
+    high-pollen samples receive higher sample weights.
+    """
+    # --- Stage 1: binary classifier ---
+    y_binary = (raw_values > 0).astype(int) if raw_values is not None else (y > 0).astype(int)
+
+    # Balance: weight active days more if they're rare
+    n_active = y_binary.sum()
+    n_total = len(y_binary)
+    scale_pos = max(1.0, (n_total - n_active) / max(1, n_active))
+
+    classifier = XGBClassifier(
+        n_estimators=200,
+        max_depth=4,
+        learning_rate=0.08,
+        subsample=0.8,
+        colsample_bytree=0.8,
+        scale_pos_weight=scale_pos,
+        random_state=42,
+        verbosity=0,
+        eval_metric="logloss",
+    )
+    classifier.fit(X, y_binary)
+
+    # --- Stage 2: quantile regressor (trained on ALL data, but weighted) ---
+    regressor = XGBRegressor(
         n_estimators=300,
         max_depth=5,
         learning_rate=0.08,
@@ -182,24 +276,24 @@ def train_species_model(X: pd.DataFrame, y: pd.Series, raw_values: pd.Series | N
         verbosity=0,
     )
 
-    # Sample weighting: upweight high-pollen days so the model learns peaks
+    # Sample weighting: upweight high-pollen days
     sample_weight = None
     if raw_values is not None:
-        # weight = 1 + log1p(value)  →  zero-pollen=1, value=100→5.6, value=1700→8.4
         w = 1.0 + np.log1p(raw_values.values.astype(float))
         sample_weight = w
 
-    model.fit(X, y, sample_weight=sample_weight)
-    return model
+    regressor.fit(X, y, sample_weight=sample_weight)
+
+    return TwoStageModel(classifier=classifier, regressor=regressor, species=species)
 
 
-def train_all(history: pd.DataFrame) -> dict[str, XGBRegressor]:
+def train_all(history: pd.DataFrame) -> dict[str, TwoStageModel]:
     """
-    Train one model per species. Returns a dict of species -> model.
+    Train one two-stage model per species.  Returns dict[species → TwoStageModel].
     Only trains if there are enough data points (>= 14 days).
     """
     MODELS_DIR.mkdir(parents=True, exist_ok=True)
-    models: dict[str, XGBRegressor] = {}
+    models: dict[str, TwoStageModel] = {}
 
     for species in ALL_SPECIES:
         X, y, raw_values = prepare_training_data(history, species)
@@ -207,16 +301,19 @@ def train_all(history: pd.DataFrame) -> dict[str, XGBRegressor]:
             print(f"  {species}: skipped (only {len(X)} training samples, need >= 14)")
             continue
 
-        model = train_species_model(X, y, raw_values=raw_values)
+        model = train_species_model(X, y, raw_values=raw_values, species=species)
 
-        # Quick evaluation: RMSE on training data (in original scale)
+        # Quick evaluation on training data
         preds_log = model.predict(X)
         preds = inv_log_transform(preds_log)
-        actuals = inv_log_transform(y.values)
+        actuals = raw_values.values
         rmse = np.sqrt(np.mean((preds - actuals) ** 2))
-        print(f"  {species}: trained on {len(X)} samples, train RMSE = {rmse:.1f}")
 
-        # Save model
+        clf_acc = (model.classifier.predict(X) == (actuals > 0).astype(int)).mean()
+        print(f"  {species}: trained on {len(X)} samples, "
+              f"train RMSE={rmse:.1f}, classifier acc={clf_acc:.0%}")
+
+        # Save model (both stages together)
         model_path = MODELS_DIR / f"{species}.joblib"
         joblib.dump(model, model_path)
         models[species] = model
@@ -225,9 +322,9 @@ def train_all(history: pd.DataFrame) -> dict[str, XGBRegressor]:
     return models
 
 
-def load_models() -> dict[str, XGBRegressor]:
-    """Load all trained models from disk."""
-    models: dict[str, XGBRegressor] = {}
+def load_models() -> dict[str, TwoStageModel]:
+    """Load all trained two-stage models from disk."""
+    models: dict[str, TwoStageModel] = {}
     for species in ALL_SPECIES:
         model_path = MODELS_DIR / f"{species}.joblib"
         if model_path.exists():

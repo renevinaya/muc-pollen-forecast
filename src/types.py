@@ -71,6 +71,19 @@ LAG_FEATURES = [
     "pollen_rolling_7",  # 7-day rolling mean (log-transformed)
 ]
 
+# NDVI / vegetation features (from MODIS satellite data)
+NDVI_FEATURES = [
+    "ndvi",         # Normalized Difference Vegetation Index (0–1)
+    "evi",          # Enhanced Vegetation Index
+    "ndvi_delta",   # Daily NDVI change rate (green-up speed)
+]
+
+# Phenology features (from DWD multi-year flowering onset data)
+PHENOLOGY_FEATURES = [
+    "days_since_typical_onset",  # days since mean flowering onset for this species
+    "onset_anomaly",             # current year onset vs historical mean (needs runtime)
+]
+
 FORECAST_DAYS = 5
 
 FEATURE_COLS = (
@@ -78,6 +91,8 @@ FEATURE_COLS = (
     + CALENDAR_FEATURES
     + SEASON_FEATURE
     + WEATHER_DERIVED_FEATURES
+    + NDVI_FEATURES
+    + PHENOLOGY_FEATURES
     + LAG_FEATURES
 )
 

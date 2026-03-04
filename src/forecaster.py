@@ -1,25 +1,30 @@
 """
-Forecaster: generates a multi-day pollen forecast using trained models.
+Forecaster: generates a multi-day pollen forecast using trained two-stage models.
 
-Loads trained XGBoost models, fetches weather forecast from Open-Meteo,
-and predicts pollen counts per species per day.  Predictions are made in
-log-space and converted back.  For lag features it uses the most recent
-historical data and then autoregressively feeds (log-space) predictions
-into subsequent days.
+Loads trained XGBoost models (classifier + regressor), fetches weather forecast
+from Open-Meteo, and predicts pollen counts per species per day.
+Predictions are made in log-space and converted back.  For lag features it uses
+the most recent historical data and then autoregressively feeds (log-space)
+predictions into subsequent days.
 """
+
+from __future__ import annotations
 
 from datetime import datetime
 
 import numpy as np
 import pandas as pd
-from xgboost import XGBRegressor
 
 from .types import (
     ALL_SPECIES,
     FORECAST_DAYS,
     LOCATION,
     WEATHER_FEATURES,
+    WEATHER_DERIVED_FEATURES,
+    NDVI_FEATURES,
+    PHENOLOGY_FEATURES,
     FEATURE_COLS,
+    SPECIES_SEASON,
     is_season_active,
     value_to_level,
     SpeciesForecast,
@@ -27,7 +32,13 @@ from .types import (
     ForecastOutput,
 )
 from .weather import fetch_weather_forecast
-from .trainer import load_models, log_transform, inv_log_transform, _add_weather_derived_features
+from .trainer import (
+    TwoStageModel,
+    load_models,
+    log_transform,
+    inv_log_transform,
+    _add_weather_derived_features,
+)
 
 
 def _calendar_features_for_date(dt: pd.Timestamp) -> dict[str, float]:
@@ -64,7 +75,7 @@ def _confidence_for_day(day_index: int, has_model: bool) -> float:
 
 def generate_forecast(
     history: pd.DataFrame,
-    models: dict[str, XGBRegressor] | None = None,
+    models: dict[str, TwoStageModel] | None = None,
 ) -> ForecastOutput:
     """
     Generate a multi-day pollen forecast.
@@ -104,6 +115,18 @@ def generate_forecast(
     # Index by date for quick lookup
     weather_derived = combined_weather.set_index("date")
 
+    # --- Pre-compute NDVI features for forecast dates ---
+    try:
+        from .ndvi import ndvi_features
+        forecast_dates = weather.index
+        ndvi_df = ndvi_features(forecast_dates)
+    except Exception as exc:
+        print(f"  NDVI fetch failed ({exc}), using defaults")
+        ndvi_df = pd.DataFrame(
+            {"ndvi": 0.0, "evi": 0.0, "ndvi_delta": 0.0},
+            index=weather.index,
+        )
+
     # Build recent pollen history per species in LOG-SPACE (for lag features)
     recent_log: dict[str, list[float]] = {}
     for species in ALL_SPECIES:
@@ -138,7 +161,6 @@ def generate_forecast(
                 features["season_active"] = 1.0 if active else 0.0
 
                 # Weather-derived features (GDD, rolling, interaction)
-                from .types import WEATHER_DERIVED_FEATURES
                 if dt in weather_derived.index:
                     wd_row = weather_derived.loc[dt]
                     for f in WEATHER_DERIVED_FEATURES:
@@ -146,6 +168,28 @@ def generate_forecast(
                 else:
                     for f in WEATHER_DERIVED_FEATURES:
                         features[f] = 0.0
+
+                # NDVI features
+                if dt in ndvi_df.index:
+                    for f in NDVI_FEATURES:
+                        features[f] = float(ndvi_df.loc[dt].get(f, 0) or 0)
+                else:
+                    for f in NDVI_FEATURES:
+                        features[f] = 0.0
+
+                # Phenology features
+                import calendar as _cal
+                window = SPECIES_SEASON.get(species)
+                if window:
+                    mean_onset_doy = sum(
+                        _cal.monthrange(2025, m)[1] for m in range(1, window[0])
+                    ) + 15
+                else:
+                    mean_onset_doy = 1
+                features["days_since_typical_onset"] = float(
+                    max(-60, dt.day_of_year - mean_onset_doy)
+                )
+                features["onset_anomaly"] = 0.0
 
                 # Lag features in log-space (autoregressive)
                 features["pollen_lag_1"] = log_vals[-1]

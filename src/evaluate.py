@@ -13,7 +13,16 @@ import numpy as np
 import pandas as pd
 
 from .types import ALL_SPECIES, FEATURE_COLS, WEATHER_FEATURES, LAG_FEATURES, value_to_level, is_season_active
-from .trainer import prepare_training_data, train_species_model, _add_lag_features, _add_season_feature, _add_weather_derived_features, inv_log_transform
+from .trainer import (
+    prepare_training_data,
+    train_species_model,
+    _add_lag_features,
+    _add_season_feature,
+    _add_weather_derived_features,
+    _add_ndvi_features,
+    _add_phenology_features,
+    inv_log_transform,
+)
 
 
 def temporal_split_evaluate(
@@ -66,7 +75,7 @@ def temporal_split_evaluate(
             if len(X_train) < 14:
                 continue
 
-            model = train_species_model(X_train, y_train, raw_values=raw_train)
+            model = train_species_model(X_train, y_train, raw_values=raw_train, species=species)
 
             # Prepare test features
             species_test = test_data[test_data["species"] == species].copy()
@@ -79,8 +88,10 @@ def temporal_split_evaluate(
                 species_test
             ]).sort_values("date").reset_index(drop=True)
             species_all = _add_weather_derived_features(species_all)
+            species_all = _add_ndvi_features(species_all)
             species_all = _add_lag_features(species_all)
             species_all = _add_season_feature(species_all, species)
+            species_all = _add_phenology_features(species_all, species)
 
             # Only evaluate on test dates
             species_eval = species_all[species_all["date"].isin(test_dates)].dropna(subset=LAG_FEATURES)
@@ -212,3 +223,118 @@ def print_evaluation_report(results: pd.DataFrame) -> None:
             print(f"  {species:<12} {sp_mae:>8.1f} {sp_rmse:>8.1f} {sp_level:>7.0%} {len(sp):>6}")
     else:
         print("  No in-season predictions in test windows.")
+
+
+def compare_with_dwd(results: pd.DataFrame) -> None:
+    """
+    Fetch the current DWD pollen forecast for Oberbayern and compare
+    level accuracy against our own model predictions.
+
+    The DWD only publishes a short-horizon forecast (today/tomorrow/day-after),
+    so the comparison is limited to whatever dates overlap with our evaluation.
+    """
+    from .dwd import fetch_dwd_forecast, DWD_SPECIES_MAP
+
+    print("\n" + "=" * 70)
+    print("DWD POLLEN FORECAST COMPARISON (Oberbayern)")
+    print("=" * 70)
+
+    try:
+        dwd_df = fetch_dwd_forecast()
+    except Exception as exc:
+        print(f"  Could not fetch DWD forecast: {exc}")
+        return
+
+    if dwd_df.empty:
+        print("  No DWD forecast data available.")
+        return
+
+    # DWD forecast has columns: date, species, dwd_level (0-3)
+    # Our results have: date, species, level_actual, level_predicted
+    print(f"\n  DWD forecast covers: {dwd_df['date'].min()} to {dwd_df['date'].max()}")
+    print(f"  DWD species: {sorted(dwd_df['species'].unique())}")
+
+    # Only DWD species that we also track
+    dwd_species = set(DWD_SPECIES_MAP.values()) & set(ALL_SPECIES)
+    print(f"  Overlapping species: {sorted(dwd_species)}")
+
+    # Try to match DWD forecast dates with our evaluation results
+    if results.empty:
+        print("  No evaluation results to compare against.")
+        return
+
+    results_dates = set(pd.to_datetime(results["date"]).dt.date)
+    dwd_dates = set(pd.to_datetime(dwd_df["date"]).dt.date)
+    overlap_dates = results_dates & dwd_dates
+
+    if overlap_dates:
+        print(f"  Overlapping eval dates: {len(overlap_dates)}")
+        _compare_overlapping(results, dwd_df, overlap_dates, dwd_species)
+    else:
+        print("  No overlapping dates between DWD forecast and evaluation results.")
+        print("  (DWD only covers today–day after tomorrow; eval covers historical data)")
+        print("\n  Showing DWD forecast summary instead:")
+        _summarise_dwd(dwd_df)
+
+
+def _compare_overlapping(
+    results: pd.DataFrame,
+    dwd_df: pd.DataFrame,
+    overlap_dates: set,
+    species_set: set[str],
+) -> None:
+    """Compare our predictions vs DWD for overlapping (date, species) pairs."""
+    # Map our PollenLevel string values to a 0-3 numeric scale matching DWD
+    level_to_num = {"none": 0, "low": 1, "moderate": 2, "high": 3, "very_high": 3}
+
+    our_right = 0
+    dwd_right = 0
+    both_right = 0
+    total = 0
+
+    for dt in sorted(overlap_dates):
+        for sp in sorted(species_set):
+            our_row = results[
+                (pd.to_datetime(results["date"]).dt.date == dt) & (results["species"] == sp)
+            ]
+            dwd_row = dwd_df[
+                (pd.to_datetime(dwd_df["date"]).dt.date == dt) & (dwd_df["species"] == sp)
+            ]
+            if our_row.empty or dwd_row.empty:
+                continue
+
+            actual_str = str(our_row.iloc[0]["level_actual"])
+            our_str = str(our_row.iloc[0]["level_predicted"])
+            actual_num = level_to_num.get(actual_str, 0)
+            our_num = level_to_num.get(our_str, 0)
+            # DWD levels are already numeric 0-3 (with halves like 2.5); round
+            dwd_num = round(float(dwd_row.iloc[0]["dwd_level"]))
+
+            our_ok = our_num == actual_num
+            dwd_ok = dwd_num == actual_num
+            our_right += our_ok
+            dwd_right += dwd_ok
+            both_right += our_ok and dwd_ok
+            total += 1
+
+    if total == 0:
+        print("  No comparable (date, species) pairs found.")
+        return
+
+    print(f"\n  Head-to-head comparison ({total} pairs):")
+    print(f"    Our level accuracy:  {our_right/total:.1%}  ({our_right}/{total})")
+    print(f"    DWD level accuracy:  {dwd_right/total:.1%}  ({dwd_right}/{total})")
+    print(f"    Both correct:        {both_right/total:.1%}  ({both_right}/{total})")
+
+    if our_right > dwd_right:
+        print(f"    → Our model is BETTER by {(our_right - dwd_right)/total:+.1%}")
+    elif dwd_right > our_right:
+        print(f"    → DWD forecast is better by {(dwd_right - our_right)/total:+.1%}")
+    else:
+        print(f"    → Tied")
+
+
+def _summarise_dwd(dwd_df: pd.DataFrame) -> None:
+    """Print a summary of the current DWD forecast when no overlap is available."""
+    for _, row in dwd_df.iterrows():
+        print(f"    {row['date']}  {row['species']:<12}  level={int(row['dwd_level'])}")

@@ -8,6 +8,8 @@ Usage:
     python -m src.main run          # All three steps in sequence (daily cron)
     python -m src.main backfill N   # Backfill N days of historical data
     python -m src.main benchmark    # Walk-forward evaluation of forecast quality
+    python -m src.main dwd          # Show DWD pollen forecast for Oberbayern
+    python -m src.main phenology    # Download DWD phenology data for Munich
 """
 
 import json
@@ -21,7 +23,7 @@ from .forecaster import generate_forecast
 from .s3 import upload_forecast, upload_csv, sync_historical_data
 from .pollen import fetch_pollen, pivot_pollen
 from .weather import fetch_historical_weather, fetch_weather_forecast as fetch_weather_fc
-from .evaluate import temporal_split_evaluate, print_evaluation_report
+from .evaluate import temporal_split_evaluate, print_evaluation_report, compare_with_dwd
 from .types import ALL_SPECIES
 
 import pandas as pd
@@ -153,6 +155,18 @@ def cmd_backfill(days: int = 365) -> pd.DataFrame:
     common_dates = pollen.index.intersection(weather.index)
     print(f"Overlapping dates: {len(common_dates)}")
 
+    # Fetch NDVI for the backfill period
+    try:
+        from .ndvi import ndvi_features
+        ndvi_df = ndvi_features(pd.DatetimeIndex(common_dates))
+        if not ndvi_df.empty:
+            print(f"NDVI data: {len(ndvi_df)} days")
+        else:
+            ndvi_df = pd.DataFrame()
+    except Exception as exc:
+        print(f"NDVI fetch failed ({exc}), continuing without.")
+        ndvi_df = pd.DataFrame()
+
     rows: list[dict] = []
     for dt in common_dates:
         w = weather.loc[dt]
@@ -161,6 +175,14 @@ def cmd_backfill(days: int = 365) -> pd.DataFrame:
             row = {"date": dt, "species": species, "value": float(val)}
             for col in weather.columns:
                 row[col] = float(w[col])
+            # Add NDVI
+            if not ndvi_df.empty and dt in ndvi_df.index:
+                for col in ndvi_df.columns:
+                    row[col] = float(ndvi_df.loc[dt, col])
+            else:
+                row["ndvi"] = 0.0
+                row["evi"] = 0.0
+                row["ndvi_delta"] = 0.0
             rows.append(row)
 
     df = pd.DataFrame(rows)
@@ -187,10 +209,75 @@ def cmd_benchmark(horizon: int = 1) -> None:
     if not results.empty:
         print_evaluation_report(results)
 
+        # Compare with DWD forecast
+        compare_with_dwd(results)
+
         # Save results for further analysis
         results_path = DATA_DIR / "benchmark_results.csv"
         results.to_csv(results_path, index=False)
         print(f"\nDetailed results saved to {results_path}")
+
+
+def cmd_dwd() -> None:
+    """Fetch and display the current DWD pollen forecast for Oberbayern."""
+    from .dwd import fetch_dwd_forecast
+
+    print("=" * 60)
+    print("DWD POLLEN FORECAST — Oberbayern")
+    print("=" * 60)
+
+    try:
+        df = fetch_dwd_forecast()
+    except Exception as exc:
+        print(f"Failed to fetch DWD forecast: {exc}")
+        return
+
+    if df.empty:
+        print("No DWD forecast data.")
+        return
+
+    for dt in sorted(df["date"].unique()):
+        day_df = df[df["date"] == dt]
+        print(f"\n  {dt}:")
+        for _, row in day_df.iterrows():
+            level = int(row["dwd_level"])
+            bar = "█" * level + "░" * (3 - level)
+            print(f"    {row['species']:<12} {bar}  ({level}/3)")
+
+
+def cmd_phenology() -> None:
+    """Download DWD phenology data for Munich and show season statistics."""
+    from .dwd import fetch_dwd_phenology, phenology_season_stats
+
+    print("=" * 60)
+    print("DWD PHENOLOGY DATA — Munich")
+    print("=" * 60)
+
+    pheno = fetch_dwd_phenology()
+    if pheno.empty:
+        print("No phenology data available.")
+        return
+
+    print(f"\nDownloaded {len(pheno)} records")
+    for sp in sorted(pheno["species"].unique()):
+        sp_data = pheno[pheno["species"] == sp]
+        years = sp_data["year"]
+        print(f"  {sp}: {len(sp_data)} years ({int(years.min())}-{int(years.max())})")
+
+    stats = phenology_season_stats(pheno)
+    print(f"\nFlowering onset statistics (day of year):")
+    print(f"  {'Species':<12}  {'Mean':>6}  {'Std':>6}  {'Min':>6}  {'Max':>6}")
+    print(f"  {'-'*12}  {'-'*6}  {'-'*6}  {'-'*6}  {'-'*6}")
+    for sp, s in sorted(stats.items()):
+        print(f"  {sp:<12}  {s['mean_onset_doy']:>6.0f}  "
+              f"{s['std_onset_doy']:>6.1f}  {s['earliest_onset_doy']:>6}  "
+              f"{s['latest_onset_doy']:>6}")
+
+    # Save phenology data
+    pheno_path = DATA_DIR / "phenology.csv"
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    pheno.to_csv(pheno_path, index=False)
+    print(f"\nSaved to {pheno_path}")
 
 
 def cmd_run() -> None:
@@ -220,6 +307,10 @@ def main() -> None:
     elif command == "benchmark":
         horizon = int(sys.argv[2]) if len(sys.argv) > 2 else 1
         cmd_benchmark(horizon)
+    elif command == "dwd":
+        cmd_dwd()
+    elif command == "phenology":
+        cmd_phenology()
     elif command == "run":
         cmd_run()
     else:

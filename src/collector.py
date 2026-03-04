@@ -1,9 +1,10 @@
 """
-Data collector: fetches pollen measurements and weather, appends to historical CSV.
+Data collector: fetches pollen measurements, weather, and NDVI, appends
+to historical CSV.
 
 Run daily to accumulate training data. The collector merges pollen data from the
-LGL Bayern API with weather data from Open-Meteo's historical archive, producing
-one row per (date, species) with all weather features attached.
+LGL Bayern API with weather data from Open-Meteo's historical archive and NDVI
+from MODIS, producing one row per (date, species) with all features attached.
 """
 
 from datetime import date, timedelta
@@ -13,6 +14,7 @@ import pandas as pd
 
 from .pollen import fetch_pollen, pivot_pollen
 from .weather import fetch_historical_weather, fetch_weather_forecast
+from .ndvi import ndvi_features
 from .types import ALL_SPECIES
 
 DATA_DIR = Path(__file__).parent.parent / "data"
@@ -91,7 +93,18 @@ def collect(days: int = 14) -> pd.DataFrame:
     pollen = pollen.loc[common_dates]
     weather = weather.loc[common_dates]
 
-    # 5. Melt pollen to long format and merge weather
+    # 5. NDVI features (per date, not per species)
+    try:
+        ndvi_df = ndvi_features(pd.DatetimeIndex(common_dates))
+        if not ndvi_df.empty:
+            print(f"  NDVI: {len(ndvi_df)} days")
+        else:
+            ndvi_df = pd.DataFrame()
+    except Exception as exc:
+        print(f"  NDVI fetch failed ({exc}), continuing without NDVI.")
+        ndvi_df = pd.DataFrame()
+
+    # 6. Melt pollen to long format and merge weather + NDVI
     rows: list[dict] = []
     for dt in common_dates:
         w = weather.loc[dt]
@@ -100,6 +113,14 @@ def collect(days: int = 14) -> pd.DataFrame:
             row = {"date": dt, "species": species, "value": float(pollen_value)}
             for col in weather.columns:
                 row[col] = float(w[col])
+            # Add NDVI columns if available
+            if not ndvi_df.empty and dt in ndvi_df.index:
+                for col in ndvi_df.columns:
+                    row[col] = float(ndvi_df.loc[dt, col])
+            else:
+                row["ndvi"] = 0.0
+                row["evi"] = 0.0
+                row["ndvi_delta"] = 0.0
             rows.append(row)
 
     df = pd.DataFrame(rows)
