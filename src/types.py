@@ -44,17 +44,73 @@ CALENDAR_FEATURES = [
     "month",
 ]
 
+SEASON_FEATURE = [
+    "season_active",  # 1.0 if species is in its pollen season, 0.0 otherwise
+]
+
+# Weather-derived features (computed from history at training/prediction time)
+WEATHER_DERIVED_FEATURES = [
+    "gdd",                  # Growing Degree Days (cumulative from Jan 1)
+    "temp_rolling_3d",      # 3-day rolling mean temperature
+    "temp_rolling_7d",      # 7-day rolling mean temperature
+    "sunshine_rolling_3d",  # 3-day rolling mean sunshine duration
+    "sunshine_rolling_7d",  # 7-day rolling mean sunshine duration
+    "rain_rolling_3d",      # 3-day cumulative precipitation
+    "rain_rolling_7d",      # 7-day cumulative precipitation
+    "temp_delta_1d",        # Day-over-day temperature change
+    "temp_delta_3d",        # 3-day temperature change
+    "temp_x_sunshine",      # Interaction: warm & sunny = peak dispersal
+    "dry_warm",             # Interaction: warm + low humidity
+]
+
 LAG_FEATURES = [
-    "pollen_lag_1",  # yesterday
+    "pollen_lag_1",  # yesterday (log-transformed)
     "pollen_lag_2",
     "pollen_lag_3",
-    "pollen_rolling_3",  # 3-day rolling mean
-    "pollen_rolling_7",  # 7-day rolling mean
+    "pollen_rolling_3",  # 3-day rolling mean (log-transformed)
+    "pollen_rolling_7",  # 7-day rolling mean (log-transformed)
 ]
 
 FORECAST_DAYS = 5
 
-FEATURE_COLS = WEATHER_FEATURES + CALENDAR_FEATURES + LAG_FEATURES
+FEATURE_COLS = (
+    WEATHER_FEATURES
+    + CALENDAR_FEATURES
+    + SEASON_FEATURE
+    + WEATHER_DERIVED_FEATURES
+    + LAG_FEATURES
+)
+
+# GDD base temperature (°C) — standard for temperate deciduous phenology
+GDD_T_BASE = 5.0
+
+# Pollen season windows per species: (start_month, end_month) inclusive.
+# Outside this window the model should predict ~0.
+SPECIES_SEASON: dict[str, tuple[int, int]] = {
+    "Alnus":     (1, 4),    # January – April
+    "Ambrosia":  (7, 10),   # July – October
+    "Artemisia": (7, 9),    # July – September
+    "Betula":    (3, 5),    # March – May
+    "Corylus":   (1, 4),    # January – April
+    "Fraxinus":  (3, 5),    # March – May
+    "Poaceae":   (5, 9),    # May – September
+    "Populus":   (3, 5),    # March – May
+    "Quercus":   (4, 6),    # April – June
+    "Salix":     (3, 5),    # March – May
+    "Urtica":    (5, 9),    # May – September
+}
+
+
+def is_season_active(species: str, month: int) -> bool:
+    """Check if a species is within its pollen season for a given month."""
+    window = SPECIES_SEASON.get(species)
+    if window is None:
+        return True  # unknown species: assume always active
+    start, end = window
+    if start <= end:
+        return start <= month <= end
+    else:  # wraps around year (e.g., Nov–Feb)
+        return month >= start or month <= end
 
 
 class PollenLevel(str, Enum):
@@ -65,15 +121,41 @@ class PollenLevel(str, Enum):
     VERY_HIGH = "very_high"
 
 
-def value_to_level(value: float) -> PollenLevel:
-    """Convert a numeric pollen value to a categorical level."""
+# Species-specific pollen level thresholds (DWD / ePIN classifications).
+# Tuple: (low_max, moderate_max, high_max). Above high_max → VERY_HIGH.
+SPECIES_THRESHOLDS: dict[str, tuple[float, float, float]] = {
+    "Alnus":     (10,  70,  250),
+    "Ambrosia":  (5,   20,   80),
+    "Artemisia": (5,   15,   50),
+    "Betula":    (10,  50,  300),
+    "Corylus":   (10,  70,  250),
+    "Fraxinus":  (10,  50,  200),
+    "Poaceae":   (5,   30,   60),
+    "Populus":   (10,  50,  200),
+    "Quercus":   (10,  50,  200),
+    "Salix":     (5,   20,   50),
+    "Urtica":    (10,  50,  200),
+}
+
+# Default thresholds when species is unknown
+_DEFAULT_THRESHOLDS = (10, 50, 200)
+
+
+def value_to_level(value: float, species: str | None = None) -> PollenLevel:
+    """Convert a numeric pollen value to a categorical level.
+
+    When *species* is given, use DWD species-specific thresholds.
+    """
     if value <= 0:
         return PollenLevel.NONE
-    if value <= 10:
+    low_max, mod_max, high_max = SPECIES_THRESHOLDS.get(
+        species, _DEFAULT_THRESHOLDS
+    ) if species else _DEFAULT_THRESHOLDS
+    if value <= low_max:
         return PollenLevel.LOW
-    if value <= 50:
+    if value <= mod_max:
         return PollenLevel.MODERATE
-    if value <= 200:
+    if value <= high_max:
         return PollenLevel.HIGH
     return PollenLevel.VERY_HIGH
 

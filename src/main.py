@@ -7,6 +7,7 @@ Usage:
     python -m src.main forecast     # Generate forecast and upload to S3
     python -m src.main run          # All three steps in sequence (daily cron)
     python -m src.main backfill N   # Backfill N days of historical data
+    python -m src.main benchmark    # Walk-forward evaluation of forecast quality
 """
 
 import json
@@ -19,7 +20,8 @@ from .trainer import train_all, load_models
 from .forecaster import generate_forecast
 from .s3 import upload_forecast, upload_csv, sync_historical_data
 from .pollen import fetch_pollen, pivot_pollen
-from .weather import fetch_historical_weather
+from .weather import fetch_historical_weather, fetch_weather_forecast as fetch_weather_fc
+from .evaluate import temporal_split_evaluate, print_evaluation_report
 from .types import ALL_SPECIES
 
 import pandas as pd
@@ -115,12 +117,30 @@ def cmd_backfill(days: int = 365) -> pd.DataFrame:
     pollen = pivot_pollen(pollen_raw)
     print(f"Pollen data: {len(pollen)} days ({pollen.index.min()} to {pollen.index.max()})")
 
-    # Fetch matching weather data
+    # Fetch matching weather data: archive + recent forecast API to cover gap
     start = pollen.index.min().date() - timedelta(days=1)
-    end = min(pollen.index.max().date(), date.today() - timedelta(days=5))
+    archive_end = min(pollen.index.max().date(), date.today() - timedelta(days=5))
 
-    print(f"Fetching weather from {start} to {end}...")
-    weather = fetch_historical_weather(start, end)
+    weather_parts: list[pd.DataFrame] = []
+
+    if start <= archive_end:
+        print(f"Fetching weather archive from {start} to {archive_end}...")
+        weather_parts.append(fetch_historical_weather(start, archive_end))
+
+    # Use forecast API for the most recent days (archive is ~5 days behind)
+    recent_weather = fetch_weather_fc(days=7)
+    today = pd.Timestamp(date.today())
+    recent_weather = recent_weather[recent_weather.index <= today]
+    if not recent_weather.empty:
+        weather_parts.append(recent_weather)
+        print(f"Fetched {len(recent_weather)} recent weather days from forecast API")
+
+    if not weather_parts:
+        print("No weather data available.")
+        return pd.DataFrame()
+
+    weather = pd.concat(weather_parts)
+    weather = weather[~weather.index.duplicated(keep="first")].sort_index()
 
     # Add calendar features
     doy = weather.index.dayofyear
@@ -150,6 +170,29 @@ def cmd_backfill(days: int = 365) -> pd.DataFrame:
     return history
 
 
+def cmd_benchmark(horizon: int = 1) -> None:
+    """Run walk-forward evaluation on accumulated history."""
+    print("=" * 60)
+    print("BENCHMARK: Walk-Forward Evaluation")
+    print("=" * 60)
+    if not HISTORY_FILE.exists():
+        print("No history file found. Run 'collect' or 'backfill' first.")
+        return
+
+    history = pd.read_csv(HISTORY_FILE, parse_dates=["date"])
+    n_days = history["date"].nunique()
+    print(f"History: {len(history)} rows, {n_days} unique days")
+
+    results = temporal_split_evaluate(history, test_days=min(90, n_days // 3), n_folds=horizon)
+    if not results.empty:
+        print_evaluation_report(results)
+
+        # Save results for further analysis
+        results_path = DATA_DIR / "benchmark_results.csv"
+        results.to_csv(results_path, index=False)
+        print(f"\nDetailed results saved to {results_path}")
+
+
 def cmd_run() -> None:
     """Run full pipeline: collect -> train -> forecast."""
     history = cmd_collect()
@@ -174,6 +217,9 @@ def main() -> None:
     elif command == "backfill":
         days = int(sys.argv[2]) if len(sys.argv) > 2 else 365
         cmd_backfill(days)
+    elif command == "benchmark":
+        horizon = int(sys.argv[2]) if len(sys.argv) > 2 else 1
+        cmd_benchmark(horizon)
     elif command == "run":
         cmd_run()
     else:

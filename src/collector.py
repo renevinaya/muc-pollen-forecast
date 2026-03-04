@@ -12,7 +12,7 @@ from pathlib import Path
 import pandas as pd
 
 from .pollen import fetch_pollen, pivot_pollen
-from .weather import fetch_historical_weather
+from .weather import fetch_historical_weather, fetch_weather_forecast
 from .types import ALL_SPECIES
 
 DATA_DIR = Path(__file__).parent.parent / "data"
@@ -49,17 +49,35 @@ def collect(days: int = 14) -> pd.DataFrame:
     pollen = pivot_pollen(pollen_raw)
     print(f"  Pollen: {len(pollen)} days, species: {list(pollen.columns)}")
 
-    # 2. Historical weather for the same date range
-    start = pollen.index.min().date() - timedelta(days=1)
-    # Archive API is ~5 days behind; clamp end date
-    end = min(pollen.index.max().date(), date.today() - timedelta(days=5))
-    if start > end:
-        # All pollen data is too recent for the archive API
-        print("  Weather archive not yet available for these dates, skipping.")
+    # 2. Weather data: use archive for older dates, forecast API for recent days
+    archive_end = date.today() - timedelta(days=5)
+    archive_start = pollen.index.min().date() - timedelta(days=1)
+
+    weather_parts: list[pd.DataFrame] = []
+
+    # 2a. Historical archive (available up to ~5 days ago)
+    if archive_start <= archive_end:
+        archive_weather = fetch_historical_weather(archive_start, archive_end)
+        weather_parts.append(archive_weather)
+        print(f"  Weather archive: {len(archive_weather)} days")
+
+    # 2b. Forecast API for the last ~5 days + today (fills the gap)
+    recent_weather = fetch_weather_forecast(days=7)
+    # Only keep past/today dates from the forecast (it also includes future days)
+    today = pd.Timestamp(date.today())
+    recent_weather = recent_weather[recent_weather.index <= today]
+    if not recent_weather.empty:
+        weather_parts.append(recent_weather)
+        print(f"  Weather recent (from forecast API): {len(recent_weather)} days")
+
+    if not weather_parts:
+        print("  No weather data available.")
         return pd.DataFrame()
 
-    weather = fetch_historical_weather(start, end)
-    print(f"  Weather: {len(weather)} days")
+    weather = pd.concat(weather_parts)
+    # Deduplicate (archive and forecast may overlap); prefer archive data
+    weather = weather[~weather.index.duplicated(keep="first")]
+    weather = weather.sort_index()
 
     # 3. Add calendar features to weather
     weather = _add_calendar_features(weather)
