@@ -1,0 +1,13 @@
+version: 0.2
+phases:
+  install:
+    runtime-versions:
+      python: 3.12
+    commands:
+      - pip install -r requirements.txt
+  build:
+    commands:
+      - python -m src.main run
+artifacts:
+  files:
+    - data/forecast.json

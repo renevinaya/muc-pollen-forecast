@@ -1,0 +1,167 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Munich Pollen Forecast Infrastructure (Python/ML)
+
+Parameters:
+  GitHubRepo:
+    Type: String
+    Description: GitHub repository URL
+    Default: https://github.com/renevinaya/muc-pollen-forecast.git
+
+  ScheduleExpression:
+    Type: String
+    Description: Cron expression for daily forecast (6 AM CET = 5 AM UTC)
+    Default: cron(0 5 * * ? *)
+
+Resources:
+  # S3 Bucket for forecast data + historical data + model artifacts
+  ForecastBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub muc-pollen-forecast-${AWS::AccountId}
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: false
+        BlockPublicPolicy: false
+        IgnorePublicAcls: false
+        RestrictPublicBuckets: false
+      CorsConfiguration:
+        CorsRules:
+          - AllowedHeaders: ['*']
+            AllowedMethods: [GET]
+            AllowedOrigins: ['*']
+            MaxAge: 3600
+      LifecycleConfiguration:
+        Rules:
+          - Id: CleanUpOldData
+            Status: Enabled
+            Prefix: data/
+            ExpirationInDays: 730  # Keep 2 years of history
+
+  ForecastBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref ForecastBucket
+      PolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal: '*'
+            Action: s3:GetObject
+            Resource: !Sub ${ForecastBucket.Arn}/forecast.json
+
+  # CloudFront Distribution
+  ForecastDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        DefaultRootObject: forecast.json
+        Origins:
+          - Id: S3Origin
+            DomainName: !GetAtt ForecastBucket.RegionalDomainName
+            S3OriginConfig:
+              OriginAccessIdentity: ''
+        DefaultCacheBehavior:
+          TargetOriginId: S3Origin
+          ViewerProtocolPolicy: redirect-to-https
+          CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6
+          Compress: true
+        PriceClass: PriceClass_100
+
+  # IAM Role for CodeBuild
+  CodeBuildServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codebuild.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: CodeBuildPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - s3:PutObject
+                  - s3:PutObjectAcl
+                  - s3:GetObject
+                  - s3:ListBucket
+                Resource:
+                  - !Sub ${ForecastBucket.Arn}
+                  - !Sub ${ForecastBucket.Arn}/*
+
+  # CodeBuild Project
+  ForecastCodeBuild:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: muc-pollen-forecast
+      Description: Daily ML pollen forecast generator
+      ServiceRole: !GetAtt CodeBuildServiceRole.Arn
+      Artifacts:
+        Type: NO_ARTIFACTS
+      Environment:
+        Type: ARM_CONTAINER
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/amazonlinux2-aarch64-standard:3.0
+        EnvironmentVariables:
+          - Name: S3_BUCKET
+            Value: !Ref ForecastBucket
+      Source:
+        Type: GITHUB
+        Location: !Ref GitHubRepo
+        BuildSpec: buildspec.yml
+      TimeoutInMinutes: 15
+
+  # EventBridge Rule for daily trigger
+  DailyScheduleRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: muc-pollen-forecast-daily
+      Description: Trigger forecast generation daily at 6 AM CET
+      ScheduleExpression: !Ref ScheduleExpression
+      State: ENABLED
+      Targets:
+        - Id: ForecastCodeBuild
+          Arn: !GetAtt ForecastCodeBuild.Arn
+          RoleArn: !GetAtt EventBridgeRole.Arn
+
+  # IAM Role for EventBridge
+  EventBridgeRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: events.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: StartCodeBuild
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: codebuild:StartBuild
+                Resource: !GetAtt ForecastCodeBuild.Arn
+
+Outputs:
+  ForecastBucketName:
+    Description: S3 bucket storing forecast + history + models
+    Value: !Ref ForecastBucket
+
+  CloudFrontURL:
+    Description: CloudFront URL for forecast data
+    Value: !Sub https://${ForecastDistribution.DomainName}/forecast.json
+
+  CodeBuildProject:
+    Description: CodeBuild project name
+    Value: !Ref ForecastCodeBuild
