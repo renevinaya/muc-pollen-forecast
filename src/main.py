@@ -15,19 +15,18 @@ Usage:
 import json
 import sys
 from datetime import date, timedelta
-from pathlib import Path
 from typing import Any
 
+import pandas as pd
+
 from .collector import collect, update_history, HISTORY_FILE, DATA_DIR
-from .trainer import train_all, load_models
+from .trainer import train_all
 from .forecaster import generate_forecast
-from .s3 import upload_forecast, upload_csv, sync_historical_data
+from .s3 import upload_forecast, upload_csv
 from .pollen import fetch_pollen, pivot_pollen
 from .weather import fetch_historical_weather, fetch_weather_forecast as fetch_weather_fc
 from .evaluate import temporal_split_evaluate, print_evaluation_report, compare_with_dwd
 from .types import ALL_SPECIES
-
-import pandas as pd
 
 
 def cmd_collect(days: int = 14) -> pd.DataFrame:
@@ -268,8 +267,8 @@ def cmd_dwd() -> None:
         print(f"\n  {dt}:")
         for _, row in day_df.iterrows():
             level = int(row["dwd_level"])
-            bar = "█" * level + "░" * (3 - level)
-            print(f"    {row['species']:<12} {bar}  ({level}/3)")
+            level_bar = "█" * level + "░" * (3 - level)
+            print(f"    {row['species']:<12} {level_bar}  ({level}/3)")
 
 
 def cmd_phenology() -> None:
@@ -292,8 +291,9 @@ def cmd_phenology() -> None:
         print(f"  {sp}: {len(sp_data)} years ({int(years.min())}-{int(years.max())})")
 
     stats = phenology_season_stats(pheno)
-    print(f"\nFlowering onset statistics (day of year):")
-    print(f"  {'Species':<12}  {'Mean':>6}  {'Std':>6}  {'Min':>6}  {'Max':>6}")
+    print("\nFlowering onset statistics (day of year):")
+    hdr = "  {:<12}  {:>6}  {:>6}  {:>6}  {:>6}"  # pylint: disable=consider-using-f-string
+    print(hdr.format("Species", "Mean", "Std", "Min", "Max"))
     print(f"  {'-'*12}  {'-'*6}  {'-'*6}  {'-'*6}  {'-'*6}")
     for sp, s in sorted(stats.items()):
         print(f"  {sp:<12}  {s['mean_onset_doy']:>6.0f}  "
@@ -315,6 +315,7 @@ def cmd_run() -> None:
 
 
 def main() -> None:
+    """Parse CLI arguments and dispatch to the appropriate subcommand."""
     if len(sys.argv) < 2:
         print(__doc__)
         sys.exit(1)

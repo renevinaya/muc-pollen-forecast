@@ -180,7 +180,10 @@ def fetch_dwd_phenology() -> pd.DataFrame:
             # Find the matching file (name pattern includes year range)
             import re
 
-            pattern = rf'href="(PH_Jahresmelder_Wildwachsende_Pflanze_{plant_name}_\d+_\d+_\w+\.txt)"'
+            pattern = (
+                rf'href="(PH_Jahresmelder_Wildwachsende_Pflanze_{plant_name}'
+                r'_\d+_\d+_\w+\.txt)"'
+            )
             match = re.search(pattern, listing.text)
             if not match:
                 continue

@@ -4,7 +4,7 @@ Fetches hourly data and aggregates to 3-hour windows to match
 the LGL Bayern pollen measurement intervals.
 """
 
-from datetime import date, timedelta
+from datetime import date
 
 import httpx
 import pandas as pd

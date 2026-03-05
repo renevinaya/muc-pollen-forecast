@@ -24,7 +24,6 @@ from .types import (
     WEATHER_FEATURES,
     WEATHER_DERIVED_FEATURES,
     NDVI_FEATURES,
-    PHENOLOGY_FEATURES,
     FEATURE_COLS,
     SPECIES_SEASON,
     is_season_active,
@@ -38,7 +37,6 @@ from .weather import fetch_weather_forecast
 from .trainer import (
     TwoStageModel,
     load_models,
-    log_transform,
     inv_log_transform,
     _add_weather_derived_features,
 )
@@ -221,8 +219,8 @@ def generate_forecast(
                 features["pollen_rolling_8"] = float(np.mean(log_vals[-8:]))
                 features["pollen_rolling_56"] = float(np.mean(log_vals[-56:]))
 
-                X = pd.DataFrame([features])[FEATURE_COLS]
-                pred_log = float(models[species].predict(X)[0])
+                x_features = pd.DataFrame([features])[FEATURE_COLS]
+                pred_log = float(models[species].predict(x_features)[0])
                 pred_log = max(0.0, pred_log)  # log-space, 0 = pollen count of 0
                 prediction = float(inv_log_transform(np.array([pred_log]))[0])
             else:

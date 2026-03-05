@@ -64,7 +64,9 @@ def fetch_ndvi(
             earliest_cached = cached["date"].min().date()
             latest_cached = cached["date"].max().date()
             # Cache is sufficient if it covers the full requested range
-            if earliest_cached <= start + timedelta(days=32) and latest_cached >= end - timedelta(days=32):
+            cache_covers_start = earliest_cached <= start + timedelta(days=32)
+            cache_covers_end = latest_cached >= end - timedelta(days=32)
+            if cache_covers_start and cache_covers_end:
                 print(f"  NDVI cache up-to-date ({earliest_cached} to {latest_cached})")
                 return cached
             # Otherwise re-fetch from uncovered start
@@ -75,12 +77,12 @@ def fetch_ndvi(
 
     # The ORNL API limits to 10 tiles per request (10 × 16 days = 160 days).
     # Chunk into ~150-day intervals.
-    CHUNK_DAYS = 150
+    chunk_days = 150
     all_records: list[dict] = []
     current_start = start
 
     while current_start < end:
-        chunk_end = min(current_start + timedelta(days=CHUNK_DAYS), end)
+        chunk_end = min(current_start + timedelta(days=chunk_days), end)
         try:
             resp = httpx.get(
                 f"{MODIS_API}/{PRODUCT}/subset",
@@ -147,7 +149,10 @@ def fetch_ndvi(
     # Save cache
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     combined.to_csv(NDVI_CACHE, index=False)
-    print(f"  NDVI: {len(combined)} composites ({combined['date'].min().date()} to {combined['date'].max().date()})")
+    print(
+        f"  NDVI: {len(combined)} composites"
+        f" ({combined['date'].min().date()} to {combined['date'].max().date()})"
+    )
 
     return combined
 

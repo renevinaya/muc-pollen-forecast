@@ -133,11 +133,12 @@ def is_season_active(species: str, month: int) -> bool:
     start, end = window
     if start <= end:
         return start <= month <= end
-    else:  # wraps around year (e.g., Nov–Feb)
-        return month >= start or month <= end
+    # wraps around year (e.g., Nov–Feb)
+    return month >= start or month <= end
 
 
 class PollenLevel(str, Enum):
+    """Categorical pollen concentration level."""
     NONE = "none"
     LOW = "low"
     MODERATE = "moderate"
@@ -186,12 +187,14 @@ def value_to_level(value: float, species: str | None = None) -> PollenLevel:
 
 @dataclass
 class SpeciesForecast:
+    """Forecast for a single species in one time window."""
     name: str
     level: str
     value: float
     confidence: float
 
     def to_dict(self) -> dict[str, Any]:
+        """Serialize to a JSON-compatible dict."""
         return {
             "name": self.name,
             "level": self.level,
@@ -202,11 +205,13 @@ class SpeciesForecast:
 
 @dataclass
 class WindowForecast:
+    """Forecast for a 3-hour time window."""
     from_time: str
     to_time: str
     species: list[SpeciesForecast] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
+        """Serialize to a JSON-compatible dict."""
         return {
             "from": self.from_time,
             "to": self.to_time,
@@ -216,10 +221,12 @@ class WindowForecast:
 
 @dataclass
 class DayForecast:
+    """Forecast for a single calendar day."""
     date: str
     windows: list[WindowForecast] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
+        """Serialize to a JSON-compatible dict."""
         return {
             "date": self.date,
             "windows": [w.to_dict() for w in self.windows],
@@ -228,11 +235,13 @@ class DayForecast:
 
 @dataclass
 class ForecastOutput:
+    """Top-level forecast output with metadata and daily forecasts."""
     generated: str
     location: str
     forecast: list[DayForecast] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
+        """Serialize to a JSON-compatible dict."""
         return {
             "generated": self.generated,
             "location": self.location,

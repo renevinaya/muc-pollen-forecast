@@ -7,12 +7,10 @@ per-species and aggregate metrics. Also supports k-fold
 temporal cross-validation for more robust estimates.
 """
 
-from datetime import timedelta
-
 import numpy as np
 import pandas as pd
 
-from .types import ALL_SPECIES, FEATURE_COLS, WEATHER_FEATURES, LAG_FEATURES, value_to_level, is_season_active
+from .types import ALL_SPECIES, FEATURE_COLS, LAG_FEATURES, value_to_level, is_season_active
 from .trainer import (
     prepare_training_data,
     train_species_model,
@@ -28,7 +26,7 @@ from .trainer import (
 def temporal_split_evaluate(
     history: pd.DataFrame,
     test_days: int = 60,
-    n_folds: int = 3,
+    n_folds: int = 3,  # pylint: disable=unused-argument
 ) -> pd.DataFrame:
     """
     Monthly forward-chaining cross-validation.
@@ -43,7 +41,6 @@ def temporal_split_evaluate(
         level_actual, level_predicted
     """
     dates = sorted(history["date"].unique())
-    total_windows = len(dates)
 
     # Count in unique calendar days for minimum training threshold
     unique_days = len(set(pd.to_datetime(d).date() for d in dates))
@@ -76,11 +73,11 @@ def temporal_split_evaluate(
               f"{pd.Timestamp(test_dates[-1]).strftime('%Y-%m-%d')})")
 
         for species in ALL_SPECIES:
-            X_train, y_train, raw_train = prepare_training_data(train_data, species)
-            if len(X_train) < 14:
+            x_train, y_train, raw_train = prepare_training_data(train_data, species)
+            if len(x_train) < 14:
                 continue
 
-            model = train_species_model(X_train, y_train, raw_values=raw_train, species=species)
+            model = train_species_model(x_train, y_train, raw_values=raw_train, species=species)
 
             # Prepare test features
             species_test = test_data[test_data["species"] == species].copy()
@@ -99,13 +96,15 @@ def temporal_split_evaluate(
             species_all = _add_phenology_features(species_all, species)
 
             # Only evaluate on test dates
-            species_eval = species_all[species_all["date"].isin(test_dates)].dropna(subset=LAG_FEATURES)
+            species_eval = species_all[
+                species_all["date"].isin(test_dates)
+            ].dropna(subset=LAG_FEATURES)
             if species_eval.empty:
                 continue
 
-            X_test = species_eval[FEATURE_COLS].fillna(0)
+            x_test = species_eval[FEATURE_COLS].fillna(0)
             y_test = species_eval["value"]
-            preds_log = model.predict(X_test)
+            preds_log = model.predict(x_test)
             preds = inv_log_transform(np.maximum(0, preds_log))
 
             # Match forecaster: force out-of-season predictions to zero
@@ -154,9 +153,11 @@ def print_evaluation_report(results: pd.DataFrame) -> None:
     print(f"  Level Accuracy:                {level_accuracy:.1%}")
 
     # Per-species
-    print(f"\nPer-species breakdown:")
-    print(f"  {'Species':<12} {'MAE':>8} {'RMSE':>8} {'MedAE':>8} {'LvlAcc':>8} {'N':>6} {'ActMax':>8}")
-    print(f"  {'-'*12} {'-'*8} {'-'*8} {'-'*8} {'-'*8} {'-'*6} {'-'*8}")
+    print("\nPer-species breakdown:")
+    hdr = "  {:<12} {:>8} {:>8} {:>8} {:>8} {:>6} {:>8}"  # pylint: disable=consider-using-f-string
+    print(hdr.format("Species", "MAE", "RMSE", "MedAE", "LvlAcc", "N", "ActMax"))
+    sep = "  {} {} {} {} {} {} {}"  # pylint: disable=consider-using-f-string
+    print(sep.format("-" * 12, "-" * 8, "-" * 8, "-" * 8, "-" * 8, "-" * 6, "-" * 8))
 
     for species in sorted(results["species"].unique()):
         sp = results[results["species"] == species]
@@ -165,11 +166,12 @@ def print_evaluation_report(results: pd.DataFrame) -> None:
         sp_median = sp["abs_error"].median()
         sp_level = (sp["level_actual"] == sp["level_predicted"]).mean()
         sp_max = sp["actual"].max()
-        print(f"  {species:<12} {sp_mae:>8.1f} {sp_rmse:>8.1f} {sp_median:>8.1f} {sp_level:>7.0%} {len(sp):>6} {sp_max:>8.1f}")
+        print(f"  {species:<12} {sp_mae:>8.1f} {sp_rmse:>8.1f} {sp_median:>8.1f}"
+              f" {sp_level:>7.0%} {len(sp):>6} {sp_max:>8.1f}")
 
     # Per-fold breakdown
     if "fold" in results.columns and results["fold"].nunique() > 1:
-        print(f"\nPer-fold breakdown:")
+        print("\nPer-fold breakdown:")
         for fold in sorted(results["fold"].unique()):
             fr = results[results["fold"] == fold]
             f_mae = fr["abs_error"].mean()
@@ -177,7 +179,7 @@ def print_evaluation_report(results: pd.DataFrame) -> None:
             print(f"  Fold {fold}: MAE={f_mae:.1f}, RMSE={f_rmse:.1f}, N={len(fr)}")
 
     # Worst predictions (largest absolute errors)
-    print(f"\nWorst 10 predictions:")
+    print("\nWorst 10 predictions:")
     worst = results.nlargest(10, "abs_error")
     for _, r in worst.iterrows():
         dt_str = pd.Timestamp(r['date']).strftime('%Y-%m-%d %H:%M')
@@ -186,7 +188,7 @@ def print_evaluation_report(results: pd.DataFrame) -> None:
               f"error={r['error']:>+8.1f}")
 
     # Bias analysis: does the model systematically under- or over-predict?
-    print(f"\nBias analysis (mean error, negative = under-prediction):")
+    print("\nBias analysis (mean error, negative = under-prediction):")
     for species in sorted(results["species"].unique()):
         sp = results[results["species"] == species]
         bias = sp["error"].mean()
@@ -205,7 +207,7 @@ def print_evaluation_report(results: pd.DataFrame) -> None:
         print(f"  Level accuracy: {hp_level:.0%}")
 
     # --- In-season evaluation (excludes dormant months) ---
-    print(f"\nIn-season evaluation (active months only):")
+    print("\nIn-season evaluation (active months only):")
     in_season_mask = results.apply(
         lambda r: is_season_active(r["species"], pd.Timestamp(r["date"]).month), axis=1
     )
@@ -217,7 +219,8 @@ def print_evaluation_report(results: pd.DataFrame) -> None:
         print(f"  {len(season_results)} predictions in season")
         print(f"  MAE: {s_mae:.1f}  RMSE: {s_rmse:.1f}  Level accuracy: {s_level:.1%}")
 
-        print(f"\n  {'Species':<12} {'MAE':>8} {'RMSE':>8} {'LvlAcc':>8} {'N':>6}")
+        hdr = "\n  {:<12} {:>8} {:>8} {:>8} {:>6}"  # pylint: disable=consider-using-f-string
+        print(hdr.format("Species", "MAE", "RMSE", "LvlAcc", "N"))
         print(f"  {'-'*12} {'-'*8} {'-'*8} {'-'*8} {'-'*6}")
         for species in sorted(season_results["species"].unique()):
             sp = season_results[season_results["species"] == species]
@@ -337,7 +340,7 @@ def _compare_overlapping(
     elif dwd_right > our_right:
         print(f"    → DWD forecast is better by {(dwd_right - our_right)/total:+.1%}")
     else:
-        print(f"    → Tied")
+        print("    → Tied")
 
 
 def _summarise_dwd(dwd_df: pd.DataFrame) -> None:
