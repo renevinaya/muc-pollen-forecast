@@ -4,7 +4,8 @@ to historical CSV.
 
 Run daily to accumulate training data. The collector merges pollen data from the
 LGL Bayern API with weather data from Open-Meteo's historical archive and NDVI
-from MODIS, producing one row per (date, species) with all features attached.
+from MODIS, producing one row per (datetime, species) at 3-hour resolution
+with all features attached.
 """
 
 from datetime import date, timedelta
@@ -22,7 +23,7 @@ HISTORY_FILE = DATA_DIR / "history.csv"
 
 
 def _add_calendar_features(df: pd.DataFrame) -> pd.DataFrame:
-    """Add cyclical calendar features from the date index."""
+    """Add cyclical calendar and time-of-day features from the datetime index."""
     import numpy as np
 
     df = df.copy()
@@ -31,6 +32,11 @@ def _add_calendar_features(df: pd.DataFrame) -> pd.DataFrame:
     df["day_of_year_sin"] = np.sin(2 * np.pi * doy / 365.25)
     df["day_of_year_cos"] = np.cos(2 * np.pi * doy / 365.25)
     df["month"] = df.index.month
+    # Time-of-day features (3h window)
+    hour = df.index.hour
+    df["hour_of_day"] = hour
+    df["hour_sin"] = np.sin(2 * np.pi * hour / 24)
+    df["hour_cos"] = np.cos(2 * np.pi * hour / 24)
     return df
 
 
@@ -38,20 +44,21 @@ def collect(days: int = 14) -> pd.DataFrame:
     """
     Collect recent pollen + weather data and return a tidy DataFrame.
 
-    One row per (date, species) — ready to append to the history file.
+    One row per (datetime, species) at 3-hour resolution — ready to append
+    to the history file.
     """
     print(f"Collecting last {days} days of data...")
 
-    # 1. Pollen data
+    # 1. Pollen data (3h resolution)
     pollen_raw = fetch_pollen(days=days)
     if pollen_raw.empty:
         print("No pollen data available.")
         return pd.DataFrame()
 
     pollen = pivot_pollen(pollen_raw)
-    print(f"  Pollen: {len(pollen)} days, species: {list(pollen.columns)}")
+    print(f"  Pollen: {len(pollen)} windows, species: {list(pollen.columns)}")
 
-    # 2. Weather data: use archive for older dates, forecast API for recent days
+    # 2. Weather data (3h resolution): use archive for older dates, forecast API for recent
     archive_end = date.today() - timedelta(days=5)
     archive_start = pollen.index.min().date() - timedelta(days=1)
 
@@ -61,16 +68,16 @@ def collect(days: int = 14) -> pd.DataFrame:
     if archive_start <= archive_end:
         archive_weather = fetch_historical_weather(archive_start, archive_end)
         weather_parts.append(archive_weather)
-        print(f"  Weather archive: {len(archive_weather)} days")
+        print(f"  Weather archive: {len(archive_weather)} windows")
 
     # 2b. Forecast API for the last ~5 days + today (fills the gap)
     recent_weather = fetch_weather_forecast(days=7)
-    # Only keep past/today dates from the forecast (it also includes future days)
-    today = pd.Timestamp(date.today())
-    recent_weather = recent_weather[recent_weather.index <= today]
+    # Only keep past/today windows from the forecast
+    now = pd.Timestamp.now().floor("3h")
+    recent_weather = recent_weather[recent_weather.index <= now]
     if not recent_weather.empty:
         weather_parts.append(recent_weather)
-        print(f"  Weather recent (from forecast API): {len(recent_weather)} days")
+        print(f"  Weather recent (from forecast API): {len(recent_weather)} windows")
 
     if not weather_parts:
         print("  No weather data available.")
@@ -84,18 +91,19 @@ def collect(days: int = 14) -> pd.DataFrame:
     # 3. Add calendar features to weather
     weather = _add_calendar_features(weather)
 
-    # 4. Join: only keep dates where we have both pollen AND weather
-    common_dates = pollen.index.intersection(weather.index)
-    if common_dates.empty:
-        print("  No overlapping dates between pollen and weather data.")
+    # 4. Join: only keep windows where we have both pollen AND weather
+    common_dts = pollen.index.intersection(weather.index)
+    if common_dts.empty:
+        print("  No overlapping windows between pollen and weather data.")
         return pd.DataFrame()
 
-    pollen = pollen.loc[common_dates]
-    weather = weather.loc[common_dates]
+    pollen = pollen.loc[common_dts]
+    weather = weather.loc[common_dts]
 
-    # 5. NDVI features (per date, not per species)
+    # 5. NDVI features (per date, not per window — same for all windows of a day)
     try:
-        ndvi_df = ndvi_features(pd.DatetimeIndex(common_dates))
+        unique_dates = pd.DatetimeIndex(common_dts.normalize().unique())
+        ndvi_df = ndvi_features(unique_dates)
         if not ndvi_df.empty:
             print(f"  NDVI: {len(ndvi_df)} days")
         else:
@@ -106,17 +114,18 @@ def collect(days: int = 14) -> pd.DataFrame:
 
     # 6. Melt pollen to long format and merge weather + NDVI
     rows: list[dict] = []
-    for dt in common_dates:
+    for dt in common_dts:
         w = weather.loc[dt]
+        day = dt.normalize()
         for species in ALL_SPECIES:
             pollen_value = pollen.loc[dt].get(species, 0.0) if species in pollen.columns else 0.0
             row = {"date": dt, "species": species, "value": float(pollen_value)}
             for col in weather.columns:
                 row[col] = float(w[col])
-            # Add NDVI columns if available
-            if not ndvi_df.empty and dt in ndvi_df.index:
+            # Add NDVI columns (daily resolution, shared across windows)
+            if not ndvi_df.empty and day in ndvi_df.index:
                 for col in ndvi_df.columns:
-                    row[col] = float(ndvi_df.loc[dt, col])
+                    row[col] = float(ndvi_df.loc[day, col])
             else:
                 row["ndvi"] = 0.0
                 row["evi"] = 0.0

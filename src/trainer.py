@@ -53,16 +53,18 @@ def inv_log_transform(values: np.ndarray) -> np.ndarray:
 def _add_lag_features(df: pd.DataFrame) -> pd.DataFrame:
     """
     Add lag and rolling features for a single species' time series.
-    Lag features are computed in log-space for consistency with the target.
+    Lag features are computed in log-space. Each row is a 3h window.
     Expects df sorted by date with a 'value' column.
     """
     df = df.copy().sort_values("date")
     log_val = log_transform(df["value"])
-    df["pollen_lag_1"] = pd.Series(log_val, index=df.index).shift(1)
-    df["pollen_lag_2"] = pd.Series(log_val, index=df.index).shift(2)
-    df["pollen_lag_3"] = pd.Series(log_val, index=df.index).shift(3)
-    df["pollen_rolling_3"] = pd.Series(log_val, index=df.index).rolling(3, min_periods=1).mean().shift(1)
-    df["pollen_rolling_7"] = pd.Series(log_val, index=df.index).rolling(7, min_periods=1).mean().shift(1)
+    s = pd.Series(log_val, index=df.index)
+    df["pollen_lag_1"] = s.shift(1)           # previous 3h window
+    df["pollen_lag_2"] = s.shift(2)           # 6h ago
+    df["pollen_lag_3"] = s.shift(3)           # 9h ago
+    df["pollen_lag_8"] = s.shift(8)           # same time yesterday (24h)
+    df["pollen_rolling_8"] = s.rolling(8, min_periods=1).mean().shift(1)    # 24h mean
+    df["pollen_rolling_56"] = s.rolling(56, min_periods=1).mean().shift(1)  # 7-day mean
     return df
 
 
@@ -110,8 +112,11 @@ def _add_weather_derived_features(df: pd.DataFrame) -> pd.DataFrame:
     """
     Compute weather-derived features from the raw weather columns already in *df*.
 
+    Operates on 3-hour window data. Rolling windows are sized in number of
+    3h windows: 24 windows = 3 days, 56 windows = 7 days.
+
     Features added:
-    - GDD (Growing Degree Days) — cumulative thermal time from Jan 1
+    - GDD (Growing Degree Days) — cumulative thermal time from Jan 1 (daily)
     - 3 / 7-day rolling means for temperature, sunshine, precipitation
     - Day-over-day and 3-day temperature deltas (warming trend)
     - Warm × sunny interaction (peak dispersal signal)
@@ -119,28 +124,35 @@ def _add_weather_derived_features(df: pd.DataFrame) -> pd.DataFrame:
     """
     df = df.copy().sort_values("date")
 
-    # De-duplicate so rolling computations are per-date
+    # De-duplicate so rolling computations are per-window
     temp_mean = df.groupby("date")["temperature_mean"].first()
     sunshine = df.groupby("date")["sunshine_duration"].first()
     precip = df.groupby("date")["precipitation_sum"].first()
     humidity = df.groupby("date")["humidity_mean"].first()
 
-    # --- GDD (cumsum of max(0, T_mean - T_base), reset each Jan 1) ---
-    daily_gdd = (temp_mean - GDD_T_BASE).clip(lower=0)
-    years = pd.to_datetime(temp_mean.index).year
-    gdd = daily_gdd.groupby(years).cumsum()
+    # --- GDD (cumsum of daily max(0, T_mean - T_base), reset each Jan 1) ---
+    # Compute daily average temperature, then cumulative GDD, then map to windows
+    window_dates = pd.to_datetime(temp_mean.index).normalize()
+    daily_temp = pd.Series(temp_mean.values, index=window_dates).groupby(level=0).mean()
+    daily_gdd_contrib = (daily_temp - GDD_T_BASE).clip(lower=0)
+    gdd_daily = daily_gdd_contrib.groupby(daily_temp.index.year).cumsum()
+    date_to_gdd = gdd_daily.to_dict()
+    gdd = pd.Series(
+        [date_to_gdd.get(d, 0.0) for d in window_dates],
+        index=temp_mean.index,
+    )
 
-    # --- Rolling weather ---
-    temp_r3 = temp_mean.rolling(3, min_periods=1).mean()
-    temp_r7 = temp_mean.rolling(7, min_periods=1).mean()
-    sun_r3 = sunshine.rolling(3, min_periods=1).mean()
-    sun_r7 = sunshine.rolling(7, min_periods=1).mean()
-    rain_r3 = precip.rolling(3, min_periods=1).sum()
-    rain_r7 = precip.rolling(7, min_periods=1).sum()
+    # --- Rolling weather (3 days = 24 windows, 7 days = 56 windows) ---
+    temp_r3 = temp_mean.rolling(24, min_periods=1).mean()
+    temp_r7 = temp_mean.rolling(56, min_periods=1).mean()
+    sun_r3 = sunshine.rolling(24, min_periods=1).mean()
+    sun_r7 = sunshine.rolling(56, min_periods=1).mean()
+    rain_r3 = precip.rolling(24, min_periods=1).sum()
+    rain_r7 = precip.rolling(56, min_periods=1).sum()
 
-    # --- Temperature deltas ---
-    td1 = temp_mean.diff(1)
-    td3 = temp_mean.diff(3)
+    # --- Temperature deltas (1 day = 8 windows, 3 days = 24 windows) ---
+    td1 = temp_mean.diff(8)
+    td3 = temp_mean.diff(24)
 
     # --- Interactions ---
     temp_x_sun = temp_mean * sunshine / 3600.0  # normalize sunshine to hours

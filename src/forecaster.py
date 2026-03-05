@@ -1,15 +1,17 @@
 """
-Forecaster: generates a multi-day pollen forecast using trained two-stage models.
+Forecaster: generates a multi-day pollen forecast at 3-hour resolution
+using trained two-stage models.
 
-Loads trained XGBoost models (classifier + regressor), fetches weather forecast
-from Open-Meteo, and predicts pollen counts per species per day.
-Predictions are made in log-space and converted back.  For lag features it uses
-the most recent historical data and then autoregressively feeds (log-space)
-predictions into subsequent days.
+Loads trained XGBoost models (classifier + regressor), fetches hourly weather
+forecast from Open-Meteo (aggregated to 3h windows), and predicts pollen counts
+per species per 3h window.  Predictions are made in log-space and converted back.
+For lag features it uses the most recent historical data and then autoregressively
+feeds (log-space) predictions into subsequent windows.
 """
 
 from __future__ import annotations
 
+from collections import OrderedDict
 from datetime import datetime
 
 import numpy as np
@@ -28,6 +30,7 @@ from .types import (
     is_season_active,
     value_to_level,
     SpeciesForecast,
+    WindowForecast,
     DayForecast,
     ForecastOutput,
 )
@@ -41,20 +44,25 @@ from .trainer import (
 )
 
 
-def _calendar_features_for_date(dt: pd.Timestamp) -> dict[str, float]:
-    """Compute calendar features for a single date."""
+def _calendar_features_for_datetime(dt: pd.Timestamp) -> dict[str, float]:
+    """Compute calendar and time-of-day features for a single datetime."""
     doy = dt.day_of_year
+    hour = dt.hour
     return {
         "day_of_year": float(doy),
         "day_of_year_sin": float(np.sin(2 * np.pi * doy / 365.25)),
         "day_of_year_cos": float(np.cos(2 * np.pi * doy / 365.25)),
         "month": float(dt.month),
+        "hour_of_day": float(hour),
+        "hour_sin": float(np.sin(2 * np.pi * hour / 24)),
+        "hour_cos": float(np.cos(2 * np.pi * hour / 24)),
     }
 
 
-def _get_recent_pollen_log(history: pd.DataFrame, species: str, n: int = 7) -> list[float]:
+def _get_recent_pollen_log(history: pd.DataFrame, species: str, n: int = 56) -> list[float]:
     """
     Get the last n pollen values for a species from history, in log-space.
+    Each value is a 3h window measurement.
     These will be used directly as lag features (model trains on log1p values).
     """
     sp = history[history["species"] == species].sort_values("date")
@@ -78,7 +86,7 @@ def generate_forecast(
     models: dict[str, TwoStageModel] | None = None,
 ) -> ForecastOutput:
     """
-    Generate a multi-day pollen forecast.
+    Generate a multi-day pollen forecast at 3-hour window resolution.
 
     All internal lag/prediction values are in log-space (log1p).
     Final output values are converted back to original pollen-count scale.
@@ -91,14 +99,12 @@ def generate_forecast(
         models = load_models()
         print(f"Loaded {len(models)} species models")
 
-    # Fetch weather forecast
+    # Fetch weather forecast (3h resolution)
     weather = fetch_weather_forecast(FORECAST_DAYS)
-    print(f"Weather forecast: {len(weather)} days")
+    print(f"Weather forecast: {len(weather)} windows ({FORECAST_DAYS} days)")
 
     # --- Pre-compute weather-derived features (GDD, rolling, etc.) ---
     # We need recent historical weather to compute rolling features correctly.
-    # Extract unique-date weather rows from history, append forecast weather,
-    # then compute derived features on the combined series.
     hist_weather = (
         history.groupby("date")[WEATHER_FEATURES].first()
         if not history.empty
@@ -112,34 +118,44 @@ def generate_forecast(
     combined_weather["species"] = "__dummy__"
     combined_weather["value"] = 0.0
     combined_weather = _add_weather_derived_features(combined_weather)
-    # Index by date for quick lookup
+    # Index by datetime for quick lookup
     weather_derived = combined_weather.set_index("date")
 
-    # --- Pre-compute NDVI features for forecast dates ---
+    # --- Pre-compute NDVI features for forecast dates (daily resolution) ---
     try:
         from .ndvi import ndvi_features
-        forecast_dates = weather.index
+        forecast_dates = pd.DatetimeIndex(weather.index.normalize().unique())
         ndvi_df = ndvi_features(forecast_dates)
     except Exception as exc:
         print(f"  NDVI fetch failed ({exc}), using defaults")
         ndvi_df = pd.DataFrame(
             {"ndvi": 0.0, "evi": 0.0, "ndvi_delta": 0.0},
-            index=weather.index,
+            index=pd.DatetimeIndex(weather.index.normalize().unique()),
         )
 
     # Build recent pollen history per species in LOG-SPACE (for lag features)
+    # Keep 56 windows (7 days) for rolling_56 computation
     recent_log: dict[str, list[float]] = {}
     for species in ALL_SPECIES:
-        recent_log[species] = _get_recent_pollen_log(history, species, n=7)
+        recent_log[species] = _get_recent_pollen_log(history, species, n=56)
 
-    forecast_days: list[DayForecast] = []
+    # Iterate over all 3h weather windows
+    window_results: list[tuple[str, WindowForecast]] = []
+    prev_date_str: str | None = None
+    day_idx = -1
 
-    for day_idx, (dt, weather_row) in enumerate(weather.iterrows()):
+    for dt, weather_row in weather.iterrows():
         dt = pd.Timestamp(dt)
-        day_species: list[SpeciesForecast] = []
+        date_str = dt.strftime("%Y-%m-%d")
 
-        cal = _calendar_features_for_date(dt)
+        # Track day index for confidence scoring
+        if date_str != prev_date_str:
+            day_idx += 1
+            prev_date_str = date_str
+
+        cal = _calendar_features_for_datetime(dt)
         month = dt.month
+        window_species: list[SpeciesForecast] = []
 
         for species in ALL_SPECIES:
             log_vals = recent_log[species]
@@ -154,7 +170,7 @@ def generate_forecast(
                 for f in WEATHER_FEATURES:
                     features[f] = float(weather_row.get(f, 0) or 0)
 
-                # Calendar features
+                # Calendar + time-of-day features
                 features.update(cal)
 
                 # Season-active feature
@@ -163,16 +179,22 @@ def generate_forecast(
                 # Weather-derived features (GDD, rolling, interaction)
                 if dt in weather_derived.index:
                     wd_row = weather_derived.loc[dt]
+                    if isinstance(wd_row, pd.DataFrame):
+                        wd_row = wd_row.iloc[0]
                     for f in WEATHER_DERIVED_FEATURES:
                         features[f] = float(wd_row.get(f, 0) or 0)
                 else:
                     for f in WEATHER_DERIVED_FEATURES:
                         features[f] = 0.0
 
-                # NDVI features
-                if dt in ndvi_df.index:
+                # NDVI features (daily resolution, lookup by date)
+                day = dt.normalize()
+                if day in ndvi_df.index:
+                    ndvi_row = ndvi_df.loc[day]
+                    if isinstance(ndvi_row, pd.DataFrame):
+                        ndvi_row = ndvi_row.iloc[0]
                     for f in NDVI_FEATURES:
-                        features[f] = float(ndvi_df.loc[dt].get(f, 0) or 0)
+                        features[f] = float(ndvi_row.get(f, 0) or 0)
                 else:
                     for f in NDVI_FEATURES:
                         features[f] = 0.0
@@ -191,12 +213,13 @@ def generate_forecast(
                 )
                 features["onset_anomaly"] = 0.0
 
-                # Lag features in log-space (autoregressive)
+                # Lag features in log-space (autoregressive, 3h windows)
                 features["pollen_lag_1"] = log_vals[-1]
                 features["pollen_lag_2"] = log_vals[-2]
                 features["pollen_lag_3"] = log_vals[-3]
-                features["pollen_rolling_3"] = float(np.mean(log_vals[-3:]))
-                features["pollen_rolling_7"] = float(np.mean(log_vals[-7:]))
+                features["pollen_lag_8"] = log_vals[-8] if len(log_vals) >= 8 else log_vals[0]
+                features["pollen_rolling_8"] = float(np.mean(log_vals[-8:]))
+                features["pollen_rolling_56"] = float(np.mean(log_vals[-56:]))
 
                 X = pd.DataFrame([features])[FEATURE_COLS]
                 pred_log = float(models[species].predict(X)[0])
@@ -212,7 +235,7 @@ def generate_forecast(
                 prediction = 0.0
                 pred_log = 0.0
 
-            day_species.append(
+            window_species.append(
                 SpeciesForecast(
                     name=species,
                     level=value_to_level(prediction, species).value,
@@ -221,16 +244,30 @@ def generate_forecast(
                 )
             )
 
-            # Autoregressive: feed log-space prediction back for next day
+            # Autoregressive: feed log-space prediction back for next window
             recent_log[species].append(pred_log)
 
         # Sort by value descending, filter out zeros
-        day_species.sort(key=lambda s: s.value, reverse=True)
-        day_species = [s for s in day_species if s.value > 0.5]
+        window_species.sort(key=lambda s: s.value, reverse=True)
+        window_species = [s for s in window_species if s.value > 0.5]
 
-        forecast_days.append(
-            DayForecast(date=dt.strftime("%Y-%m-%d"), species=day_species)
-        )
+        from_time = dt.strftime("%H:%M")
+        to_time = (dt + pd.Timedelta(hours=3)).strftime("%H:%M")
+        window_results.append((date_str, WindowForecast(
+            from_time=from_time,
+            to_time=to_time,
+            species=window_species,
+        )))
+
+    # Group windows into days
+    days_dict: OrderedDict[str, list[WindowForecast]] = OrderedDict()
+    for date_str, wf in window_results:
+        days_dict.setdefault(date_str, []).append(wf)
+
+    forecast_days = [
+        DayForecast(date=date_str, windows=windows)
+        for date_str, windows in days_dict.items()
+    ]
 
     return ForecastOutput(
         generated=datetime.utcnow().isoformat() + "Z",

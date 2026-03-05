@@ -44,6 +44,12 @@ CALENDAR_FEATURES = [
     "month",
 ]
 
+WINDOW_FEATURES = [
+    "hour_of_day",
+    "hour_sin",
+    "hour_cos",
+]
+
 SEASON_FEATURE = [
     "season_active",  # 1.0 if species is in its pollen season, 0.0 otherwise
 ]
@@ -64,11 +70,12 @@ WEATHER_DERIVED_FEATURES = [
 ]
 
 LAG_FEATURES = [
-    "pollen_lag_1",  # yesterday (log-transformed)
-    "pollen_lag_2",
-    "pollen_lag_3",
-    "pollen_rolling_3",  # 3-day rolling mean (log-transformed)
-    "pollen_rolling_7",  # 7-day rolling mean (log-transformed)
+    "pollen_lag_1",       # previous 3h window (log-transformed)
+    "pollen_lag_2",       # 2 windows ago (6h)
+    "pollen_lag_3",       # 3 windows ago (9h)
+    "pollen_lag_8",       # same time yesterday (24h)
+    "pollen_rolling_8",   # 24h rolling mean (log-transformed)
+    "pollen_rolling_56",  # 7-day rolling mean (log-transformed)
 ]
 
 # NDVI / vegetation features (from MODIS satellite data)
@@ -85,10 +92,12 @@ PHENOLOGY_FEATURES = [
 ]
 
 FORECAST_DAYS = 5
+WINDOWS_PER_DAY = 8  # 3-hour windows: 00, 03, 06, 09, 12, 15, 18, 21
 
 FEATURE_COLS = (
     WEATHER_FEATURES
     + CALENDAR_FEATURES
+    + WINDOW_FEATURES
     + SEASON_FEATURE
     + WEATHER_DERIVED_FEATURES
     + NDVI_FEATURES
@@ -192,14 +201,28 @@ class SpeciesForecast:
 
 
 @dataclass
-class DayForecast:
-    date: str
+class WindowForecast:
+    from_time: str
+    to_time: str
     species: list[SpeciesForecast] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "date": self.date,
+            "from": self.from_time,
+            "to": self.to_time,
             "species": [s.to_dict() for s in self.species],
+        }
+
+
+@dataclass
+class DayForecast:
+    date: str
+    windows: list[WindowForecast] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "date": self.date,
+            "windows": [w.to_dict() for w in self.windows],
         }
 
 

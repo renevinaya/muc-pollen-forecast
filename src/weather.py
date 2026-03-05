@@ -1,4 +1,8 @@
-"""Client for the Open-Meteo weather API (free, no API key)."""
+"""Client for the Open-Meteo weather API (free, no API key).
+
+Fetches hourly data and aggregates to 3-hour windows to match
+the LGL Bayern pollen measurement intervals.
+"""
 
 from datetime import date, timedelta
 
@@ -10,74 +14,82 @@ from .types import LAT, LON
 FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
 HISTORICAL_URL = "https://archive-api.open-meteo.com/v1/archive"
 
-DAILY_PARAMS = [
-    "temperature_2m_max",
-    "temperature_2m_min",
-    "temperature_2m_mean",
-    "precipitation_sum",
-    "wind_speed_10m_max",
-    "relative_humidity_2m_mean",
+HOURLY_PARAMS = [
+    "temperature_2m",
+    "precipitation",
+    "wind_speed_10m",
+    "relative_humidity_2m",
     "sunshine_duration",
-    "shortwave_radiation_sum",
+    "shortwave_radiation",
 ]
 
-# Mapping from Open-Meteo field names to our canonical feature names
-FIELD_MAP = {
-    "temperature_2m_max": "temperature_max",
-    "temperature_2m_min": "temperature_min",
-    "temperature_2m_mean": "temperature_mean",
-    "precipitation_sum": "precipitation_sum",
-    "wind_speed_10m_max": "wind_speed_max",
-    "relative_humidity_2m_mean": "humidity_mean",
-    "sunshine_duration": "sunshine_duration",
-    "shortwave_radiation_sum": "shortwave_radiation_sum",
-}
 
+def _parse_hourly_response(data: dict) -> pd.DataFrame:
+    """Parse an Open-Meteo hourly response and aggregate to 3-hour windows.
 
-def _parse_daily_response(data: dict) -> pd.DataFrame:
-    """Parse an Open-Meteo daily response into a DataFrame."""
-    daily = data["daily"]
-    df = pd.DataFrame({"date": pd.to_datetime(daily["time"])})
-    for api_field, our_field in FIELD_MAP.items():
-        df[our_field] = daily.get(api_field, [None] * len(daily["time"]))
-    df = df.set_index("date")
-    return df
+    Returns a DataFrame indexed by window-start datetime (naive, local time)
+    with the same canonical feature columns as before:
+    temperature_max, temperature_min, temperature_mean, precipitation_sum,
+    wind_speed_max, humidity_mean, sunshine_duration, shortwave_radiation_sum.
+    """
+    hourly = data["hourly"]
+    times = pd.to_datetime(hourly["time"])
+
+    df = pd.DataFrame({"datetime": times})
+    for param in HOURLY_PARAMS:
+        df[param] = hourly.get(param, [None] * len(times))
+
+    # Floor to 3h window boundaries
+    df["window"] = df["datetime"].dt.floor("3h")
+    grouped = df.groupby("window")
+
+    result = pd.DataFrame(index=sorted(grouped.groups.keys()))
+    result["temperature_max"] = grouped["temperature_2m"].max()
+    result["temperature_min"] = grouped["temperature_2m"].min()
+    result["temperature_mean"] = grouped["temperature_2m"].mean()
+    result["precipitation_sum"] = grouped["precipitation"].sum()
+    result["wind_speed_max"] = grouped["wind_speed_10m"].max()
+    result["humidity_mean"] = grouped["relative_humidity_2m"].mean()
+    result["sunshine_duration"] = grouped["sunshine_duration"].sum()
+    result["shortwave_radiation_sum"] = grouped["shortwave_radiation"].sum()
+    result.index.name = None
+    return result
 
 
 def fetch_weather_forecast(days: int = 5) -> pd.DataFrame:
     """
-    Fetch weather forecast from Open-Meteo.
+    Fetch weather forecast from Open-Meteo at 3-hour resolution.
 
-    Returns a DataFrame indexed by date with weather feature columns.
+    Returns a DataFrame indexed by window-start datetime with weather feature columns.
     """
     response = httpx.get(
         FORECAST_URL,
         params={
             "latitude": LAT,
             "longitude": LON,
-            "daily": ",".join(DAILY_PARAMS),
+            "hourly": ",".join(HOURLY_PARAMS),
             "timezone": "Europe/Berlin",
             "forecast_days": days,
         },
         timeout=30,
     )
     response.raise_for_status()
-    return _parse_daily_response(response.json())
+    return _parse_hourly_response(response.json())
 
 
 def fetch_historical_weather(start: date, end: date) -> pd.DataFrame:
     """
-    Fetch historical weather data from Open-Meteo archive.
+    Fetch historical weather data from Open-Meteo archive at 3-hour resolution.
 
     The archive API has data up to ~5 days ago.
-    Returns a DataFrame indexed by date with weather feature columns.
+    Returns a DataFrame indexed by window-start datetime with weather feature columns.
     """
     response = httpx.get(
         HISTORICAL_URL,
         params={
             "latitude": LAT,
             "longitude": LON,
-            "daily": ",".join(DAILY_PARAMS),
+            "hourly": ",".join(HOURLY_PARAMS),
             "timezone": "Europe/Berlin",
             "start_date": start.isoformat(),
             "end_date": end.isoformat(),
@@ -85,4 +97,4 @@ def fetch_historical_weather(start: date, end: date) -> pd.DataFrame:
         timeout=60,
     )
     response.raise_for_status()
-    return _parse_daily_response(response.json())
+    return _parse_hourly_response(response.json())

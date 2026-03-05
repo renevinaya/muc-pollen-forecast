@@ -43,9 +43,11 @@ def temporal_split_evaluate(
         level_actual, level_predicted
     """
     dates = sorted(history["date"].unique())
-    total_days = len(dates)
+    total_windows = len(dates)
 
-    min_train = max(60, total_days // 5)  # need a minimum training set
+    # Count in unique calendar days for minimum training threshold
+    unique_days = len(set(pd.to_datetime(d).date() for d in dates))
+    min_train_days = max(60, unique_days // 5)
 
     # Build monthly test blocks
     all_dates_ts = pd.to_datetime(dates)
@@ -58,15 +60,18 @@ def temporal_split_evaluate(
         month_dates = [d for d in dates if pd.Timestamp(d).to_period("M") == period]
         # Everything before this month is training
         train_dates = [d for d in dates if d < month_dates[0]]
-        if len(train_dates) < min_train:
+        train_days = len(set(pd.to_datetime(d).date() for d in train_dates))
+        if train_days < min_train_days:
             continue
         fold_num += 1
         test_dates = month_dates
+        test_days = len(set(pd.to_datetime(d).date() for d in test_dates))
 
         train_data = history[history["date"].isin(train_dates)]
         test_data = history[history["date"].isin(test_dates)]
 
-        print(f"  Fold {fold_num}: train={len(train_dates)}d, test={len(test_dates)}d "
+        print(f"  Fold {fold_num}: train={train_days}d ({len(train_dates)} windows), "
+              f"test={test_days}d ({len(test_dates)} windows) "
               f"({pd.Timestamp(test_dates[0]).strftime('%Y-%m-%d')} to "
               f"{pd.Timestamp(test_dates[-1]).strftime('%Y-%m-%d')})")
 
@@ -175,7 +180,8 @@ def print_evaluation_report(results: pd.DataFrame) -> None:
     print(f"\nWorst 10 predictions:")
     worst = results.nlargest(10, "abs_error")
     for _, r in worst.iterrows():
-        print(f"  {pd.Timestamp(r['date']).strftime('%Y-%m-%d')} {r['species']:<12} "
+        dt_str = pd.Timestamp(r['date']).strftime('%Y-%m-%d %H:%M')
+        print(f"  {dt_str} {r['species']:<12} "
               f"actual={r['actual']:>7.1f}  predicted={r['predicted']:>7.1f}  "
               f"error={r['error']:>+8.1f}")
 

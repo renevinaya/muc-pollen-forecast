@@ -15,8 +15,7 @@ env/
 models/*.joblib
 
 # Local data (backed up to S3)
-data/*.csv
-data/*.json
+data/**
 
 # IDE
 .idea/

@@ -16,6 +16,7 @@ import json
 import sys
 from datetime import date, timedelta
 from pathlib import Path
+from typing import Any
 
 from .collector import collect, update_history, HISTORY_FILE, DATA_DIR
 from .trainer import train_all, load_models
@@ -71,11 +72,17 @@ def cmd_forecast(history: pd.DataFrame | None = None) -> None:
 
     forecast = generate_forecast(history)
 
-    # Print summary
+    # Print summary (show daily peak per species across windows)
     print("\nForecast summary:")
     for day in forecast.forecast:
-        top = ", ".join(f"{s.name}({s.level}:{s.value:.0f})" for s in day.species[:3])
-        print(f"  {day.date}: {top or 'no pollen'}")
+        all_species: dict[str, Any] = {}
+        for w in day.windows:
+            for s in w.species:
+                if s.name not in all_species or s.value > all_species[s.name].value:
+                    all_species[s.name] = s
+        top = sorted(all_species.values(), key=lambda s: s.value, reverse=True)[:3]
+        top_str = ", ".join(f"{s.name}({s.level}:{s.value:.0f})" for s in top)
+        print(f"  {day.date} ({len(day.windows)} windows): {top_str or 'no pollen'}")
 
     # Upload to S3 if configured
     import os
@@ -99,27 +106,41 @@ def cmd_forecast(history: pd.DataFrame | None = None) -> None:
 def cmd_backfill(days: int = 365) -> pd.DataFrame:
     """
     Backfill historical pollen data by fetching from the LGL API in chunks,
-    combined with historical weather from Open-Meteo's archive.
-    
+    combined with historical weather from Open-Meteo's archive at 3h resolution.
+
     Note: The LGL Bayern API may only have limited history available.
     Open-Meteo historical archive goes back to 1940.
+
+    Important: Old daily-resolution history.csv data is incompatible with
+    the 3h model. Delete data/history.csv before running backfill.
     """
     import numpy as np
 
     print("=" * 60)
-    print(f"BACKFILL: Fetching up to {days} days of history")
+    print(f"BACKFILL: Fetching up to {days} days of history (3h resolution)")
     print("=" * 60)
 
-    # Fetch pollen data (the API may limit how far back we can go)
+    if HISTORY_FILE.exists():
+        old = pd.read_csv(HISTORY_FILE, parse_dates=["date"], nrows=100)
+        if not old.empty:
+            hours = pd.to_datetime(old["date"]).dt.hour.unique()
+            if len(hours) == 1 and hours[0] == 0:
+                print("WARNING: Existing history.csv appears to contain old daily-resolution data.")
+                print("  The 3h model requires 3h-resolution data.")
+                print("  Consider deleting data/history.csv before backfilling.")
+
+    # Fetch pollen data at 3h resolution
     pollen_raw = fetch_pollen(days=days)
     if pollen_raw.empty:
         print("No pollen data available for backfill.")
         return pd.DataFrame()
 
     pollen = pivot_pollen(pollen_raw)
-    print(f"Pollen data: {len(pollen)} days ({pollen.index.min()} to {pollen.index.max()})")
+    n_days = len(pollen.index.normalize().unique())
+    print(f"Pollen data: {len(pollen)} windows ({n_days} days, "
+          f"{pollen.index.min()} to {pollen.index.max()})")
 
-    # Fetch matching weather data: archive + recent forecast API to cover gap
+    # Fetch matching weather data at 3h resolution
     start = pollen.index.min().date() - timedelta(days=1)
     archive_end = min(pollen.index.max().date(), date.today() - timedelta(days=5))
 
@@ -131,11 +152,11 @@ def cmd_backfill(days: int = 365) -> pd.DataFrame:
 
     # Use forecast API for the most recent days (archive is ~5 days behind)
     recent_weather = fetch_weather_fc(days=7)
-    today = pd.Timestamp(date.today())
-    recent_weather = recent_weather[recent_weather.index <= today]
+    now = pd.Timestamp.now().floor("3h")
+    recent_weather = recent_weather[recent_weather.index <= now]
     if not recent_weather.empty:
         weather_parts.append(recent_weather)
-        print(f"Fetched {len(recent_weather)} recent weather days from forecast API")
+        print(f"Fetched {len(recent_weather)} recent weather windows from forecast API")
 
     if not weather_parts:
         print("No weather data available.")
@@ -144,21 +165,26 @@ def cmd_backfill(days: int = 365) -> pd.DataFrame:
     weather = pd.concat(weather_parts)
     weather = weather[~weather.index.duplicated(keep="first")].sort_index()
 
-    # Add calendar features
+    # Add calendar + time-of-day features
     doy = weather.index.dayofyear
     weather["day_of_year"] = doy
     weather["day_of_year_sin"] = np.sin(2 * np.pi * doy / 365.25)
     weather["day_of_year_cos"] = np.cos(2 * np.pi * doy / 365.25)
     weather["month"] = weather.index.month
+    hour = weather.index.hour
+    weather["hour_of_day"] = hour
+    weather["hour_sin"] = np.sin(2 * np.pi * hour / 24)
+    weather["hour_cos"] = np.cos(2 * np.pi * hour / 24)
 
     # Join
-    common_dates = pollen.index.intersection(weather.index)
-    print(f"Overlapping dates: {len(common_dates)}")
+    common_dts = pollen.index.intersection(weather.index)
+    print(f"Overlapping windows: {len(common_dts)}")
 
-    # Fetch NDVI for the backfill period
+    # Fetch NDVI for the backfill period (daily resolution)
     try:
         from .ndvi import ndvi_features
-        ndvi_df = ndvi_features(pd.DatetimeIndex(common_dates))
+        unique_dates = pd.DatetimeIndex(common_dts.normalize().unique())
+        ndvi_df = ndvi_features(unique_dates)
         if not ndvi_df.empty:
             print(f"NDVI data: {len(ndvi_df)} days")
         else:
@@ -168,17 +194,18 @@ def cmd_backfill(days: int = 365) -> pd.DataFrame:
         ndvi_df = pd.DataFrame()
 
     rows: list[dict] = []
-    for dt in common_dates:
+    for dt in common_dts:
         w = weather.loc[dt]
+        day = dt.normalize()
         for species in ALL_SPECIES:
             val = pollen.loc[dt].get(species, 0.0) if species in pollen.columns else 0.0
             row = {"date": dt, "species": species, "value": float(val)}
             for col in weather.columns:
                 row[col] = float(w[col])
-            # Add NDVI
-            if not ndvi_df.empty and dt in ndvi_df.index:
+            # Add NDVI (daily resolution, shared across windows)
+            if not ndvi_df.empty and day in ndvi_df.index:
                 for col in ndvi_df.columns:
-                    row[col] = float(ndvi_df.loc[dt, col])
+                    row[col] = float(ndvi_df.loc[day, col])
             else:
                 row["ndvi"] = 0.0
                 row["evi"] = 0.0
@@ -202,10 +229,10 @@ def cmd_benchmark(horizon: int = 1) -> None:
         return
 
     history = pd.read_csv(HISTORY_FILE, parse_dates=["date"])
-    n_days = history["date"].nunique()
-    print(f"History: {len(history)} rows, {n_days} unique days")
+    unique_days = len(set(pd.to_datetime(history["date"]).dt.date))
+    print(f"History: {len(history)} rows, {unique_days} unique days")
 
-    results = temporal_split_evaluate(history, test_days=min(90, n_days // 3), n_folds=horizon)
+    results = temporal_split_evaluate(history, test_days=min(90, unique_days // 3), n_folds=horizon)
     if not results.empty:
         print_evaluation_report(results)
 
