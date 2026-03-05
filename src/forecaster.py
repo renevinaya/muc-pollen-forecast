@@ -26,6 +26,10 @@ from .types import (
     NDVI_FEATURES,
     FEATURE_COLS,
     SPECIES_SEASON,
+    SPECIES_GDD_THRESHOLD,
+    SPECIES_ACTIVATION_TEMP,
+    _DEFAULT_GDD_THRESHOLD,
+    _DEFAULT_ACTIVATION_TEMP,
     is_season_active,
     value_to_level,
     SpeciesForecast,
@@ -101,8 +105,9 @@ def generate_forecast(
     weather = fetch_weather_forecast(FORECAST_DAYS)
     print(f"Weather forecast: {len(weather)} windows ({FORECAST_DAYS} days)")
 
-    # --- Pre-compute weather-derived features (GDD, rolling, etc.) ---
-    # We need recent historical weather to compute rolling features correctly.
+    # --- Pre-compute weather-derived features per species ---
+    # The burst potential features (#2) depend on species-specific thresholds,
+    # so we pre-compute a table for each species.
     hist_weather = (
         history.groupby("date")[WEATHER_FEATURES].first()
         if not history.empty
@@ -112,12 +117,14 @@ def generate_forecast(
     combined_weather = combined_weather[~combined_weather.index.duplicated(keep="last")]
     combined_weather = combined_weather.sort_index()
     # Add a dummy 'species' and 'value' so _add_weather_derived_features works
-    combined_weather = combined_weather.reset_index().rename(columns={"index": "date"})
-    combined_weather["species"] = "__dummy__"
-    combined_weather["value"] = 0.0
-    combined_weather = _add_weather_derived_features(combined_weather)
-    # Index by datetime for quick lookup
-    weather_derived = combined_weather.set_index("date")
+    base_weather = combined_weather.reset_index().rename(columns={"index": "date"})
+    base_weather["species"] = "__dummy__"
+    base_weather["value"] = 0.0
+
+    weather_derived_by_species: dict[str, pd.DataFrame] = {}
+    for sp in ALL_SPECIES:
+        sp_derived = _add_weather_derived_features(base_weather.copy(), sp)
+        weather_derived_by_species[sp] = sp_derived.set_index("date")
 
     # --- Pre-compute NDVI features for forecast dates (daily resolution) ---
     try:
@@ -174,7 +181,8 @@ def generate_forecast(
                 # Season-active feature
                 features["season_active"] = 1.0 if active else 0.0
 
-                # Weather-derived features (GDD, rolling, interaction)
+                # Weather-derived features (GDD, rolling, interaction, burst, explosion)
+                weather_derived = weather_derived_by_species[species]
                 if dt in weather_derived.index:
                     wd_row = weather_derived.loc[dt]
                     if isinstance(wd_row, pd.DataFrame):
@@ -216,8 +224,19 @@ def generate_forecast(
                 features["pollen_lag_2"] = log_vals[-2]
                 features["pollen_lag_3"] = log_vals[-3]
                 features["pollen_lag_8"] = log_vals[-8] if len(log_vals) >= 8 else log_vals[0]
+                features["pollen_lag_16"] = log_vals[-16] if len(log_vals) >= 16 else log_vals[0]
+                features["pollen_lag_56"] = log_vals[-56] if len(log_vals) >= 56 else log_vals[0]
                 features["pollen_rolling_8"] = float(np.mean(log_vals[-8:]))
                 features["pollen_rolling_56"] = float(np.mean(log_vals[-56:]))
+                features["pollen_max_8"] = float(np.max(log_vals[-8:]))
+                features["pollen_max_56"] = float(np.max(log_vals[-56:]))
+                # days_since_active: count back from end of log_vals to last > 0
+                dsa = 0
+                for v in reversed(log_vals):
+                    if v > 0:
+                        break
+                    dsa += 1
+                features["days_since_active"] = float(dsa)
 
                 x_features = pd.DataFrame([features])[FEATURE_COLS]
                 pred_log = float(models[species].predict(x_features)[0])

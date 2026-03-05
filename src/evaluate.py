@@ -89,7 +89,7 @@ def temporal_split_evaluate(
                 train_data[train_data["species"] == species],
                 species_test
             ]).sort_values("date").reset_index(drop=True)
-            species_all = _add_weather_derived_features(species_all)
+            species_all = _add_weather_derived_features(species_all, species)
             species_all = _add_ndvi_features(species_all)
             species_all = _add_lag_features(species_all)
             species_all = _add_season_feature(species_all, species)

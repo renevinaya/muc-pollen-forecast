@@ -67,6 +67,14 @@ WEATHER_DERIVED_FEATURES = [
     "temp_delta_3d",        # 3-day temperature change
     "temp_x_sunshine",      # Interaction: warm & sunny = peak dispersal
     "dry_warm",             # Interaction: warm + low humidity
+    # --- Burst potential features (#2) ---
+    "gdd_above_threshold",  # max(0, gdd - species GDD threshold)
+    "cold_to_warm_flip",    # rapid warming from cold → warm while GDD ready
+    "consecutive_warm_hrs", # consecutive 3h windows with temp > activation
+    # --- Explosion likelihood features (#6) ---
+    "dry_streak",           # consecutive windows with precip ≈ 0
+    "warm_after_cold",      # recent warming: temp_rolling_3d - temp_rolling_7d
+    "wind_x_dry_warm",      # wind × dry_warm interaction (dispersal capacity)
 ]
 
 LAG_FEATURES = [
@@ -74,8 +82,13 @@ LAG_FEATURES = [
     "pollen_lag_2",       # 2 windows ago (6h)
     "pollen_lag_3",       # 3 windows ago (9h)
     "pollen_lag_8",       # same time yesterday (24h)
+    "pollen_lag_16",      # 48h ago (#3)
+    "pollen_lag_56",      # 7 days ago (#3)
     "pollen_rolling_8",   # 24h rolling mean (log-transformed)
     "pollen_rolling_56",  # 7-day rolling mean (log-transformed)
+    "pollen_max_8",       # 24h rolling max (captures recent spikes) (#3)
+    "pollen_max_56",      # 7-day rolling max (#3)
+    "days_since_active",  # windows since pollen was last > 0 (#3)
 ]
 
 # NDVI / vegetation features (from MODIS satellite data)
@@ -107,6 +120,41 @@ FEATURE_COLS = (
 
 # GDD base temperature (°C) — standard for temperate deciduous phenology
 GDD_T_BASE = 5.0
+
+# Species-specific GDD thresholds for pollen burst readiness (#2)
+# When cumulative GDD exceeds this, species is primed for explosive release.
+SPECIES_GDD_THRESHOLD: dict[str, float] = {
+    "Alnus":     30.0,
+    "Ambrosia":  800.0,
+    "Artemisia": 700.0,
+    "Betula":    150.0,
+    "Corylus":   20.0,
+    "Fraxinus":  150.0,
+    "Poaceae":   400.0,
+    "Populus":   100.0,
+    "Quercus":   250.0,
+    "Salix":     100.0,
+    "Urtica":    400.0,
+}
+
+# Species-specific activation temperatures for warm-window counting (#2)
+SPECIES_ACTIVATION_TEMP: dict[str, float] = {
+    "Alnus":     5.0,
+    "Ambrosia":  18.0,
+    "Artemisia": 16.0,
+    "Betula":    10.0,
+    "Corylus":   5.0,
+    "Fraxinus":  10.0,
+    "Poaceae":   12.0,
+    "Populus":   8.0,
+    "Quercus":   12.0,
+    "Salix":     8.0,
+    "Urtica":    12.0,
+}
+
+# Default thresholds for unknown species
+_DEFAULT_GDD_THRESHOLD = 200.0
+_DEFAULT_ACTIVATION_TEMP = 10.0
 
 # Pollen season windows per species: (start_month, end_month) inclusive.
 # Outside this window the model should predict ~0.
