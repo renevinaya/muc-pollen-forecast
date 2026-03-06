@@ -8,6 +8,7 @@ Usage:
     python -m src.main run          # All three steps in sequence (daily cron)
     python -m src.main backfill N   # Backfill N days of historical data
     python -m src.main backfill-om  # Backfill from Open-Meteo pollen (2021+)
+    python -m src.main backfill-ps  # Backfill from pollenscience.eu (2019+, slow)
     python -m src.main benchmark    # Walk-forward evaluation of forecast quality
     python -m src.main dwd          # Show DWD pollen forecast for Oberbayern
     python -m src.main phenology    # Download DWD phenology data for Munich
@@ -25,6 +26,7 @@ from .trainer import train_all
 from .forecaster import generate_forecast
 from .s3 import upload_forecast, upload_csv
 from .pollen import fetch_pollen, pivot_pollen
+from .pollenscience import fetch_pollenscience_chunked
 from .openmeteo_pollen import fetch_openmeteo_pollen, EARLIEST_DATE as OM_EARLIEST
 from .weather import fetch_historical_weather, fetch_weather_forecast as fetch_weather_fc
 from .evaluate import temporal_split_evaluate, print_evaluation_report, compare_with_dwd
@@ -325,6 +327,113 @@ def cmd_backfill_openmeteo(start_year: int = 2021) -> pd.DataFrame:
     return history
 
 
+def cmd_backfill_pollenscience(start_year: int = 2019) -> pd.DataFrame:
+    """
+    Backfill historical pollen data from pollenscience.eu (TUM / Helmholtz).
+
+    Fetches data from start_year to present in small 28-day chunks with
+    5-second delays between requests to avoid overloading the server.
+    Combined with historical weather, calendar and NDVI features.
+
+    All species in ALL_SPECIES are available via the DEMUNC/DEBIED stations.
+    """
+    import numpy as np
+    from .ndvi import ndvi_features
+
+    start = date(start_year, 1, 1)
+    end = date.today() - timedelta(days=1)
+
+    print("=" * 60)
+    print(f"BACKFILL POLLENSCIENCE.EU: {start} to {end}")
+    print(f"  Stations: DEMUNC + DEBIED (Munich)")
+    print(f"  Species: {', '.join(ALL_SPECIES)}")
+    print(f"  Fetching slowly with 5s delay between requests...")
+    print("=" * 60)
+
+    # 1. Fetch pollen data slowly
+    print(f"\nFetching pollen data ({start} to {end})...")
+    pollen_raw = fetch_pollenscience_chunked(start, end, delay=5.0)
+    if pollen_raw.empty:
+        print("No pollen data returned.")
+        return pd.DataFrame()
+
+    ps_species = sorted(pollen_raw["species"].unique())
+    print(f"\n  Species found: {ps_species}")
+    print(f"  Total rows: {len(pollen_raw)}")
+
+    # Pivot to wide format
+    pollen = pollen_raw.pivot_table(
+        index="date", columns="species", values="value", aggfunc="mean"
+    ).fillna(0)
+    pollen.index = pd.DatetimeIndex(pollen.index)
+    pollen = pollen.sort_index()
+    n_days = len(pollen.index.normalize().unique())
+    print(f"  Windows: {len(pollen)} ({n_days} days, "
+          f"{pollen.index.min()} to {pollen.index.max()})")
+
+    # 2. Fetch matching historical weather
+    weather_start = pollen.index.min().date() - timedelta(days=1)
+    weather_end = min(end, date.today() - timedelta(days=5))
+    print(f"\nFetching weather archive ({weather_start} to {weather_end})...")
+    weather = fetch_historical_weather(weather_start, weather_end)
+    print(f"  Weather windows: {len(weather)}")
+
+    # 3. Calendar features
+    doy = weather.index.dayofyear
+    weather["day_of_year"] = doy
+    weather["day_of_year_sin"] = np.sin(2 * np.pi * doy / 365.25)
+    weather["day_of_year_cos"] = np.cos(2 * np.pi * doy / 365.25)
+    weather["month"] = weather.index.month
+    hour = weather.index.hour
+    weather["hour_of_day"] = hour
+    weather["hour_sin"] = np.sin(2 * np.pi * hour / 24)
+    weather["hour_cos"] = np.cos(2 * np.pi * hour / 24)
+
+    # 4. Intersect pollen and weather windows
+    common_dts = pollen.index.intersection(weather.index)
+    print(f"  Overlapping windows: {len(common_dts)}")
+    if common_dts.empty:
+        print("No overlapping windows.")
+        return pd.DataFrame()
+
+    # 5. NDVI features
+    try:
+        unique_dates = pd.DatetimeIndex(common_dts.normalize().unique())
+        ndvi_df = ndvi_features(unique_dates)
+        if not ndvi_df.empty:
+            print(f"  NDVI: {len(ndvi_df)} days")
+        else:
+            ndvi_df = pd.DataFrame()
+    except Exception as exc:
+        print(f"  NDVI fetch failed ({exc}), continuing without.")
+        ndvi_df = pd.DataFrame()
+
+    # 6. Build rows
+    rows: list[dict] = []
+    for dt in common_dts:
+        w = weather.loc[dt]
+        day = dt.normalize()
+        for species in ALL_SPECIES:
+            val = pollen.loc[dt].get(species, 0.0) if species in pollen.columns else 0.0
+            row = {"date": dt, "species": species, "value": float(val)}
+            for col in weather.columns:
+                row[col] = float(w[col])
+            if not ndvi_df.empty and day in ndvi_df.index:
+                for col in ndvi_df.columns:
+                    row[col] = float(ndvi_df.loc[day, col])
+            else:
+                row["ndvi"] = 0.0
+                row["evi"] = 0.0
+                row["ndvi_delta"] = 0.0
+            rows.append(row)
+
+    df = pd.DataFrame(rows)
+    print(f"\nBackfill data: {len(df)} rows")
+
+    history = update_history(df)
+    return history
+
+
 def cmd_benchmark(horizon: int = 1) -> None:
     """Run walk-forward evaluation on accumulated history."""
     print("=" * 60)
@@ -442,6 +551,9 @@ def main() -> None:
     elif command == "backfill-om":
         start_year = int(sys.argv[2]) if len(sys.argv) > 2 else 2021
         cmd_backfill_openmeteo(start_year)
+    elif command == "backfill-ps":
+        start_year = int(sys.argv[2]) if len(sys.argv) > 2 else 2019
+        cmd_backfill_pollenscience(start_year)
     elif command == "benchmark":
         horizon = int(sys.argv[2]) if len(sys.argv) > 2 else 1
         cmd_benchmark(horizon)

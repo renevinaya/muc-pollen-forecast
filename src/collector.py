@@ -13,7 +13,8 @@ from pathlib import Path
 
 import pandas as pd
 
-from .pollen import fetch_pollen, pivot_pollen
+from .pollenscience import fetch_pollenscience
+from .pollen import pivot_pollen
 from .weather import fetch_historical_weather, fetch_weather_forecast
 from .ndvi import ndvi_features
 from .types import ALL_SPECIES
@@ -49,8 +50,10 @@ def collect(days: int = 14) -> pd.DataFrame:
     """
     print(f"Collecting last {days} days of data...")
 
-    # 1. Pollen data (3h resolution)
-    pollen_raw = fetch_pollen(days=days)
+    # 1. Pollen data (3h resolution) from pollenscience.eu
+    end = date.today()
+    start = end - timedelta(days=days)
+    pollen_raw = fetch_pollenscience(start, end)
     if pollen_raw.empty:
         print("No pollen data available.")
         return pd.DataFrame()
