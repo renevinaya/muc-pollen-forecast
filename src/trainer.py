@@ -205,6 +205,24 @@ def _add_weather_derived_features(
     warm_after_cold = temp_r3 - temp_r7  # positive = warming trend
     wind_x_dw = wind * dry_warm  # dispersal capacity
 
+    # --- Upwind transport features ---
+    # Wind direction: where the wind is coming FROM (meteorological convention)
+    # 0°/360° = N, 90° = E, 180° = S, 270° = W
+    # Munich is surrounded by alpine forests (S) and agricultural plains (N)
+    if "wind_direction" in df.columns:
+        wind_dir = df.groupby("date")["wind_direction"].first()
+    else:
+        wind_dir = pd.Series(0.0, index=temp_mean.index)
+    dir_rad = np.radians(wind_dir)
+    wd_sin = np.sin(dir_rad)              # positive = from east
+    wd_cos = np.cos(dir_rad)              # positive = from north
+    # Directional indicators (how much wind comes from that direction)
+    wind_from_south = (-wd_cos).clip(lower=0)   # 180° → 1.0
+    wind_from_north = wd_cos.clip(lower=0)       # 0°   → 1.0
+    # Transport potential = wind speed × directional strength
+    transport_s = wind * wind_from_south
+    transport_n = wind * wind_from_north
+
     # Build a lookup dict indexed by date
     derived = pd.DataFrame({
         "gdd": gdd,
@@ -224,6 +242,12 @@ def _add_weather_derived_features(
         "dry_streak": dry_str.astype(float),
         "warm_after_cold": warm_after_cold,
         "wind_x_dry_warm": wind_x_dw,
+        "wind_dir_sin": wd_sin,
+        "wind_dir_cos": wd_cos,
+        "wind_from_south": wind_from_south,
+        "wind_from_north": wind_from_north,
+        "transport_south": transport_s,
+        "transport_north": transport_n,
     })
 
     for col in derived.columns:
@@ -247,6 +271,10 @@ def prepare_training_data(
         return pd.DataFrame(), pd.Series(dtype=float), pd.Series(dtype=float)
 
     species_df = species_df.sort_values("date").reset_index(drop=True)
+    # Ensure all expected feature columns exist (backward compat with old history)
+    for col in FEATURE_COLS:
+        if col not in species_df.columns:
+            species_df[col] = 0.0
     species_df = _add_weather_derived_features(species_df, species)
     species_df = _add_ndvi_features(species_df)
     species_df = _add_lag_features(species_df)

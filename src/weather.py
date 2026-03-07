@@ -7,6 +7,7 @@ the LGL Bayern pollen measurement intervals.
 from datetime import date
 
 import httpx
+import numpy as np
 import pandas as pd
 
 from .types import LAT, LON
@@ -18,6 +19,7 @@ HOURLY_PARAMS = [
     "temperature_2m",
     "precipitation",
     "wind_speed_10m",
+    "wind_direction_10m",
     "relative_humidity_2m",
     "sunshine_duration",
     "shortwave_radiation",
@@ -52,6 +54,16 @@ def _parse_hourly_response(data: dict) -> pd.DataFrame:
     result["humidity_mean"] = grouped["relative_humidity_2m"].mean()
     result["sunshine_duration"] = grouped["sunshine_duration"].sum()
     result["shortwave_radiation_sum"] = grouped["shortwave_radiation"].sum()
+
+    # Wind direction: circular mean (can't just average degrees)
+    dir_rad = np.radians(df["wind_direction_10m"].fillna(0).astype(float))
+    df["_wd_sin"] = np.sin(dir_rad)
+    df["_wd_cos"] = np.cos(dir_rad)
+    grouped_wd = df.groupby("window")
+    result["wind_direction"] = np.degrees(
+        np.arctan2(grouped_wd["_wd_sin"].mean(), grouped_wd["_wd_cos"].mean())
+    ) % 360
+
     result.index.name = None
     return result
 

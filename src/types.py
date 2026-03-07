@@ -32,6 +32,7 @@ WEATHER_FEATURES = [
     "temperature_mean",
     "precipitation_sum",
     "wind_speed_max",
+    "wind_direction",
     "humidity_mean",
     "sunshine_duration",
     "shortwave_radiation_sum",
@@ -75,6 +76,13 @@ WEATHER_DERIVED_FEATURES = [
     "dry_streak",           # consecutive windows with precip ≈ 0
     "warm_after_cold",      # recent warming: temp_rolling_3d - temp_rolling_7d
     "wind_x_dry_warm",      # wind × dry_warm interaction (dispersal capacity)
+    # --- Upwind transport features ---
+    "wind_dir_sin",         # sin(wind_direction) — E/W component
+    "wind_dir_cos",         # cos(wind_direction) — N/S component
+    "wind_from_south",      # strength of southerly wind (alpine forests → Munich)
+    "wind_from_north",      # strength of northerly wind (plains → Munich)
+    "transport_south",      # wind_speed × wind_from_south (pollen transport potential)
+    "transport_north",      # wind_speed × wind_from_north
 ]
 
 LAG_FEATURES = [
