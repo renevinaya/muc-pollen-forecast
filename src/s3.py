@@ -15,7 +15,7 @@ S3_REGION = "eu-central-1"
 def upload_forecast(forecast: ForecastOutput, bucket: str, key: str = "forecast.json") -> None:
     """Upload forecast JSON to S3."""
     s3 = boto3.client("s3", region_name=S3_REGION)
-    body = json.dumps(forecast.to_dict(), indent=2, ensure_ascii=False)
+    body = json.dumps(forecast.to_web_dict(), indent=2, ensure_ascii=False)
     s3.put_object(
         Bucket=bucket,
         Key=key,

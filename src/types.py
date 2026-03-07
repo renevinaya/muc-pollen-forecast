@@ -303,3 +303,53 @@ class ForecastOutput:
             "location": self.location,
             "forecast": [d.to_dict() for d in self.forecast],
         }
+
+    def to_web_dict(self) -> dict[str, Any]:
+        """Serialize to a webapp-compatible dict matching the LGL measurement format.
+
+        Restructures from window-centric (date→window→species) to
+        species-centric (species→windows) with unix timestamps in seconds,
+        matching the format returned by the ePIN LGL Bayern API.
+        """
+        from datetime import datetime, timedelta
+        from zoneinfo import ZoneInfo
+
+        tz = ZoneInfo("Europe/Berlin")
+        species_data: dict[str, list[dict[str, Any]]] = {}
+
+        for day in self.forecast:
+            base_date = datetime.strptime(day.date, "%Y-%m-%d")
+            for window in day.windows:
+                from_h, from_m = map(int, window.from_time.split(":"))
+                to_h, to_m = map(int, window.to_time.split(":"))
+
+                from_dt = base_date.replace(
+                    hour=from_h, minute=from_m, tzinfo=tz
+                )
+                if to_h == 0 and to_m == 0:
+                    to_dt = (base_date + timedelta(days=1)).replace(tzinfo=tz)
+                else:
+                    to_dt = base_date.replace(
+                        hour=to_h, minute=to_m, tzinfo=tz
+                    )
+
+                from_unix = int(from_dt.timestamp())
+                to_unix = int(to_dt.timestamp())
+
+                for sp in window.species:
+                    species_data.setdefault(sp.name, []).append({
+                        "from": from_unix,
+                        "to": to_unix,
+                        "value": round(sp.value, 1),
+                    })
+
+        measurements = [
+            {"polle": name, "location": self.location, "data": data}
+            for name, data in sorted(species_data.items())
+        ]
+
+        return {
+            "generated": self.generated,
+            "location": self.location,
+            "measurements": measurements,
+        }

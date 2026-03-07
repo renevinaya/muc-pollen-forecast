@@ -99,7 +99,7 @@ def cmd_forecast(history: pd.DataFrame | None = None) -> None:
         output_path = DATA_DIR / "forecast.json"
         DATA_DIR.mkdir(parents=True, exist_ok=True)
         output_path.write_text(
-            json.dumps(forecast.to_dict(), indent=2, ensure_ascii=False)
+            json.dumps(forecast.to_web_dict(), indent=2, ensure_ascii=False)
         )
         print(f"\nForecast written to {output_path}")
 
