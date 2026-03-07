@@ -1,6 +1,6 @@
 # muc-pollen-forecast
 
-ML-based daily pollen forecast for Munich, using a two-stage XGBoost pipeline (classifier + quantile regressor) trained on historical pollen measurements, weather data, satellite vegetation indices, and phenological observations.
+ML-based pollen forecast for Munich at 3-hour resolution, using a three-stage XGBoost pipeline (classifier + quantile regressor + extreme regressor) trained on historical pollen measurements, weather data, satellite vegetation indices, and phenological observations.
 
 **Species covered (11):** Alnus, Ambrosia, Artemisia, Betula, Corylus, Fraxinus, Poaceae, Populus, Quercus, Salix, Urtica
 
@@ -10,10 +10,10 @@ ML-based daily pollen forecast for Munich, using a two-stage XGBoost pipeline (c
 ┌──────────────────────────────────────────────────────────┐
 │  Python backend (this repo)                              │
 │                                                          │
-│  1. Collector  — fetch pollen + weather + NDVI daily     │
+│  1. Collector  — fetch pollen + weather + NDVI (3h res)  │
 │     → append to data/history.csv                         │
 │                                                          │
-│  2. Trainer    — train two-stage XGBoost per species     │
+│  2. Trainer    — train three-stage XGBoost per species   │
 │     → save models to models/*.joblib                     │
 │                                                          │
 │  3. Forecaster — predict 5-day pollen forecast           │
@@ -34,35 +34,48 @@ ML-based daily pollen forecast for Munich, using a two-stage XGBoost pipeline (c
 
 | Source | API | What it provides |
 |--------|-----|------------------|
-| [LGL Bayern](https://d1ppjuhp1nvtc2.cloudfront.net/measurements) | Pollen measurements | Real-time 3-hour pollen counts for Munich (station DEMUNC), aggregated to daily means |
-| [Open-Meteo](https://open-meteo.com/) | Weather forecast + historical archive | Temperature, precipitation, wind, humidity, sunshine, radiation (no API key required) |
+| [pollenscience.eu](https://pollenscience.eu/api/measurements) | Pollen measurements | Primary source: 3-hour pollen counts for Munich (station DEMUNC, 2019+) |
+| [LGL Bayern](https://d1ppjuhp1nvtc2.cloudfront.net/measurements) | Pollen measurements | Alternative: real-time 3-hour pollen counts for Munich |
+| [Open-Meteo](https://open-meteo.com/) | Weather forecast + historical archive | Hourly weather aggregated to 3-hour windows: temperature, precipitation, wind speed/direction, humidity, sunshine, radiation (no API key required) |
 | [MODIS (ORNL DAAC)](https://modis.ornl.gov/rst/api/v1) | NDVI / EVI satellite data | MOD13Q1 250 m 16-day vegetation indices, cubic-interpolated to daily resolution |
-| [DWD Open Data](https://opendata.dwd.de/) | Pollenflug-Gefahrenindex + CDC Phenology | Official pollen danger levels for Oberbayern; multi-decade flowering-onset observations near Munich |
+| [DWD Open Data](https://opendata.dwd.de/) | Pollenflug-Gefahrenindex + CDC Phenology | Official pollen danger levels for Oberbayern (partregion 121); multi-decade flowering-onset observations near Munich |
 
 ## Model
 
-Each species gets a **two-stage pipeline**:
+Each species gets a **three-stage pipeline** with species-specific hyperparameters:
 
-1. **Stage 1 — XGBClassifier**: predicts P(pollen > 0). 200 estimators, max depth 4, auto-balanced class weights.
-2. **Stage 2 — XGBRegressor**: predicts log1p(pollen count) via quantile regression (α = 0.80). 300 estimators, max depth 5, sample-weighted by `1 + log1p(value)`.
+1. **Stage 1 — XGBClassifier**: predicts P(pollen > 0). 200 estimators, learning rate 0.08, adaptive `scale_pos_weight`.
+2. **Stage 2 — XGBRegressor**: predicts log1p(pollen count) via quantile regression. Sample-weighted by `1 + √(value)` with tier bonuses (+8 for >100, +20 for >500, +40 for >1000).
+3. **Stage 3 — Extreme Regressor** (optional): trained only on high-pollen samples (>50), uses squared error on log-space. Blended with Stage 2 when classifier confidence > 0.6.
 
-**Combined prediction**: if P(active) < 0.3 → 0; otherwise regression prediction is scaled by clamped probability. Out-of-season species are forced to zero using species-specific season windows.
+**Species-specific tuning:**
+
+| Species | Clf depth | Reg depth | Reg estimators | Quantile α |
+|---------|-----------|-----------|----------------|------------|
+| Corylus, Alnus | 5 | 7 | 500 | 0.92 |
+| Urtica, Poaceae | 5 | 6 | 400 | 0.90 |
+| Quercus | 5 | 6 | 400 | 0.88 |
+| Populus | 4 | 6 | 400 | 0.88 |
+| Others (default) | 4 | 5 | 300 | 0.85 |
+
+**Combined prediction**: regression output is scaled by clamped activation probability. Out-of-season species are forced to zero using species-specific season windows.
 
 **Pollen levels** are assigned using species-specific thresholds (based on DWD/ePIN): `none`, `low`, `moderate`, `high`, `very_high`.
 
-## Features (39 total)
+## Features (57 total)
 
 | Category | Count | Features |
 |----------|-------|----------|
-| Weather | 8 | temp max/min/mean, precipitation, wind speed, humidity, sunshine duration, radiation |
+| Weather | 9 | temp max/min/mean, precipitation, wind speed, wind direction, humidity, sunshine duration, radiation |
 | Calendar | 4 | day of year, sin/cos encoding, month |
+| Time-of-day | 3 | hour of day (0/3/6/.../21), sin/cos hour encoding |
 | Season | 1 | binary `season_active` per species |
-| Weather-derived | 11 | GDD (cumulative growing degree days, base 5 °C), 3/7-day rolling temp/sunshine/rain, temp deltas (1d/3d), temp × sunshine interaction, dry+warm flag |
+| Weather-derived | 24 | GDD + species GDD threshold, 3/7-day rolling temp/sunshine/rain, temp deltas (1d/3d), cold-to-warm flip, consecutive warm hours, dry streak, temp×sunshine, dry+warm, warming trend, wind×dry+warm, wind direction sin/cos, wind from south/north, transport south/north |
 | NDVI | 3 | NDVI, EVI, NDVI delta (green-up rate) |
 | Phenology | 2 | days since typical flowering onset, onset anomaly vs. historical mean |
-| Lag | 5 | pollen at t-1/t-2/t-3, 3-day rolling mean, 7-day rolling mean (all log-space) |
+| Lag | 11 | pollen at t-1/t-2/t-3/t-8(24h)/t-16(48h)/t-56(7d), 24h + 7d rolling mean, 24h + 7d rolling max, days since active (all log-space) |
 
-Lag features are computed autoregressively during forecasting — each day's prediction feeds into the next day's lag inputs.
+Lag features are computed autoregressively during forecasting — each 3-hour window's prediction feeds into subsequent lag inputs.
 
 ## Setup
 
@@ -80,7 +93,7 @@ Requires Python ≥ 3.11. Dependencies: httpx, pandas, numpy, xgboost, scikit-le
 # Backfill historical data (run once to bootstrap)
 python -m src.main backfill 365
 
-# Train models on accumulated data (needs ≥ 50 rows in history)
+# Train models on accumulated data (needs ≥ 14 data points per species)
 python -m src.main train
 
 # Generate forecast (writes to data/forecast.json locally, or uploads to S3 when S3_BUCKET is set)
@@ -94,11 +107,12 @@ python -m src.main run
 
 | Command | Description |
 |---------|-------------|
-| `collect [days]` | Fetch recent pollen + weather + NDVI, append to history (default: 14 days) |
-| `train` | Train two-stage XGBoost models per species on all history |
-| `forecast` | Generate 5-day forecast using trained models |
+| `collect [days]` | Fetch recent pollen + weather + NDVI at 3h resolution, append to history (default: 14 days) |
+| `train` | Train three-stage XGBoost models per species on all history |
+| `forecast` | Generate 5-day forecast at 3h resolution using trained models |
 | `backfill [days]` | Bulk import historical pollen, weather, and NDVI data (default: 365 days) |
-| `benchmark [horizon]` | Walk-forward evaluation with per-species metrics and DWD comparison (default horizon: 1) |
+| `backfill-ps [start_year]` | Bulk import from pollenscience.eu at 3h resolution (default: 2019, 5s rate limit) |
+| `benchmark [horizon]` | Walk-forward evaluation with monthly CV folds and DWD comparison (default horizon: 1) |
 | `dwd` | Display the current DWD pollen danger index for Oberbayern |
 | `phenology` | Download DWD phenology data and show flowering-onset statistics |
 | `run` | Execute collect → train → forecast in sequence |
@@ -185,7 +199,7 @@ aws cloudformation deploy \
 
 The CodeBuild project runs `buildspec.yml`, which:
 
-1. Installs Python 3.12 and `requirements.txt`
+1. Installs Python 3.12 and uv, then `uv pip install -r requirements.txt`
 2. Runs `python -m src.main run` (collect → train → forecast)
 3. The forecast step uploads `forecast.json` and backs up `data/history.csv` to S3 (because `S3_BUCKET` is set)
 
@@ -201,11 +215,11 @@ Without AWS, the app works entirely locally — forecast output is written to `d
 
 ## Forecast Confidence
 
-Confidence scores start at **0.90** for day 1 and decrease by **0.08** per additional forecast day. If no trained model exists for a species, confidence is halved. Species with predicted value ≤ 0.5 are filtered from the output.
+Confidence scores start at **0.90** for day 1 and decrease by **0.08** per additional forecast day (0.90, 0.82, 0.74, 0.66, 0.58). If no trained model exists for a species, confidence is halved. Scores are clipped to [0.20, 0.95]. Species with predicted value ≤ 0.5 are filtered from the output.
 
 ## Output Format
 
-The forecast JSON (consumed by the Vue frontend) looks like:
+The forecast JSON (consumed by the Vue frontend) uses 3-hour windows:
 
 ```json
 {
@@ -214,15 +228,23 @@ The forecast JSON (consumed by the Vue frontend) looks like:
   "forecast": [
     {
       "date": "2026-03-04",
-      "species": [
+      "windows": [
         {
-          "name": "Alnus",
-          "level": "moderate",
-          "value": 35.2,
-          "confidence": 0.9
+          "from": "06:00",
+          "to": "09:00",
+          "species": [
+            {
+              "name": "Alnus",
+              "level": "moderate",
+              "value": 35.2,
+              "confidence": 0.9
+            }
+          ]
         }
       ]
     }
   ]
 }
 ```
+
+A secondary `to_web_dict()` format is also available, restructured as species-centric measurements with Unix timestamps matching the LGL Bayern API format.
