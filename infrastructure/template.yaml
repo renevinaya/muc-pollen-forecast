@@ -82,6 +82,7 @@ Resources:
           TargetOriginId: S3Origin
           ViewerProtocolPolicy: redirect-to-https
           CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6
+          ResponseHeadersPolicyId: 60669652-455b-4ae9-85a4-c4c02393f86c
           Compress: true
         PriceClass: PriceClass_100
       Tags:
