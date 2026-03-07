@@ -352,6 +352,15 @@ def cmd_benchmark(horizon: int = 1) -> None:
         results.to_csv(results_path, index=False)
         print(f"\nDetailed results saved to {results_path}")
 
+        # Write text report to file
+        import io, contextlib
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            print_evaluation_report(results)
+        report_path = DATA_DIR / "benchmark_report.txt"
+        report_path.write_text(buf.getvalue())
+        print(f"Report written to {report_path}")
+
 
 def cmd_dwd() -> None:
     """Fetch and display the current DWD pollen forecast for Oberbayern."""

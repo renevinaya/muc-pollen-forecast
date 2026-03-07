@@ -296,10 +296,10 @@ class TwoStageModel:
         if self.extreme_regressor is not None:
             extreme_pred = self.extreme_regressor.predict(X)
             extreme_pred = np.maximum(0.0, extreme_pred)
-            # Use extreme model when classifier is very confident (> 0.7)
+            # Use extreme model when classifier is confident (> 0.6)
             # Blend: weighted average biased toward extreme model at high confidence
-            extreme_weight = np.clip((prob_active - 0.7) / 0.3, 0.0, 1.0)
-            result = result * (1.0 - extreme_weight * 0.5) + extreme_pred * (extreme_weight * 0.5)
+            extreme_weight = np.clip((prob_active - 0.6) / 0.4, 0.0, 1.0)
+            result = result * (1.0 - extreme_weight * 0.7) + extreme_pred * (extreme_weight * 0.7)
 
         return np.maximum(0.0, result)
 
@@ -378,9 +378,9 @@ def train_species_model(
     if raw_values is not None:
         rv = raw_values.values.astype(float)
         w = 1.0 + np.sqrt(rv)
-        w += (rv > 100) * 5.0
-        w += (rv > 500) * 10.0
-        w += (rv > 1000) * 20.0
+        w += (rv > 100) * 8.0
+        w += (rv > 500) * 20.0
+        w += (rv > 1000) * 40.0
         sample_weight = w
 
     regressor.fit(X, y, sample_weight=sample_weight)

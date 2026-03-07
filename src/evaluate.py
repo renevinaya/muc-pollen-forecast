@@ -26,7 +26,7 @@ from .trainer import (
 def temporal_split_evaluate(
     history: pd.DataFrame,
     test_days: int = 60,
-    n_folds: int = 3,  # pylint: disable=unused-argument
+    n_folds: int = 3,
 ) -> pd.DataFrame:
     """
     Monthly forward-chaining cross-validation.
@@ -35,6 +35,9 @@ def temporal_split_evaluate(
     month with at least 60 days of prior training data).  This ensures test
     windows cover all seasons — including the pollen-active months —
     instead of only the most recent (often dormant) period.
+
+    When *n_folds* is set, only that many evenly-spaced monthly folds are
+    evaluated (speeds up benchmarking significantly).
 
     Returns a DataFrame with columns:
         date, species, actual, predicted, fold, error, abs_error,
@@ -50,16 +53,29 @@ def temporal_split_evaluate(
     all_dates_ts = pd.to_datetime(dates)
     months = all_dates_ts.to_period("M").unique().sort_values()
 
+    # Filter to eligible months (enough training data)
+    eligible_months = []
+    for period in months:
+        month_dates = [d for d in dates if pd.Timestamp(d).to_period("M") == period]
+        train_dates = [d for d in dates if d < month_dates[0]]
+        train_days = len(set(pd.to_datetime(d).date() for d in train_dates))
+        if train_days >= min_train_days:
+            eligible_months.append(period)
+
+    # Sub-sample to n_folds evenly-spaced months for speed
+    if n_folds and len(eligible_months) > n_folds:
+        indices = np.linspace(0, len(eligible_months) - 1, n_folds, dtype=int)
+        eligible_months = [eligible_months[i] for i in indices]
+        print(f"  Sub-sampled to {n_folds} folds out of available months")
+
     results: list[dict] = []
     fold_num = 0
 
-    for period in months:
+    for period in eligible_months:
         month_dates = [d for d in dates if pd.Timestamp(d).to_period("M") == period]
         # Everything before this month is training
         train_dates = [d for d in dates if d < month_dates[0]]
         train_days = len(set(pd.to_datetime(d).date() for d in train_dates))
-        if train_days < min_train_days:
-            continue
         fold_num += 1
         test_dates = month_dates
         test_days = len(set(pd.to_datetime(d).date() for d in test_dates))
@@ -196,15 +212,20 @@ def print_evaluation_report(results: pd.DataFrame) -> None:
             direction = "OVER" if bias > 0 else "UNDER"
             print(f"  {species:<12} bias={bias:>+8.1f}  ({direction}-predicts)")
 
-    # Check high-pollen days specifically
-    high_pollen = results[results["actual"] > 50]
-    if not high_pollen.empty:
-        print(f"\nHigh-pollen days (actual > 50): {len(high_pollen)} predictions")
-        hp_mae = high_pollen["abs_error"].mean()
-        hp_bias = high_pollen["error"].mean()
-        print(f"  MAE: {hp_mae:.1f}, Bias: {hp_bias:+.1f}")
-        hp_level = (high_pollen["level_actual"] == high_pollen["level_predicted"]).mean()
-        print(f"  Level accuracy: {hp_level:.0%}")
+    # Check very-high pollen days specifically
+    very_high = results[results["level_actual"] == "very_high"]
+    if not very_high.empty:
+        print(f"\nVery-high pollen days: {len(very_high)} predictions")
+        vh_mae = very_high["abs_error"].mean()
+        vh_bias = very_high["error"].mean()
+        print(f"  MAE: {vh_mae:.1f}, Bias: {vh_bias:+.1f}")
+        vh_level = (very_high["level_actual"] == very_high["level_predicted"]).mean()
+        print(f"  Level accuracy: {vh_level:.0%}")
+        # Per-species breakdown for very-high days
+        for species in sorted(very_high["species"].unique()):
+            sp_vh = very_high[very_high["species"] == species]
+            sp_acc = (sp_vh["level_actual"] == sp_vh["level_predicted"]).mean()
+            print(f"    {species:<12} {sp_acc:>5.0%}  (n={len(sp_vh)})")
 
     # --- In-season evaluation (excludes dormant months) ---
     print("\nIn-season evaluation (active months only):")
