@@ -16,6 +16,7 @@ Resources:
   # S3 Bucket for forecast data + historical data + model artifacts
   ForecastBucket:
     Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
     Properties:
       BucketName: muc-pollen-forecast
       PublicAccessBlockConfiguration:
@@ -35,6 +36,9 @@ Resources:
             Status: Enabled
             Prefix: data/
             ExpirationInDays: 730  # Keep 2 years of history
+      Tags:
+        - Key: project
+          Value: muc-pollen
 
   ForecastBucketPolicy:
     Type: AWS::S3::BucketPolicy
@@ -80,6 +84,9 @@ Resources:
           CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6
           Compress: true
         PriceClass: PriceClass_100
+      Tags:
+        - Key: project
+          Value: muc-pollen
 
   # IAM Role for CodeBuild
   CodeBuildServiceRole:
@@ -92,6 +99,9 @@ Resources:
             Principal:
               Service: codebuild.amazonaws.com
             Action: sts:AssumeRole
+      Tags:
+        - Key: project
+          Value: muc-pollen
       Policies:
         - PolicyName: CodeBuildPolicy
           PolicyDocument:
@@ -136,6 +146,9 @@ Resources:
         Location: !Ref GitHubRepo
         BuildSpec: buildspec.yml
       TimeoutInMinutes: 15
+      Tags:
+        - Key: project
+          Value: muc-pollen
 
   # EventBridge Rule for daily trigger
   DailyScheduleRule:
@@ -161,6 +174,9 @@ Resources:
             Principal:
               Service: events.amazonaws.com
             Action: sts:AssumeRole
+      Tags:
+        - Key: project
+          Value: muc-pollen
       Policies:
         - PolicyName: StartCodeBuild
           PolicyDocument:
