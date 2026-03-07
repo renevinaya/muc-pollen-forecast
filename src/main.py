@@ -23,7 +23,7 @@ import pandas as pd
 from .collector import collect, update_history, HISTORY_FILE, DATA_DIR
 from .trainer import train_all
 from .forecaster import generate_forecast
-from .s3 import upload_forecast, upload_csv
+from .s3 import upload_forecast, upload_csv, sync_historical_data
 from .pollen import fetch_pollen, pivot_pollen
 from .pollenscience import fetch_pollenscience_chunked
 from .weather import fetch_historical_weather, fetch_weather_forecast as fetch_weather_fc
@@ -427,6 +427,11 @@ def cmd_phenology() -> None:
 
 def cmd_run() -> None:
     """Run full pipeline: collect -> train -> forecast."""
+    import os
+    bucket = os.environ.get("S3_BUCKET")
+    # On CodeBuild: download history from S3 before collecting
+    if bucket and not HISTORY_FILE.exists():
+        sync_historical_data(HISTORY_FILE, bucket)
     history = cmd_collect()
     cmd_train(history)
     cmd_forecast(history)

@@ -351,7 +351,7 @@ def train_species_model(
     y: pd.Series,
     raw_values: pd.Series | None = None,
     species: str = "",
-) -> TwoStageModel:
+) -> TwoStageModel | None:
     """
     Train a multi-stage model for one species.
 
@@ -369,9 +369,14 @@ def train_species_model(
     # --- Stage 1: binary classifier ---
     y_binary = (raw_values > 0).astype(int) if raw_values is not None else (y > 0).astype(int)
 
-    # Balance: weight active days more if they're rare
+    # Skip species with only one class (e.g., all zeros when out of season)
     n_active = y_binary.sum()
     n_total = len(y_binary)
+    if n_active == 0 or n_active == n_total:
+        print(f"  {species}: skipped (single class — {'all zero' if n_active == 0 else 'all active'})")
+        return None
+
+    # Balance: weight active days more if they're rare
     scale_pos = max(1.0, (n_total - n_active) / max(1, n_active))
 
     classifier = XGBClassifier(
@@ -465,6 +470,8 @@ def train_all(history: pd.DataFrame) -> dict[str, TwoStageModel]:
             continue
 
         model = train_species_model(X, y, raw_values=raw_values, species=species)
+        if model is None:
+            continue
 
         # Quick evaluation on training data
         preds_log = model.predict(X)
