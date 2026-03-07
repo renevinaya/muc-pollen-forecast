@@ -9,9 +9,12 @@ import pandas as pd
 from .types import ForecastOutput
 
 
+S3_REGION = "eu-central-1"
+
+
 def upload_forecast(forecast: ForecastOutput, bucket: str, key: str = "forecast.json") -> None:
     """Upload forecast JSON to S3."""
-    s3 = boto3.client("s3")
+    s3 = boto3.client("s3", region_name=S3_REGION)
     body = json.dumps(forecast.to_dict(), indent=2, ensure_ascii=False)
     s3.put_object(
         Bucket=bucket,
@@ -25,14 +28,14 @@ def upload_forecast(forecast: ForecastOutput, bucket: str, key: str = "forecast.
 
 def upload_csv(local_path: Path, bucket: str, key: str) -> None:
     """Upload a CSV file to S3 for backup / persistence."""
-    s3 = boto3.client("s3")
+    s3 = boto3.client("s3", region_name=S3_REGION)
     s3.upload_file(str(local_path), bucket, key)
     print(f"Uploaded {local_path.name} to s3://{bucket}/{key}")
 
 
 def download_csv(bucket: str, key: str, local_path: Path) -> bool:
     """Download a CSV from S3. Returns True if the file existed."""
-    s3 = boto3.client("s3")
+    s3 = boto3.client("s3", region_name=S3_REGION)
     try:
         s3.download_file(bucket, key, str(local_path))
         print(f"Downloaded s3://{bucket}/{key} -> {local_path}")

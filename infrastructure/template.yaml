@@ -17,11 +17,11 @@ Resources:
   ForecastBucket:
     Type: AWS::S3::Bucket
     Properties:
-      BucketName: !Sub muc-pollen-forecast-${AWS::AccountId}
+      BucketName: muc-pollen-forecast
       PublicAccessBlockConfiguration:
-        BlockPublicAcls: false
+        BlockPublicAcls: true
         BlockPublicPolicy: false
-        IgnorePublicAcls: false
+        IgnorePublicAcls: true
         RestrictPublicBuckets: false
       CorsConfiguration:
         CorsRules:
@@ -43,9 +43,23 @@ Resources:
       PolicyDocument:
         Statement:
           - Effect: Allow
-            Principal: '*'
+            Principal:
+              Service: cloudfront.amazonaws.com
             Action: s3:GetObject
             Resource: !Sub ${ForecastBucket.Arn}/forecast.json
+            Condition:
+              StringEquals:
+                AWS:SourceArn: !Sub arn:aws:cloudfront::${AWS::AccountId}:distribution/${ForecastDistribution}
+
+  # CloudFront Origin Access Control
+  ForecastOAC:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: muc-pollen-forecast-oac
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
 
   # CloudFront Distribution
   ForecastDistribution:
@@ -57,6 +71,7 @@ Resources:
         Origins:
           - Id: S3Origin
             DomainName: !GetAtt ForecastBucket.RegionalDomainName
+            OriginAccessControlId: !GetAtt ForecastOAC.Id
             S3OriginConfig:
               OriginAccessIdentity: ''
         DefaultCacheBehavior:
@@ -114,6 +129,8 @@ Resources:
         EnvironmentVariables:
           - Name: S3_BUCKET
             Value: !Ref ForecastBucket
+          - Name: AWS_DEFAULT_REGION
+            Value: eu-central-1
       Source:
         Type: GITHUB
         Location: !Ref GitHubRepo

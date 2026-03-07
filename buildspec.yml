@@ -4,7 +4,8 @@ phases:
     runtime-versions:
       python: 3.12
     commands:
-      - pip install -r requirements.txt
+      - pip install uv
+      - uv pip install --system -r requirements.txt
   build:
     commands:
       - python -m src.main run
