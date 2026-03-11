@@ -85,7 +85,7 @@ def fetch_dwd_forecast() -> pd.DataFrame:
         "dayafter_to": base_date + timedelta(days=2),
     }
 
-    rows: list[dict] = []
+    rows: list[dict[str, object]] = []
     for dwd_name, pollen_data in region.get("Pollen", {}).items():
         species = DWD_SPECIES_MAP.get(dwd_name)
         if species is None:
@@ -97,8 +97,8 @@ def fetch_dwd_forecast() -> pd.DataFrame:
 
     df = pd.DataFrame(rows)
     # If Roggen and Graeser both map to Poaceae, take the max per day
-    df = df.groupby(["date", "species"], as_index=False)["dwd_level"].max()
-    return df
+    agg = df.groupby(["date", "species"], as_index=False)["dwd_level"].max()
+    return agg if isinstance(agg, pd.DataFrame) else agg.to_frame()
 
 
 # ── DWD CDC Phenology – flowering onset observations ────────────────────────
@@ -165,7 +165,7 @@ def fetch_dwd_phenology() -> pd.DataFrame:
     This covers decades of data (1930–2023 for some species) and is used
     to learn typical season-start timing and year-to-year variability.
     """
-    all_rows: list[dict] = []
+    all_rows: list[dict[str, object]] = []
 
     for plant_name, species in _PHENO_FILES.items():
         for period in ("historical", "recent"):
@@ -228,16 +228,15 @@ def fetch_dwd_phenology() -> pd.DataFrame:
     result = pd.DataFrame(all_rows)
     if not result.empty:
         # Average across Munich stations per year → one onset_doy per (species, year)
-        result = (
-            result.groupby(["species", "year"], as_index=False)["onset_doy"]
-            .mean()
-            .round()
-            .astype({"onset_doy": int})
+        agg_df = result.groupby(["species", "year"], as_index=False).agg(
+            onset_doy=("onset_doy", "mean")
         )
+        agg_df["onset_doy"] = agg_df["onset_doy"].round().astype(int)
+        result = agg_df
     return result
 
 
-def phenology_season_stats(phenology: pd.DataFrame) -> dict[str, dict]:
+def phenology_season_stats(phenology: pd.DataFrame) -> dict[str, dict[str, float | int]]:
     """
     Compute per-species flowering statistics from multi-year phenology data.
 
@@ -248,7 +247,7 @@ def phenology_season_stats(phenology: pd.DataFrame) -> dict[str, dict]:
         "latest_onset_doy": int,
     }
     """
-    stats: dict[str, dict] = {}
+    stats: dict[str, dict[str, float | int]] = {}
     for species, grp in phenology.groupby("species"):
         stats[str(species)] = {
             "mean_onset_doy": grp["onset_doy"].mean(),

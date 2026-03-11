@@ -28,7 +28,7 @@ def fetch_pollen(days: int = 7) -> pd.DataFrame:
     response.raise_for_status()
     data = response.json()
 
-    rows: list[dict] = []
+    rows: list[dict[str, object]] = []
     for measurement in data.get("measurements", []):
         species = measurement["polle"]
         if species == "Varia":

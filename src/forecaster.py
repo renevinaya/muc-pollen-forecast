@@ -129,13 +129,13 @@ def generate_forecast(
     # --- Pre-compute NDVI features for forecast dates (daily resolution) ---
     try:
         from .ndvi import ndvi_features
-        forecast_dates = pd.DatetimeIndex(weather.index.normalize().unique())
+        forecast_dates = pd.DatetimeIndex(weather.index).normalize().unique()
         ndvi_df = ndvi_features(forecast_dates)
     except Exception as exc:
         print(f"  NDVI fetch failed ({exc}), using defaults")
         ndvi_df = pd.DataFrame(
             {"ndvi": 0.0, "evi": 0.0, "ndvi_delta": 0.0},
-            index=pd.DatetimeIndex(weather.index.normalize().unique()),
+            index=pd.DatetimeIndex(weather.index).normalize().unique(),
         )
 
     # Build recent pollen history per species in LOG-SPACE (for lag features)
@@ -149,8 +149,8 @@ def generate_forecast(
     prev_date_str: str | None = None
     day_idx = -1
 
-    for dt, weather_row in weather.iterrows():
-        dt = pd.Timestamp(dt)
+    for dt_key, weather_row in weather.iterrows():
+        dt = pd.Timestamp(str(dt_key))
         date_str = dt.strftime("%Y-%m-%d")
 
         # Track day index for confidence scoring

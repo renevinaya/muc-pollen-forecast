@@ -60,7 +60,7 @@ def _fetch_single_location(
     response.raise_for_status()
     data = response.json()
 
-    rows: list[dict] = []
+    rows: list[dict[str, object]] = []
     for measurement in data.get("measurements", []):
         sp = measurement["polle"]
         if sp not in ALL_SPECIES:
@@ -107,12 +107,9 @@ def fetch_pollenscience(
 
     combined = pd.concat(parts, ignore_index=True)
     # Keep the highest value when both stations report for the same window
-    combined = (
-        combined.groupby(["date", "species"], as_index=False)["value"]
-        .max()
-        .sort_values(["date", "species"])
-        .reset_index(drop=True)
-    )
+    agg = combined.groupby(["date", "species"], as_index=False)["value"].max()
+    agg_df: pd.DataFrame = agg if isinstance(agg, pd.DataFrame) else agg.to_frame()
+    combined = agg_df.sort_values(["date", "species"]).reset_index(drop=True)
     return combined
 
 
@@ -160,11 +157,9 @@ def fetch_pollenscience_chunked(
 
             if parts:
                 merged = pd.concat(parts, ignore_index=True)
-                merged = (
-                    merged.groupby(["date", "species"], as_index=False)["value"]
-                    .max()
-                )
-                n_nonzero = (merged["value"] > 0).sum()
+                merged_agg = merged.groupby(["date", "species"], as_index=False)["value"].max()
+                merged = merged_agg if isinstance(merged_agg, pd.DataFrame) else merged_agg.to_frame()
+                n_nonzero = int((merged["value"] > 0).sum())
                 print(f"    -> {len(merged)} rows, {n_nonzero} nonzero")
                 all_chunks.append(merged)
             else:

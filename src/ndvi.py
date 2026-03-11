@@ -61,8 +61,8 @@ def fetch_ndvi(
     if NDVI_CACHE.exists():
         cached = pd.read_csv(NDVI_CACHE, parse_dates=["date"])
         if not cached.empty:
-            earliest_cached = cached["date"].min().date()
-            latest_cached = cached["date"].max().date()
+            earliest_cached: date = cached["date"].min().date()
+            latest_cached: date = cached["date"].max().date()
             # Cache is sufficient if it covers the full requested range
             cache_covers_start = earliest_cached <= start + timedelta(days=32)
             cache_covers_end = latest_cached >= end - timedelta(days=32)
@@ -78,7 +78,7 @@ def fetch_ndvi(
     # The ORNL API limits to 10 tiles per request (10 × 16 days = 160 days).
     # Chunk into ~150-day intervals.
     chunk_days = 150
-    all_records: list[dict] = []
+    all_records: list[dict[str, object]] = []
     current_start = start
 
     while current_start < end:
@@ -110,7 +110,7 @@ def fetch_ndvi(
             continue
 
         # Group by calendar_date
-        by_date: dict[str, dict] = {}
+        by_date: dict[str, dict[str, float]] = {}
         for rec in subset:
             cal = rec["calendar_date"]
             band = rec["band"]
@@ -182,10 +182,10 @@ def interpolate_ndvi(composites: pd.DataFrame, dates: pd.DatetimeIndex) -> pd.Da
     daily = comp.reindex(full_range)
 
     # Use cubic interpolation when enough points, otherwise linear
-    method = "cubic" if comp["ndvi"].notna().sum() >= 4 else "linear"
+    method: str = "cubic" if comp["ndvi"].notna().sum() >= 4 else "linear"
     try:
-        daily["ndvi"] = daily["ndvi"].interpolate(method=method).ffill().bfill()
-        daily["evi"] = daily["evi"].interpolate(method=method).ffill().bfill()
+        daily["ndvi"] = daily["ndvi"].interpolate(method=method).ffill().bfill()  # type: ignore[arg-type]
+        daily["evi"] = daily["evi"].interpolate(method=method).ffill().bfill()  # type: ignore[arg-type]
     except (ValueError, TypeError):
         # Fall back to linear if cubic fails (e.g., boundary issues)
         daily["ndvi"] = daily["ndvi"].interpolate(method="linear").ffill().bfill()

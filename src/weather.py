@@ -5,6 +5,7 @@ the LGL Bayern pollen measurement intervals.
 """
 
 from datetime import date
+from typing import Any
 
 import httpx
 import numpy as np
@@ -26,7 +27,7 @@ HOURLY_PARAMS = [
 ]
 
 
-def _parse_hourly_response(data: dict) -> pd.DataFrame:
+def _parse_hourly_response(data: dict[str, Any]) -> pd.DataFrame:
     """Parse an Open-Meteo hourly response and aggregate to 3-hour windows.
 
     Returns a DataFrame indexed by window-start datetime (naive, local time)
@@ -45,7 +46,7 @@ def _parse_hourly_response(data: dict) -> pd.DataFrame:
     df["window"] = df["datetime"].dt.floor("3h")
     grouped = df.groupby("window")
 
-    result = pd.DataFrame(index=sorted(grouped.groups.keys()))
+    result = pd.DataFrame(index=sorted(grouped.groups.keys(), key=str))
     result["temperature_max"] = grouped["temperature_2m"].max()
     result["temperature_min"] = grouped["temperature_2m"].min()
     result["temperature_mean"] = grouped["temperature_2m"].mean()

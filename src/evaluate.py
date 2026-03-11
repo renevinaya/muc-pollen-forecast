@@ -7,6 +7,8 @@ per-species and aggregate metrics. Also supports k-fold
 temporal cross-validation for more robust estimates.
 """
 
+from datetime import date
+
 import numpy as np
 import pandas as pd
 
@@ -68,7 +70,7 @@ def temporal_split_evaluate(
         eligible_months = [eligible_months[i] for i in indices]
         print(f"  Sub-sampled to {n_folds} folds out of available months")
 
-    results: list[dict] = []
+    results: list[dict[str, object]] = []
     fold_num = 0
 
     for period in eligible_months:
@@ -94,6 +96,8 @@ def temporal_split_evaluate(
                 continue
 
             model = train_species_model(x_train, y_train, raw_values=raw_train, species=species)
+            if model is None:
+                continue
 
             # Prepare test features
             species_test = test_data[test_data["species"] == species].copy()
@@ -310,7 +314,7 @@ def compare_with_dwd(results: pd.DataFrame) -> None:
 def _compare_overlapping(
     results: pd.DataFrame,
     dwd_df: pd.DataFrame,
-    overlap_dates: set,
+    overlap_dates: set[date],
     species_set: set[str],
 ) -> None:
     """Compare our predictions vs DWD for overlapping (date, species) pairs."""

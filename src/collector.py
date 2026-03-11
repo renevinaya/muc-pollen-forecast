@@ -28,13 +28,14 @@ def _add_calendar_features(df: pd.DataFrame) -> pd.DataFrame:
     import numpy as np
 
     df = df.copy()
-    doy = df.index.dayofyear
+    dt_index = pd.DatetimeIndex(df.index)
+    doy = dt_index.dayofyear
     df["day_of_year"] = doy
     df["day_of_year_sin"] = np.sin(2 * np.pi * doy / 365.25)
     df["day_of_year_cos"] = np.cos(2 * np.pi * doy / 365.25)
-    df["month"] = df.index.month
+    df["month"] = dt_index.month
     # Time-of-day features (3h window)
-    hour = df.index.hour
+    hour = dt_index.hour
     df["hour_of_day"] = hour
     df["hour_sin"] = np.sin(2 * np.pi * hour / 24)
     df["hour_cos"] = np.cos(2 * np.pi * hour / 24)
@@ -105,7 +106,7 @@ def collect(days: int = 14) -> pd.DataFrame:
 
     # 5. NDVI features (per date, not per window — same for all windows of a day)
     try:
-        unique_dates = pd.DatetimeIndex(common_dts.normalize().unique())
+        unique_dates = pd.DatetimeIndex(common_dts).normalize().unique()
         ndvi_df = ndvi_features(unique_dates)
         if not ndvi_df.empty:
             print(f"  NDVI: {len(ndvi_df)} days")
@@ -116,7 +117,7 @@ def collect(days: int = 14) -> pd.DataFrame:
         ndvi_df = pd.DataFrame()
 
     # 6. Melt pollen to long format and merge weather + NDVI
-    rows: list[dict] = []
+    rows: list[dict[str, object]] = []
     for dt in common_dts:
         w = weather.loc[dt]
         day = dt.normalize()

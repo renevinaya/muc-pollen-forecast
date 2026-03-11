@@ -20,7 +20,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-import joblib
+from typing import Any
+
+import joblib  # type: ignore[import-untyped]
 import numpy as np
 import pandas as pd
 from xgboost import XGBClassifier, XGBRegressor
@@ -42,14 +44,14 @@ MODELS_DIR = Path(__file__).parent.parent / "models"
 
 # --- Log-transform helpers ---
 
-def log_transform(values: pd.Series | np.ndarray) -> np.ndarray:
+def log_transform(values: pd.Series | np.ndarray[Any, Any]) -> np.ndarray[Any, Any]:
     """Apply log1p transform to pollen counts."""
-    return np.log1p(np.asarray(values, dtype=float))
+    return np.log1p(np.asarray(values, dtype=float))  # type: ignore[no-any-return]
 
 
-def inv_log_transform(values: np.ndarray) -> np.ndarray:
+def inv_log_transform(values: np.ndarray[Any, Any]) -> np.ndarray[Any, Any]:
     """Inverse of log1p: expm1."""
-    return np.expm1(values)
+    return np.expm1(values)  # type: ignore[no-any-return]
 
 
 # --- Feature engineering ---
@@ -149,10 +151,10 @@ def _add_weather_derived_features(
     wind = df.groupby("date")["wind_speed_max"].first()
 
     # --- GDD (cumsum of daily max(0, T_mean - T_base), reset each Jan 1) ---
-    window_dates = pd.to_datetime(temp_mean.index).normalize()
+    window_dates = pd.DatetimeIndex(pd.to_datetime(temp_mean.index)).normalize()
     daily_temp = pd.Series(temp_mean.values, index=window_dates).groupby(level=0).mean()
     daily_gdd_contrib = (daily_temp - GDD_T_BASE).clip(lower=0)
-    gdd_daily = daily_gdd_contrib.groupby(daily_temp.index.year).cumsum()
+    gdd_daily = daily_gdd_contrib.groupby(pd.DatetimeIndex(daily_temp.index).year).cumsum()
     date_to_gdd = gdd_daily.to_dict()
     gdd = pd.Series(
         [date_to_gdd.get(d, 0.0) for d in window_dates],
@@ -306,7 +308,7 @@ class TwoStageModel:
     species: str
     extreme_threshold: float = 50.0  # pollen count above which extreme model activates
 
-    def predict(self, X: pd.DataFrame | np.ndarray) -> np.ndarray:  # pylint: disable=invalid-name
+    def predict(self, X: pd.DataFrame | np.ndarray[Any, Any]) -> np.ndarray[Any, Any]:  # pylint: disable=invalid-name
         """
         Combined prediction in log-space.
 
@@ -335,7 +337,7 @@ class TwoStageModel:
 # --- Species-specific hyperparameters (#5) ---
 
 # High-variance species need deeper trees and more estimators
-_SPECIES_HYPERPARAMS: dict[str, dict] = {
+_SPECIES_HYPERPARAMS: dict[str, dict[str, int | float]] = {
     "Corylus": {"clf_depth": 5, "reg_depth": 7, "reg_n": 500, "quantile": 0.92},
     "Alnus":   {"clf_depth": 5, "reg_depth": 7, "reg_n": 500, "quantile": 0.92},
     "Urtica":  {"clf_depth": 5, "reg_depth": 6, "reg_n": 400, "quantile": 0.90},
@@ -343,7 +345,7 @@ _SPECIES_HYPERPARAMS: dict[str, dict] = {
     "Quercus": {"clf_depth": 5, "reg_depth": 6, "reg_n": 400, "quantile": 0.88},
     "Populus": {"clf_depth": 4, "reg_depth": 6, "reg_n": 400, "quantile": 0.88},
 }
-_DEFAULT_HYPERPARAMS = {"clf_depth": 4, "reg_depth": 5, "reg_n": 300, "quantile": 0.85}
+_DEFAULT_HYPERPARAMS: dict[str, int | float] = {"clf_depth": 4, "reg_depth": 5, "reg_n": 300, "quantile": 0.85}
 
 
 def train_species_model(
@@ -370,7 +372,7 @@ def train_species_model(
     y_binary = (raw_values > 0).astype(int) if raw_values is not None else (y > 0).astype(int)
 
     # Skip species with only one class (e.g., all zeros when out of season)
-    n_active = y_binary.sum()
+    n_active = int(y_binary.sum())
     n_total = len(y_binary)
     if n_active == 0 or n_active == n_total:
         print(f"  {species}: skipped (single class — {'all zero' if n_active == 0 else 'all active'})")
@@ -409,7 +411,7 @@ def train_species_model(
     # (#1) Stronger sample weighting: sqrt-based + tier bonuses for extreme events
     sample_weight = None
     if raw_values is not None:
-        rv = raw_values.values.astype(float)
+        rv = raw_values.to_numpy(dtype=float)
         w = 1.0 + np.sqrt(rv)
         w += (rv > 100) * 8.0
         w += (rv > 500) * 20.0
@@ -424,12 +426,13 @@ def train_species_model(
     extreme_regressor = None
     extreme_threshold = 50.0
     if raw_values is not None:
-        extreme_mask = raw_values.values > extreme_threshold
-        n_extreme = extreme_mask.sum()
+        rv_arr = raw_values.to_numpy(dtype=float)
+        extreme_mask = rv_arr > extreme_threshold
+        n_extreme = int(extreme_mask.sum())
         if n_extreme >= 10:
             X_extreme = X[extreme_mask]
             y_extreme = y[extreme_mask]
-            raw_extreme = raw_values.values[extreme_mask]
+            raw_extreme = rv_arr[extreme_mask]
             # Weight by raw value — biggest events matter most
             w_extreme = 1.0 + np.sqrt(raw_extreme)
 
@@ -476,10 +479,10 @@ def train_all(history: pd.DataFrame) -> dict[str, TwoStageModel]:
         # Quick evaluation on training data
         preds_log = model.predict(X)
         preds = inv_log_transform(preds_log)
-        actuals = raw_values.values
-        rmse = np.sqrt(np.mean((preds - actuals) ** 2))
+        actuals = raw_values.to_numpy(dtype=float)
+        rmse = float(np.sqrt(np.mean((preds - actuals) ** 2)))
 
-        clf_acc = (model.classifier.predict(X) == (actuals > 0).astype(int)).mean()
+        clf_acc = float((model.classifier.predict(X) == (actuals > 0).astype(int)).mean())
         print(f"  {species}: trained on {len(X)} samples, "
               f"train RMSE={rmse:.1f}, classifier acc={clf_acc:.0%}")
 
@@ -498,5 +501,6 @@ def load_models() -> dict[str, TwoStageModel]:
     for species in ALL_SPECIES:
         model_path = MODELS_DIR / f"{species}.joblib"
         if model_path.exists():
-            models[species] = joblib.load(model_path)
+            loaded: TwoStageModel = joblib.load(model_path)
+            models[species] = loaded
     return models

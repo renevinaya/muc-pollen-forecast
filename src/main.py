@@ -138,7 +138,7 @@ def cmd_backfill(days: int = 365) -> pd.DataFrame:
         return pd.DataFrame()
 
     pollen = pivot_pollen(pollen_raw)
-    n_days = len(pollen.index.normalize().unique())
+    n_days = len(pd.DatetimeIndex(pollen.index).normalize().unique())
     print(f"Pollen data: {len(pollen)} windows ({n_days} days, "
           f"{pollen.index.min()} to {pollen.index.max()})")
 
@@ -168,12 +168,13 @@ def cmd_backfill(days: int = 365) -> pd.DataFrame:
     weather = weather[~weather.index.duplicated(keep="first")].sort_index()
 
     # Add calendar + time-of-day features
-    doy = weather.index.dayofyear
+    w_dt_index = pd.DatetimeIndex(weather.index)
+    doy = w_dt_index.dayofyear
     weather["day_of_year"] = doy
     weather["day_of_year_sin"] = np.sin(2 * np.pi * doy / 365.25)
     weather["day_of_year_cos"] = np.cos(2 * np.pi * doy / 365.25)
-    weather["month"] = weather.index.month
-    hour = weather.index.hour
+    weather["month"] = w_dt_index.month
+    hour = w_dt_index.hour
     weather["hour_of_day"] = hour
     weather["hour_sin"] = np.sin(2 * np.pi * hour / 24)
     weather["hour_cos"] = np.cos(2 * np.pi * hour / 24)
@@ -185,7 +186,7 @@ def cmd_backfill(days: int = 365) -> pd.DataFrame:
     # Fetch NDVI for the backfill period (daily resolution)
     try:
         from .ndvi import ndvi_features
-        unique_dates = pd.DatetimeIndex(common_dts.normalize().unique())
+        unique_dates = pd.DatetimeIndex(common_dts).normalize().unique()
         ndvi_df = ndvi_features(unique_dates)
         if not ndvi_df.empty:
             print(f"NDVI data: {len(ndvi_df)} days")
@@ -195,7 +196,7 @@ def cmd_backfill(days: int = 365) -> pd.DataFrame:
         print(f"NDVI fetch failed ({exc}), continuing without.")
         ndvi_df = pd.DataFrame()
 
-    rows: list[dict] = []
+    rows: list[dict[str, object]] = []
     for dt in common_dts:
         w = weather.loc[dt]
         day = dt.normalize()
@@ -261,7 +262,7 @@ def cmd_backfill_pollenscience(start_year: int = 2019) -> pd.DataFrame:
     ).fillna(0)
     pollen.index = pd.DatetimeIndex(pollen.index)
     pollen = pollen.sort_index()
-    n_days = len(pollen.index.normalize().unique())
+    n_days = len(pd.DatetimeIndex(pollen.index).normalize().unique())
     print(f"  Windows: {len(pollen)} ({n_days} days, "
           f"{pollen.index.min()} to {pollen.index.max()})")
 
@@ -273,12 +274,13 @@ def cmd_backfill_pollenscience(start_year: int = 2019) -> pd.DataFrame:
     print(f"  Weather windows: {len(weather)}")
 
     # 3. Calendar features
-    doy = weather.index.dayofyear
+    w_dt_idx = pd.DatetimeIndex(weather.index)
+    doy = w_dt_idx.dayofyear
     weather["day_of_year"] = doy
     weather["day_of_year_sin"] = np.sin(2 * np.pi * doy / 365.25)
     weather["day_of_year_cos"] = np.cos(2 * np.pi * doy / 365.25)
-    weather["month"] = weather.index.month
-    hour = weather.index.hour
+    weather["month"] = w_dt_idx.month
+    hour = w_dt_idx.hour
     weather["hour_of_day"] = hour
     weather["hour_sin"] = np.sin(2 * np.pi * hour / 24)
     weather["hour_cos"] = np.cos(2 * np.pi * hour / 24)
@@ -292,7 +294,7 @@ def cmd_backfill_pollenscience(start_year: int = 2019) -> pd.DataFrame:
 
     # 5. NDVI features
     try:
-        unique_dates = pd.DatetimeIndex(common_dts.normalize().unique())
+        unique_dates = pd.DatetimeIndex(common_dts).normalize().unique()
         ndvi_df = ndvi_features(unique_dates)
         if not ndvi_df.empty:
             print(f"  NDVI: {len(ndvi_df)} days")
@@ -303,7 +305,7 @@ def cmd_backfill_pollenscience(start_year: int = 2019) -> pd.DataFrame:
         ndvi_df = pd.DataFrame()
 
     # 6. Build rows
-    rows: list[dict] = []
+    rows: list[dict[str, object]] = []
     for dt in common_dts:
         w = weather.loc[dt]
         day = dt.normalize()
