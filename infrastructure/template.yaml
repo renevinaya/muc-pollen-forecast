@@ -89,7 +89,7 @@ Resources:
           CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6
           ResponseHeadersPolicyId: 60669652-455b-4ae9-85a4-c4c02393f86c
           Compress: true
-        PriceClass: PriceClass_100
+        WebACLId: arn:aws:wafv2:us-east-1:844563760497:global/webacl/CreatedByCloudFront-2d6806e0/43cf304c-e0ee-40e9-8b1d-9dbc54f48c11
       Tags:
         - Key: project
           Value: muc-pollen
