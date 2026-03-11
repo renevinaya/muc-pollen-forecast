@@ -5,7 +5,7 @@ phases:
       python: 3.12
     commands:
       - pip install uv
-      - uv pip install --system -r requirements.txt
+      - uv pip install --system .
   build:
     commands:
       - |

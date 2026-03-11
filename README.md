@@ -80,9 +80,7 @@ Lag features are computed autoregressively during forecasting — each 3-hour wi
 ## Setup
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
+uv sync
 ```
 
 Requires Python ≥ 3.11. Dependencies: httpx, pandas, numpy, xgboost, scikit-learn, joblib, boto3.
@@ -199,7 +197,7 @@ aws cloudformation deploy \
 
 The CodeBuild project runs `buildspec.yml`, which:
 
-1. Installs Python 3.12 and uv, then `uv pip install -r requirements.txt`
+1. Installs Python 3.12 and uv, then `uv pip install --system .`
 2. Runs `python -m src.main run` (collect → train → forecast)
 3. The forecast step uploads `forecast.json` and backs up `data/history.csv` to S3 (because `S3_BUCKET` is set)
 
