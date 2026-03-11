@@ -7,10 +7,15 @@ Parameters:
     Description: GitHub repository URL
     Default: https://github.com/renevinaya/muc-pollen-forecast.git
 
-  ScheduleExpression:
+  ForecastSchedule:
     Type: String
-    Description: Cron expression for daily forecast (6 AM CET = 5 AM UTC)
-    Default: cron(0 5 * * ? *)
+    Description: Schedule for forecast updates (every 3 hours)
+    Default: cron(0 2,5,8,11,14,17,20,23 * * ? *)
+
+  TrainSchedule:
+    Type: String
+    Description: Schedule for monthly model training (1st of month, 4 AM UTC)
+    Default: cron(0 4 1 * ? *)
 
 Resources:
   # S3 Bucket for forecast data + historical data + model artifacts
@@ -142,6 +147,8 @@ Resources:
             Value: !Ref ForecastBucket
           - Name: AWS_DEFAULT_REGION
             Value: eu-central-1
+          - Name: RUN_MODE
+            Value: forecast
       Source:
         Type: GITHUB
         Location: !Ref GitHubRepo
@@ -151,21 +158,59 @@ Resources:
         - Key: project
           Value: muc-pollen
 
-  # EventBridge Rule for daily trigger
-  DailyScheduleRule:
+  # EventBridge Rule for 3-hourly forecast
+  ForecastScheduleRule:
     Type: AWS::Events::Rule
     Properties:
-      Name: muc-pollen-forecast-daily
-      Description: Trigger forecast generation daily at 6 AM CET
-      ScheduleExpression: !Ref ScheduleExpression
+      Name: muc-pollen-forecast-3h
+      Description: Trigger forecast generation every 3 hours
+      ScheduleExpression: !Ref ForecastSchedule
       State: ENABLED
       Targets:
         - Id: ForecastCodeBuild
           Arn: !GetAtt ForecastCodeBuild.Arn
           RoleArn: !GetAtt EventBridgeRole.Arn
+          Input: '{"environmentVariablesOverride": [{"name": "RUN_MODE", "value": "forecast", "type": "PLAINTEXT"}]}'
+
+  # EventBridge Rule for monthly training
+  TrainScheduleRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: muc-pollen-forecast-monthly-train
+      Description: Trigger model training on 1st of each month
+      ScheduleExpression: !Ref TrainSchedule
+      State: ENABLED
+      Targets:
+        - Id: TrainCodeBuild
+          Arn: !GetAtt ForecastCodeBuild.Arn
+          RoleArn: !GetAtt EventBridgeRole.Arn
+          Input: '{"environmentVariablesOverride": [{"name": "RUN_MODE", "value": "train", "type": "PLAINTEXT"}]}'
 
   # IAM Role for EventBridge
   EventBridgeRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: events.amazonaws.com
+            Action: sts:AssumeRole
+      Tags:
+        - Key: project
+          Value: muc-pollen
+      Policies:
+        - PolicyName: StartCodeBuild
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: codebuild:StartBuild
+                Resource: !GetAtt ForecastCodeBuild.Arn
+
+  # IAM Role for EventBridge to trigger training
+  EventBridgeTrainRole:
     Type: AWS::IAM::Role
     Properties:
       AssumeRolePolicyDocument:

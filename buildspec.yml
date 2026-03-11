@@ -8,7 +8,12 @@ phases:
       - uv pip install --system -r requirements.txt
   build:
     commands:
-      - python -m src.main run
+      - |
+        if [ "$RUN_MODE" = "train" ]; then
+          python -m src.main run-train
+        else
+          python -m src.main run
+        fi
 artifacts:
   files:
     - data/forecast.json

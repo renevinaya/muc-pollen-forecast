@@ -5,7 +5,8 @@ Usage:
     python -m src.main collect      # Fetch recent data and append to history
     python -m src.main train        # Train models on accumulated history
     python -m src.main forecast     # Generate forecast and upload to S3
-    python -m src.main run          # All three steps in sequence (daily cron)
+    python -m src.main run          # Collect + forecast (3-hourly cron)
+    python -m src.main run-train    # Collect + train + forecast (monthly cron)
     python -m src.main backfill N   # Backfill N days of historical data
     python -m src.main backfill-ps  # Backfill from pollenscience.eu (2019+, slow)
     python -m src.main benchmark    # Walk-forward evaluation of forecast quality
@@ -426,10 +427,20 @@ def cmd_phenology() -> None:
 
 
 def cmd_run() -> None:
-    """Run full pipeline: collect -> train -> forecast."""
+    """Run forecast pipeline: collect -> forecast (every 3 hours)."""
     import os
     bucket = os.environ.get("S3_BUCKET")
     # On CodeBuild: download history from S3 before collecting
+    if bucket and not HISTORY_FILE.exists():
+        sync_historical_data(HISTORY_FILE, bucket)
+    history = cmd_collect()
+    cmd_forecast(history)
+
+
+def cmd_run_train() -> None:
+    """Run full pipeline with training: collect -> train -> forecast (monthly)."""
+    import os
+    bucket = os.environ.get("S3_BUCKET")
     if bucket and not HISTORY_FILE.exists():
         sync_historical_data(HISTORY_FILE, bucket)
     history = cmd_collect()
@@ -467,6 +478,8 @@ def main() -> None:
         cmd_phenology()
     elif command == "run":
         cmd_run()
+    elif command == "run-train":
+        cmd_run_train()
     else:
         print(f"Unknown command: {command}")
         print(__doc__)
