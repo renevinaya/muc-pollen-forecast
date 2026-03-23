@@ -22,9 +22,9 @@ from typing import Any
 import pandas as pd
 
 from .collector import collect, update_history, HISTORY_FILE, DATA_DIR
-from .trainer import train_all
+from .trainer import train_all, MODELS_DIR
 from .forecaster import generate_forecast
-from .s3 import upload_forecast, upload_csv, sync_historical_data
+from .s3 import upload_forecast, upload_csv, upload_models, download_models, sync_historical_data
 from .pollen import fetch_pollen, pivot_pollen
 from .pollenscience import fetch_pollenscience_chunked
 from .weather import fetch_historical_weather, fetch_weather_forecast as fetch_weather_fc
@@ -432,9 +432,11 @@ def cmd_run() -> None:
     """Run forecast pipeline: collect -> forecast (every 3 hours)."""
     import os
     bucket = os.environ.get("S3_BUCKET")
-    # On CodeBuild: download history from S3 before collecting
+    # On CodeBuild: download history and models from S3 before running
     if bucket and not HISTORY_FILE.exists():
         sync_historical_data(HISTORY_FILE, bucket)
+    if bucket:
+        download_models(MODELS_DIR, bucket)
     history = cmd_collect()
     cmd_forecast(history)
 
@@ -447,6 +449,8 @@ def cmd_run_train() -> None:
         sync_historical_data(HISTORY_FILE, bucket)
     history = cmd_collect()
     cmd_train(history)
+    if bucket:
+        upload_models(MODELS_DIR, bucket)
     cmd_forecast(history)
 
 

@@ -45,6 +45,33 @@ def download_csv(bucket: str, key: str, local_path: Path) -> bool:
         return False
 
 
+def upload_models(models_dir: Path, bucket: str, prefix: str = "models/") -> None:
+    """Upload all .joblib model files to S3."""
+    s3 = boto3.client("s3", region_name=S3_REGION)
+    for model_file in models_dir.glob("*.joblib"):
+        key = prefix + model_file.name
+        s3.upload_file(str(model_file), bucket, key)
+    count = len(list(models_dir.glob("*.joblib")))
+    print(f"Uploaded {count} models to s3://{bucket}/{prefix}")
+
+
+def download_models(models_dir: Path, bucket: str, prefix: str = "models/") -> int:
+    """Download all .joblib model files from S3. Returns number of models downloaded."""
+    s3 = boto3.client("s3", region_name=S3_REGION)
+    models_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        resp = s3.list_objects_v2(Bucket=bucket, Prefix=prefix)
+        files = [obj["Key"] for obj in resp.get("Contents", []) if obj["Key"].endswith(".joblib")]
+    except s3.exceptions.ClientError:
+        return 0
+    for key in files:
+        local_path = models_dir / key.removeprefix(prefix)
+        s3.download_file(bucket, key, str(local_path))
+    if files:
+        print(f"Downloaded {len(files)} models from s3://{bucket}/{prefix}")
+    return len(files)
+
+
 def sync_historical_data(
     local_path: Path, bucket: str | None, key: str = "data/history.csv"
 ) -> pd.DataFrame:
