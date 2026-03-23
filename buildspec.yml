@@ -5,14 +5,14 @@ phases:
       python: 3.12
     commands:
       - pip install uv
-      - uv pip install --system --override pyproject.toml .
+      - uv sync
   build:
     commands:
       - |
         if [ "$RUN_MODE" = "train" ]; then
-          python -m src.main run-train
+          uv run python -m src.main run-train
         else
-          python -m src.main run
+          uv run python -m src.main run
         fi
 artifacts:
   files:
