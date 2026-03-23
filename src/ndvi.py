@@ -199,10 +199,18 @@ def interpolate_ndvi(composites: pd.DataFrame, dates: pd.DatetimeIndex) -> pd.Da
     return result[["ndvi", "evi", "ndvi_delta"]]
 
 
+_composites_cache: pd.DataFrame | None = None
+
+
 def ndvi_features(history_dates: pd.DatetimeIndex) -> pd.DataFrame:
     """
     Convenience wrapper: fetch NDVI, interpolate to history dates,
     return feature columns ready to merge.
+
+    Caches the fetched composites in memory so that repeated calls within
+    the same process (e.g. collect then forecast) don't re-fetch.
     """
-    composites = fetch_ndvi()
-    return interpolate_ndvi(composites, history_dates)
+    global _composites_cache
+    if _composites_cache is None:
+        _composites_cache = fetch_ndvi()
+    return interpolate_ndvi(_composites_cache, history_dates)
