@@ -16,7 +16,7 @@ import pandas as pd
 from .pollenscience import fetch_pollenscience
 from .pollen import pivot_pollen
 from .weather import fetch_historical_weather, fetch_weather_forecast
-from .ndvi import ndvi_features
+from .ndvi import fetch_ndvi, interpolate_ndvi, set_composites_cache
 from .types import ALL_SPECIES
 
 DATA_DIR = Path(__file__).parent.parent / "data"
@@ -49,12 +49,34 @@ def collect(days: int = 14) -> pd.DataFrame:
     One row per (datetime, species) at 3-hour resolution — ready to append
     to the history file.
     """
+    from concurrent.futures import ThreadPoolExecutor
+
     print(f"Collecting last {days} days of data...")
 
-    # 1. Pollen data (3h resolution) from pollenscience.eu
     end = date.today()
     start = end - timedelta(days=days)
-    pollen_raw = fetch_pollenscience(start, end)
+    archive_end = end - timedelta(days=5)
+    archive_start = start - timedelta(days=1)
+
+    # Fetch pollen, weather, and NDVI in parallel
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        fut_pollen = pool.submit(fetch_pollenscience, start, end)
+        fut_archive = (
+            pool.submit(fetch_historical_weather, archive_start, archive_end)
+            if archive_start <= archive_end
+            else None
+        )
+        fut_forecast = pool.submit(fetch_weather_forecast, 7)
+        fut_ndvi = pool.submit(fetch_ndvi)
+
+        pollen_raw = fut_pollen.result()
+        archive_weather = fut_archive.result() if fut_archive else None
+        recent_weather_full = fut_forecast.result()
+        ndvi_composites = fut_ndvi.result()
+
+    # Populate NDVI in-memory cache for later use by forecaster
+    set_composites_cache(ndvi_composites)
+
     if pollen_raw.empty:
         print("No pollen data available.")
         return pd.DataFrame()
@@ -62,23 +84,16 @@ def collect(days: int = 14) -> pd.DataFrame:
     pollen = pivot_pollen(pollen_raw)
     print(f"  Pollen: {len(pollen)} windows, species: {list(pollen.columns)}")
 
-    # 2. Weather data (3h resolution): use archive for older dates, forecast API for recent
-    archive_end = date.today() - timedelta(days=5)
-    archive_start = pollen.index.min().date() - timedelta(days=1)
-
+    # 2. Combine weather data
     weather_parts: list[pd.DataFrame] = []
 
-    # 2a. Historical archive (available up to ~5 days ago)
-    if archive_start <= archive_end:
-        archive_weather = fetch_historical_weather(archive_start, archive_end)
+    if archive_weather is not None:
         weather_parts.append(archive_weather)
         print(f"  Weather archive: {len(archive_weather)} windows")
 
-    # 2b. Forecast API for the last ~5 days + today (fills the gap)
-    recent_weather = fetch_weather_forecast(days=7)
     # Only keep past/today windows from the forecast
     now = pd.Timestamp.now().floor("3h")
-    recent_weather = recent_weather[recent_weather.index <= now]
+    recent_weather = recent_weather_full[recent_weather_full.index <= now]
     if not recent_weather.empty:
         weather_parts.append(recent_weather)
         print(f"  Weather recent (from forecast API): {len(recent_weather)} windows")
@@ -107,13 +122,13 @@ def collect(days: int = 14) -> pd.DataFrame:
     # 5. NDVI features (per date, not per window — same for all windows of a day)
     try:
         unique_dates = pd.DatetimeIndex(common_dts).normalize().unique()
-        ndvi_df = ndvi_features(unique_dates)
+        ndvi_df = interpolate_ndvi(ndvi_composites, unique_dates)
         if not ndvi_df.empty:
             print(f"  NDVI: {len(ndvi_df)} days")
         else:
             ndvi_df = pd.DataFrame()
     except Exception as exc:
-        print(f"  NDVI fetch failed ({exc}), continuing without NDVI.")
+        print(f"  NDVI interpolation failed ({exc}), continuing without NDVI.")
         ndvi_df = pd.DataFrame()
 
     # 6. Melt pollen to long format and merge weather + NDVI

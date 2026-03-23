@@ -69,12 +69,25 @@ def _parse_hourly_response(data: dict[str, Any]) -> pd.DataFrame:
     return result
 
 
+_forecast_cache: tuple[pd.DataFrame, int] | None = None
+
+
 def fetch_weather_forecast(days: int = 5) -> pd.DataFrame:
     """
     Fetch weather forecast from Open-Meteo at 3-hour resolution.
 
+    Results are cached in memory so that collect() and generate_forecast()
+    don't make duplicate API calls within the same process.
+
     Returns a DataFrame indexed by window-start datetime with weather feature columns.
     """
+    global _forecast_cache
+    if _forecast_cache is not None:
+        cached_df, cached_days = _forecast_cache
+        if cached_days >= days:
+            cutoff = cached_df.index.min() + pd.Timedelta(days=days)
+            return cached_df[cached_df.index < cutoff]
+
     response = httpx.get(
         FORECAST_URL,
         params={
@@ -87,7 +100,9 @@ def fetch_weather_forecast(days: int = 5) -> pd.DataFrame:
         timeout=30,
     )
     response.raise_for_status()
-    return _parse_hourly_response(response.json())
+    result = _parse_hourly_response(response.json())
+    _forecast_cache = (result, days)
+    return result
 
 
 def fetch_historical_weather(start: date, end: date) -> pd.DataFrame:

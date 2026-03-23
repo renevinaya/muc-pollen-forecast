@@ -121,10 +121,13 @@ def generate_forecast(
     base_weather["species"] = "__dummy__"
     base_weather["value"] = 0.0
 
-    weather_derived_by_species: dict[str, pd.DataFrame] = {}
-    for sp in ALL_SPECIES:
-        sp_derived = _add_weather_derived_features(base_weather.copy(), sp)
-        weather_derived_by_species[sp] = sp_derived.set_index("date")
+    def _derive_for_species(sp: str) -> tuple[str, pd.DataFrame]:
+        return sp, _add_weather_derived_features(base_weather.copy(), sp).set_index("date")
+
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=len(ALL_SPECIES)) as pool:
+        futures = {pool.submit(_derive_for_species, sp): sp for sp in ALL_SPECIES}
+        weather_derived_by_species = dict(f.result() for f in futures)
 
     # --- Pre-compute NDVI features for forecast dates (daily resolution) ---
     try:

@@ -202,6 +202,12 @@ def interpolate_ndvi(composites: pd.DataFrame, dates: pd.DatetimeIndex) -> pd.Da
 _composites_cache: pd.DataFrame | None = None
 
 
+def set_composites_cache(composites: pd.DataFrame) -> None:
+    """Populate the in-memory composites cache (used by parallel fetching)."""
+    global _composites_cache
+    _composites_cache = composites
+
+
 def ndvi_features(history_dates: pd.DatetimeIndex) -> pd.DataFrame:
     """
     Convenience wrapper: fetch NDVI, interpolate to history dates,
