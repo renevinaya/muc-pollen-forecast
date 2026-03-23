@@ -5,7 +5,7 @@ phases:
       python: 3.12
     commands:
       - pip install uv
-      - uv pip install --system .
+      - uv pip install --system --override pyproject.toml .
   build:
     commands:
       - |

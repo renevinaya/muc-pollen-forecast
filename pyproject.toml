@@ -23,6 +23,11 @@ dev = [
 [project.scripts]
 muc-pollen-forecast = "src.main:main"
 
+[tool.uv]
+# Exclude nvidia-nccl-cu12: 280MB GPU multi-node library pulled in by
+# xgboost, unnecessary for CPU-based inference.
+override-dependencies = ["nvidia-nccl-cu12; sys_platform == 'win32'"]
+
 [tool.ruff]
 target-version = "py311"
 line-length = 100
