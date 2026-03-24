@@ -78,6 +78,16 @@ def _parse_hourly_response(data: dict[str, Any]) -> pd.DataFrame:
     result["direct_radiation_sum"] = grouped["direct_radiation"].sum()
     result["is_day"] = grouped["is_day"].max()  # 1.0 if any hour in window is daytime
 
+    # Finer resolution features: slopes within each 3h window
+    # These capture rapid changes (warming ramp, drying) that aggregated stats miss.
+    # Slope = last hour value - first hour value within the window.
+    result["temp_slope_3h"] = grouped["temperature_2m"].last() - grouped["temperature_2m"].first()
+    result["humidity_slope_3h"] = (
+        grouped["relative_humidity_2m"].last() - grouped["relative_humidity_2m"].first()
+    )
+    # Temperature variance within window (high variance = changing conditions)
+    result["temp_variance_3h"] = grouped["temperature_2m"].var().fillna(0)
+
     result.index.name = None
     return result
 

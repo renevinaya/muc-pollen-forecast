@@ -42,6 +42,10 @@ WEATHER_FEATURES = [
     "cape_max",               # convective energy — thunderstorm asthma, vertical transport
     "direct_radiation_sum",   # direct radiation — UV drives anther opening
     "is_day",                 # binary day/night — pollen release is almost exclusively daytime
+    # Finer resolution features (computed from hourly data within 3h windows)
+    "temp_slope_3h",          # temperature change within window (warming ramp signal)
+    "humidity_slope_3h",      # humidity change within window (rapid drying triggers release)
+    "temp_variance_3h",       # temperature variance within window (changing conditions)
 ]
 
 CALENDAR_FEATURES = [
