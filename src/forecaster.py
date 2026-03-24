@@ -147,6 +147,23 @@ def generate_forecast(
     for species in ALL_SPECIES:
         recent_log[species] = _get_recent_pollen_log(history, species, n=56)
 
+    # --- Real-time observation assimilation ---
+    # Build a lookup of observed pollen values from history so that forecast
+    # windows that already have real measurements use those instead of model
+    # predictions.  This breaks the autoregressive error cascade for same-day
+    # windows where data has already been collected.
+    observed: dict[tuple[pd.Timestamp, str], float] = {}
+    if not history.empty:
+        recent_cutoff = weather.index.min()
+        recent_hist = history[history["date"] >= recent_cutoff]
+        for _, row in recent_hist.iterrows():
+            key = (pd.Timestamp(row["date"]), str(row["species"]))
+            observed[key] = float(row["value"])
+
+    n_obs_windows = len(set(dt for dt, _ in observed))
+    if n_obs_windows > 0:
+        print(f"Real-time assimilation: {n_obs_windows} observed windows will use actual data")
+
     # Iterate over all 3h weather windows
     window_results: list[tuple[str, WindowForecast]] = []
     prev_date_str: str | None = None
@@ -170,8 +187,18 @@ def generate_forecast(
             has_model = species in models
             active = is_season_active(species, month)
 
-            if has_model:
-                # Build feature vector
+            # Check if we have a real observation for this window
+            obs_key = (dt, species)
+            has_observation = obs_key in observed
+
+            if has_observation:
+                # Use real observation — breaks autoregressive error cascade
+                prediction = observed[obs_key]
+                pred_log = float(np.log1p(prediction))
+                # Higher confidence for observed windows
+                confidence = min(0.95, _confidence_for_day(day_idx, has_model) + 0.05)
+            elif has_model:
+                # Build feature vector for model prediction
                 features: dict[str, float] = {}
 
                 # Weather features
@@ -245,10 +272,12 @@ def generate_forecast(
                 pred_log = float(models[species].predict(x_features)[0])
                 pred_log = max(0.0, pred_log)  # log-space, 0 = pollen count of 0
                 prediction = float(inv_log_transform(np.array([pred_log]))[0])
+                confidence = _confidence_for_day(day_idx, has_model)
             else:
                 # Fallback: use last known value with seasonal decay
                 prediction = float(inv_log_transform(np.array([log_vals[-1]]))[0]) * 0.8
                 pred_log = float(np.log1p(prediction))
+                confidence = _confidence_for_day(day_idx, has_model)
 
             # Force to zero if out of season
             if not active:
@@ -260,11 +289,12 @@ def generate_forecast(
                     name=species,
                     level=value_to_level(prediction, species).value,
                     value=prediction,
-                    confidence=_confidence_for_day(day_idx, has_model),
+                    confidence=confidence,
                 )
             )
 
-            # Autoregressive: feed log-space prediction back for next window
+            # Autoregressive: feed log-space value back for next window
+            # (real observation or prediction — real data grounds future predictions)
             recent_log[species].append(pred_log)
 
         # Sort by value descending, filter out zeros
