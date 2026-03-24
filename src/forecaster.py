@@ -110,7 +110,7 @@ def generate_forecast(
     # The burst potential features (#2) depend on species-specific thresholds,
     # so we pre-compute a table for each species.
     hist_weather = (
-        history.groupby("date")[WEATHER_FEATURES].first()
+        history.groupby("date")[[c for c in WEATHER_FEATURES if c in history.columns]].first()
         if not history.empty
         else pd.DataFrame(columns=WEATHER_FEATURES)
     )
