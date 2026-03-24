@@ -11,12 +11,14 @@ ML-based pollen forecast for Munich at 3-hour resolution, using a three-stage XG
 │  Python backend (this repo)                              │
 │                                                          │
 │  1. Collector  — fetch pollen + weather + NDVI (3h res)  │
+│     → parallel fetching via ThreadPoolExecutor            │
 │     → append to data/history.csv                         │
 │                                                          │
 │  2. Trainer    — train three-stage XGBoost per species   │
 │     → save models to models/*.joblib                     │
 │                                                          │
 │  3. Forecaster — predict 5-day pollen forecast           │
+│     → real-time observation assimilation                 │
 │     → upload forecast.json to S3                         │
 │                                                          │
 │  4. Evaluator  — walk-forward benchmark + DWD comparison │
@@ -36,7 +38,7 @@ ML-based pollen forecast for Munich at 3-hour resolution, using a three-stage XG
 |--------|-----|------------------|
 | [pollenscience.eu](https://pollenscience.eu/api/measurements) | Pollen measurements | Primary source: 3-hour pollen counts for Munich (station DEMUNC, 2019+) |
 | [LGL Bayern](https://d1ppjuhp1nvtc2.cloudfront.net/measurements) | Pollen measurements | Alternative: real-time 3-hour pollen counts for Munich |
-| [Open-Meteo](https://open-meteo.com/) | Weather forecast + historical archive | Hourly weather aggregated to 3-hour windows: temperature, precipitation, wind speed/direction, humidity, sunshine, radiation (no API key required) |
+| [Open-Meteo](https://open-meteo.com/) | Weather forecast + historical archive | Hourly weather aggregated to 3-hour windows: temperature, precipitation, wind, humidity, sunshine, radiation, boundary layer height, dew point, CAPE, direct radiation (no API key required) |
 | [MODIS (ORNL DAAC)](https://modis.ornl.gov/rst/api/v1) | NDVI / EVI satellite data | MOD13Q1 250 m 16-day vegetation indices, cubic-interpolated to daily resolution |
 | [DWD Open Data](https://opendata.dwd.de/) | Pollenflug-Gefahrenindex + CDC Phenology | Official pollen danger levels for Oberbayern (partregion 121); multi-decade flowering-onset observations near Munich |
 
@@ -62,18 +64,21 @@ Each species gets a **three-stage pipeline** with species-specific hyperparamete
 
 **Pollen levels** are assigned using species-specific thresholds (based on DWD/ePIN): `none`, `low`, `moderate`, `high`, `very_high`.
 
-## Features (57 total)
+**Real-time observation assimilation**: when the pipeline runs every 3 hours, forecast windows that already have real pollen measurements use the observed values instead of model predictions. This breaks the autoregressive error cascade and grounds lag features for subsequent windows in actual data.
+
+## Features (69 total)
 
 | Category | Count | Features |
 |----------|-------|----------|
-| Weather | 9 | temp max/min/mean, precipitation, wind speed, wind direction, humidity, sunshine duration, radiation |
+| Weather | 17 | temp max/min/mean, precipitation, wind speed, wind direction, humidity, sunshine duration, shortwave radiation, boundary layer height, dew point, CAPE, direct radiation, is_day, temp slope (3h), humidity slope (3h), temp variance (3h) |
 | Calendar | 4 | day of year, sin/cos encoding, month |
 | Time-of-day | 3 | hour of day (0/3/6/.../21), sin/cos hour encoding |
 | Season | 1 | binary `season_active` per species |
-| Weather-derived | 24 | GDD + species GDD threshold, 3/7-day rolling temp/sunshine/rain, temp deltas (1d/3d), cold-to-warm flip, consecutive warm hours, dry streak, temp×sunshine, dry+warm, warming trend, wind×dry+warm, wind direction sin/cos, wind from south/north, transport south/north |
+| Weather-derived | 23 | GDD + species GDD threshold, 3/7-day rolling temp/sunshine/rain, temp deltas (1d/3d), cold-to-warm flip, consecutive warm hours, dry streak, temp×sunshine, dry+warm, warming trend, wind×dry+warm, wind direction sin/cos, wind from south/north, transport south/north |
 | NDVI | 3 | NDVI, EVI, NDVI delta (green-up rate) |
 | Phenology | 2 | days since typical flowering onset, onset anomaly vs. historical mean |
-| Lag | 11 | pollen at t-1/t-2/t-3/t-8(24h)/t-16(48h)/t-56(7d), 24h + 7d rolling mean, 24h + 7d rolling max, days since active (all log-space) |
+| Intra-day | 3 | temp vs. daily max (ratio), precipitation in prior window (binary), temperature rate of change |
+| Lag | 13 | pollen at t-1/t-2/t-3/t-8(24h)/t-16(48h)/t-24(72h)/t-56(7d), 24h + 7d rolling mean, 24h + 7d rolling max, morning average (today's earlier windows), days since active (all log-space) |
 
 Lag features are computed autoregressively during forecasting — each 3-hour window's prediction feeds into subsequent lag inputs.
 
@@ -97,8 +102,11 @@ python -m src.main train
 # Generate forecast (writes to data/forecast.json locally, or uploads to S3 when S3_BUCKET is set)
 python -m src.main forecast
 
-# Full daily pipeline (collect → train → forecast)
+# 3-hourly pipeline (collect → forecast)
 python -m src.main run
+
+# Monthly pipeline (collect → train → forecast)
+python -m src.main run-train
 ```
 
 ## Commands
@@ -113,11 +121,12 @@ python -m src.main run
 | `benchmark [horizon]` | Walk-forward evaluation with monthly CV folds and DWD comparison (default horizon: 1) |
 | `dwd` | Display the current DWD pollen danger index for Oberbayern |
 | `phenology` | Download DWD phenology data and show flowering-onset statistics |
-| `run` | Execute collect → train → forecast in sequence |
+| `run` | Execute collect → forecast in sequence (every 3 hours) |
+| `run-train` | Execute collect → train → forecast in sequence (monthly retraining) |
 
 ## AWS Deployment
 
-The project runs on AWS, using CodeBuild for daily forecast generation, S3 for storage, and CloudFront for serving the forecast JSON to the Vue frontend.
+The project runs on AWS, using CodeBuild for forecast generation, S3 for storage, and CloudFront for serving the forecast JSON to the Vue frontend.
 
 ### Prerequisites
 
@@ -131,11 +140,12 @@ The CloudFormation template at `infrastructure/template.yaml` provisions:
 
 | Resource | Type | Purpose |
 |----------|------|---------|
-| `ForecastBucket` | S3 Bucket | Stores `forecast.json` (public read), `data/history.csv` backup, model artifacts. Named `muc-pollen-forecast-<AccountId>`. CORS enabled for `*`. Lifecycle rule expires objects under `data/` after 730 days. |
+| `ForecastBucket` | S3 Bucket | Stores `forecast.json` (public read), `data/history.csv` backup, model artifacts. Named `muc-pollen-forecast`. CORS enabled for `*`. Lifecycle rule expires objects under `data/` after 730 days. |
 | `ForecastBucketPolicy` | S3 Bucket Policy | Allows public `s3:GetObject` on `forecast.json` only |
 | `ForecastDistribution` | CloudFront Distribution | HTTPS CDN in front of the S3 bucket. Default root object: `forecast.json`. Price class: `PriceClass_100` (North America + Europe) |
-| `ForecastCodeBuild` | CodeBuild Project | ARM container (`amazonlinux2-aarch64-standard:3.0`, Python 3.12). Pulls source from GitHub, runs `buildspec.yml`. `S3_BUCKET` env var set automatically. Timeout: 15 min |
-| `DailyScheduleRule` | EventBridge Rule | Cron trigger at `0 5 * * ? *` (5:00 UTC / 6:00 CET) to start the CodeBuild build daily |
+| `ForecastCodeBuild` | CodeBuild Project | ARM container (`amazonlinux2-aarch64-standard:3.0`, Python 3.12). Pulls source from GitHub, runs `buildspec.yml`. `S3_BUCKET` and `RUN_MODE` env vars set automatically. Timeout: 15 min |
+| `ForecastScheduleRule` | EventBridge Rule | Cron trigger every 3 hours (`0 2,5,8,11,14,17,20,23 * * ? *`) to run collect → forecast |
+| `TrainScheduleRule` | EventBridge Rule | Cron trigger on the 1st of each month at 4:00 UTC to run collect → train → forecast |
 | `CodeBuildServiceRole` | IAM Role | Grants CodeBuild access to CloudWatch Logs and read/write on the S3 bucket |
 | `EventBridgeRole` | IAM Role | Grants EventBridge permission to call `codebuild:StartBuild` |
 
@@ -157,7 +167,8 @@ aws cloudformation deploy \
   --capabilities CAPABILITY_IAM \
   --parameter-overrides \
     GitHubRepo=https://github.com/<your-user>/muc-pollen-forecast.git \
-    ScheduleExpression="cron(0 6 * * ? *)"
+    ForecastSchedule="cron(0 2,5,8,11,14,17,20,23 * * ? *)" \
+    TrainSchedule="cron(0 4 1 * ? *)"
 ```
 
 ### After Deployment
@@ -198,7 +209,7 @@ aws cloudformation deploy \
 The CodeBuild project runs `buildspec.yml`, which:
 
 1. Installs Python 3.12 and uv, then `uv pip install --system .`
-2. Runs `python -m src.main run` (collect → train → forecast)
+2. Checks `RUN_MODE`: if `train`, runs `python -m src.main run-train` (collect → train → forecast); otherwise runs `python -m src.main run` (collect → forecast)
 3. The forecast step uploads `forecast.json` and backs up `data/history.csv` to S3 (because `S3_BUCKET` is set)
 
 ### Environment Variables
@@ -206,6 +217,7 @@ The CodeBuild project runs `buildspec.yml`, which:
 | Variable | Set by | Description |
 |----------|--------|-------------|
 | `S3_BUCKET` | CloudFormation (CodeBuild env) | S3 bucket name. When set, forecast is uploaded to S3 and history is backed up. When unset, forecast is written to `data/forecast.json` locally. |
+| `RUN_MODE` | CloudFormation (EventBridge overrides) | `forecast` (default, every 3h) or `train` (monthly, includes model retraining) |
 
 ### Local Development
 
@@ -213,7 +225,7 @@ Without AWS, the app works entirely locally — forecast output is written to `d
 
 ## Forecast Confidence
 
-Confidence scores start at **0.90** for day 1 and decrease by **0.08** per additional forecast day (0.90, 0.82, 0.74, 0.66, 0.58). If no trained model exists for a species, confidence is halved. Scores are clipped to [0.20, 0.95]. Species with predicted value ≤ 0.5 are filtered from the output.
+Confidence scores start at **0.90** for day 1 and decrease by **0.08** per additional forecast day (0.90, 0.82, 0.74, 0.66, 0.58). If no trained model exists for a species, confidence is halved. Windows with real-time observations get a +0.05 confidence boost. Scores are clipped to [0.20, 0.95]. Species with predicted value ≤ 0.5 are filtered from the output.
 
 ## Output Format
 
