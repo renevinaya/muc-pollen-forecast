@@ -70,11 +70,24 @@ def _add_lag_features(df: pd.DataFrame) -> pd.DataFrame:
     df["pollen_lag_3"] = s.shift(3)           # 9h ago
     df["pollen_lag_8"] = s.shift(8)           # same time yesterday (24h)
     df["pollen_lag_16"] = s.shift(16)         # 48h ago (#3)
+    df["pollen_lag_24"] = s.shift(24)         # same time 3 days ago (72h)
     df["pollen_lag_56"] = s.shift(56)         # 7 days ago (#3)
     df["pollen_rolling_8"] = s.rolling(8, min_periods=1).mean().shift(1)    # 24h mean
     df["pollen_rolling_56"] = s.rolling(56, min_periods=1).mean().shift(1)  # 7-day mean
     df["pollen_max_8"] = s.rolling(8, min_periods=1).max().shift(1)         # 24h max (#3)
     df["pollen_max_56"] = s.rolling(56, min_periods=1).max().shift(1)       # 7-day max (#3)
+    # Mean of today's earlier windows (intra-day trend signal)
+    # Group by calendar day, use expanding mean of log-values within the day, shifted
+    day_groups = pd.to_datetime(df["date"]).dt.normalize()
+    morning_avg = s.groupby(day_groups.values).apply(
+        lambda g: g.expanding(min_periods=1).mean().shift(1)
+    )
+    if hasattr(morning_avg.index, 'droplevel'):
+        try:
+            morning_avg = morning_avg.droplevel(0)
+        except (ValueError, IndexError):
+            pass
+    df["pollen_morning_avg"] = morning_avg.reindex(df.index).fillna(0).values
     # Days (windows) since pollen was last > 0 (#3)
     active_mask = (s > 0).astype(int)
     cumactive = active_mask.cumsum()

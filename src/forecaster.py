@@ -181,6 +181,10 @@ def generate_forecast(
     if n_obs_windows > 0:
         print(f"Real-time assimilation: {n_obs_windows} observed windows will use actual data")
 
+    # Track today's earlier windows per species for pollen_morning_avg
+    morning_log: dict[str, list[float]] = {sp: [] for sp in ALL_SPECIES}
+    current_day: str | None = None
+
     # Iterate over all 3h weather windows
     window_results: list[tuple[str, WindowForecast]] = []
     prev_date_str: str | None = None
@@ -194,6 +198,11 @@ def generate_forecast(
         if date_str != prev_date_str:
             day_idx += 1
             prev_date_str = date_str
+            # Reset morning tracker for new day
+            if date_str != current_day:
+                for sp in ALL_SPECIES:
+                    morning_log[sp] = []
+                current_day = date_str
 
         cal = _calendar_features_for_datetime(dt)
         month = dt.month
@@ -281,11 +290,15 @@ def generate_forecast(
                 features["pollen_lag_3"] = log_vals[-3]
                 features["pollen_lag_8"] = log_vals[-8] if len(log_vals) >= 8 else log_vals[0]
                 features["pollen_lag_16"] = log_vals[-16] if len(log_vals) >= 16 else log_vals[0]
+                features["pollen_lag_24"] = log_vals[-24] if len(log_vals) >= 24 else log_vals[0]
                 features["pollen_lag_56"] = log_vals[-56] if len(log_vals) >= 56 else log_vals[0]
                 features["pollen_rolling_8"] = float(np.mean(log_vals[-8:]))
                 features["pollen_rolling_56"] = float(np.mean(log_vals[-56:]))
                 features["pollen_max_8"] = float(np.max(log_vals[-8:]))
                 features["pollen_max_56"] = float(np.max(log_vals[-56:]))
+                # Mean of today's earlier windows (intra-day trend)
+                ml = morning_log[species]
+                features["pollen_morning_avg"] = float(np.mean(ml)) if ml else 0.0
                 # days_since_active: count back from end of log_vals to last > 0
                 dsa = 0
                 for v in reversed(log_vals):
@@ -322,6 +335,8 @@ def generate_forecast(
             # Autoregressive: feed log-space value back for next window
             # (real observation or prediction — real data grounds future predictions)
             recent_log[species].append(pred_log)
+            # Track this window's value for morning average (for later windows today)
+            morning_log[species].append(pred_log)
 
         # Sort by value descending, filter out zeros
         window_species.sort(key=lambda s: s.value, reverse=True)

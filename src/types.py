@@ -97,11 +97,13 @@ LAG_FEATURES = [
     "pollen_lag_3",       # 3 windows ago (9h)
     "pollen_lag_8",       # same time yesterday (24h)
     "pollen_lag_16",      # 48h ago (#3)
+    "pollen_lag_24",      # same time 3 days ago (72h) — diurnal patterns recur
     "pollen_lag_56",      # 7 days ago (#3)
     "pollen_rolling_8",   # 24h rolling mean (log-transformed)
     "pollen_rolling_56",  # 7-day rolling mean (log-transformed)
     "pollen_max_8",       # 24h rolling max (captures recent spikes) (#3)
     "pollen_max_56",      # 7-day rolling max (#3)
+    "pollen_morning_avg", # mean of today's earlier windows (intra-day trend)
     "days_since_active",  # windows since pollen was last > 0 (#3)
 ]
 
