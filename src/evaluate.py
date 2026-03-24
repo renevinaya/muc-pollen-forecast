@@ -20,6 +20,7 @@ from .trainer import (
     _add_season_feature,
     _add_weather_derived_features,
     _add_ndvi_features,
+    _add_intraday_features,
     _add_phenology_features,
     inv_log_transform,
 )
@@ -111,6 +112,7 @@ def temporal_split_evaluate(
             ]).sort_values("date").reset_index(drop=True)
             species_all = _add_weather_derived_features(species_all, species)
             species_all = _add_ndvi_features(species_all)
+            species_all = _add_intraday_features(species_all)
             species_all = _add_lag_features(species_all)
             species_all = _add_season_feature(species_all, species)
             species_all = _add_phenology_features(species_all, species)

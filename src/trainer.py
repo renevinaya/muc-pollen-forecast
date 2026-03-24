@@ -123,6 +123,34 @@ def _add_ndvi_features(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def _add_intraday_features(df: pd.DataFrame) -> pd.DataFrame:
+    """Add intra-day relative features that capture diurnal position.
+
+    - temp_vs_daily_max: ratio of window temperature to the day's max
+    - precip_in_prior_window: binary flag for rain in the previous 3h window
+    - temp_rate_of_change: temperature difference from the previous 3h window
+    """
+    df = df.copy().sort_values("date")
+
+    temp_mean = df["temperature_mean"].fillna(0)
+
+    # Daily max temperature (group by calendar day)
+    day_col = pd.to_datetime(df["date"]).dt.normalize()
+    daily_max = temp_mean.groupby(day_col.values).transform("max")
+    df["temp_vs_daily_max"] = np.where(
+        daily_max > 0, temp_mean / daily_max, 0.0
+    )
+
+    # Precipitation in prior window (binary)
+    precip = df["precipitation_sum"].fillna(0)
+    df["precip_in_prior_window"] = (precip.shift(1) > 0.1).astype(float).fillna(0)
+
+    # Temperature rate of change (diff from previous 3h window)
+    df["temp_rate_of_change"] = temp_mean.diff(1).fillna(0)
+
+    return df
+
+
 def _add_weather_derived_features(
     df: pd.DataFrame, species: str = "",
 ) -> pd.DataFrame:
@@ -279,6 +307,7 @@ def prepare_training_data(
             species_df[col] = 0.0
     species_df = _add_weather_derived_features(species_df, species)
     species_df = _add_ndvi_features(species_df)
+    species_df = _add_intraday_features(species_df)
     species_df = _add_lag_features(species_df)
     species_df = _add_season_feature(species_df, species)
     species_df = _add_phenology_features(species_df, species)

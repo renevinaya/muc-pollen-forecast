@@ -24,6 +24,7 @@ from .types import (
     WEATHER_FEATURES,
     WEATHER_DERIVED_FEATURES,
     NDVI_FEATURES,
+    INTRADAY_FEATURES,
     FEATURE_COLS,
     SPECIES_SEASON,
     SPECIES_GDD_THRESHOLD,
@@ -141,6 +142,22 @@ def generate_forecast(
             index=pd.DatetimeIndex(weather.index).normalize().unique(),
         )
 
+    # --- Pre-compute intra-day relative features from weather ---
+    weather_days = pd.to_datetime(weather.index).normalize()
+    daily_temp_max = weather["temperature_mean"].groupby(weather_days).transform("max")
+    intraday_df = pd.DataFrame(index=weather.index)
+    intraday_df["temp_vs_daily_max"] = np.where(
+        daily_temp_max > 0,
+        weather["temperature_mean"].fillna(0) / daily_temp_max,
+        0.0,
+    )
+    intraday_df["precip_in_prior_window"] = (
+        weather["precipitation_sum"].fillna(0).shift(1) > 0.1
+    ).astype(float).fillna(0)
+    intraday_df["temp_rate_of_change"] = (
+        weather["temperature_mean"].fillna(0).diff(1).fillna(0)
+    )
+
     # Build recent pollen history per species in LOG-SPACE (for lag features)
     # Keep 56 windows (7 days) for rolling_56 computation
     recent_log: dict[str, list[float]] = {}
@@ -248,6 +265,15 @@ def generate_forecast(
                     max(-60, dt.day_of_year - mean_onset_doy)
                 )
                 features["onset_anomaly"] = 0.0
+
+                # Intra-day relative features
+                if dt in intraday_df.index:
+                    id_row = intraday_df.loc[dt]
+                    for f in INTRADAY_FEATURES:
+                        features[f] = float(id_row.get(f, 0) or 0)
+                else:
+                    for f in INTRADAY_FEATURES:
+                        features[f] = 0.0
 
                 # Lag features in log-space (autoregressive, 3h windows)
                 features["pollen_lag_1"] = log_vals[-1]

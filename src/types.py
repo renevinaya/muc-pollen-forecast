@@ -112,6 +112,13 @@ PHENOLOGY_FEATURES = [
     "onset_anomaly",             # current year onset vs historical mean (needs runtime)
 ]
 
+# Intra-day relative features (capture diurnal position and short-term dynamics)
+INTRADAY_FEATURES = [
+    "temp_vs_daily_max",       # ratio of window temp to day's forecasted max (0-1+)
+    "precip_in_prior_window",  # binary: did it rain in the preceding 3h window?
+    "temp_rate_of_change",     # temperature change from previous 3h window (°C)
+]
+
 FORECAST_DAYS = 5
 WINDOWS_PER_DAY = 8  # 3-hour windows: 00, 03, 06, 09, 12, 15, 18, 21
 
@@ -123,6 +130,7 @@ FEATURE_COLS = (
     + WEATHER_DERIVED_FEATURES
     + NDVI_FEATURES
     + PHENOLOGY_FEATURES
+    + INTRADAY_FEATURES
     + LAG_FEATURES
 )
 
