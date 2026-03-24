@@ -24,6 +24,12 @@ HOURLY_PARAMS = [
     "relative_humidity_2m",
     "sunshine_duration",
     "shortwave_radiation",
+    # Diurnal pollen-relevant parameters
+    "boundary_layer_height",
+    "dew_point_2m",
+    "cape",
+    "direct_radiation",
+    "is_day",
 ]
 
 
@@ -64,6 +70,13 @@ def _parse_hourly_response(data: dict[str, Any]) -> pd.DataFrame:
     result["wind_direction"] = np.degrees(
         np.arctan2(grouped_wd["_wd_sin"].mean(), grouped_wd["_wd_cos"].mean())
     ) % 360
+
+    # Diurnal weather features (aggregated to 3h windows)
+    result["boundary_layer_height"] = grouped["boundary_layer_height"].mean()
+    result["dew_point_mean"] = grouped["dew_point_2m"].mean()
+    result["cape_max"] = grouped["cape"].max()
+    result["direct_radiation_sum"] = grouped["direct_radiation"].sum()
+    result["is_day"] = grouped["is_day"].max()  # 1.0 if any hour in window is daytime
 
     result.index.name = None
     return result

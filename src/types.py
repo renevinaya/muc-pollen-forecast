@@ -36,6 +36,12 @@ WEATHER_FEATURES = [
     "humidity_mean",
     "sunshine_duration",
     "shortwave_radiation_sum",
+    # Diurnal weather features
+    "boundary_layer_height",  # PBL height — pollen disperses when PBL rises
+    "dew_point_mean",         # dew point — morning dew suppresses pollen release
+    "cape_max",               # convective energy — thunderstorm asthma, vertical transport
+    "direct_radiation_sum",   # direct radiation — UV drives anther opening
+    "is_day",                 # binary day/night — pollen release is almost exclusively daytime
 ]
 
 CALENDAR_FEATURES = [
