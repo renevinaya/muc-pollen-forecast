@@ -9,7 +9,7 @@ Usage:
     python -m src.main run-train    # Collect + train + forecast (monthly cron)
     python -m src.main backfill N   # Backfill N days of historical data
     python -m src.main backfill-ps  # Backfill from pollenscience.eu (2019+, slow)
-    python -m src.main benchmark    # Walk-forward evaluation of forecast quality
+    python -m src.main benchmark    # Peak-month evaluation of forecast quality
     python -m src.main dwd          # Show DWD pollen forecast for Oberbayern
     python -m src.main phenology    # Download DWD phenology data for Munich
 """
@@ -28,7 +28,7 @@ from .s3 import upload_forecast, upload_csv, upload_models, download_models, syn
 from .pollen import fetch_pollen, pivot_pollen
 from .pollenscience import fetch_pollenscience_chunked
 from .weather import fetch_historical_weather, fetch_weather_forecast as fetch_weather_fc
-from .evaluate import temporal_split_evaluate, print_evaluation_report, compare_with_dwd
+from .evaluate import peak_month_evaluate, print_evaluation_report
 from .types import ALL_SPECIES
 
 
@@ -330,10 +330,10 @@ def cmd_backfill_pollenscience(start_year: int = 2019) -> pd.DataFrame:
     return history
 
 
-def cmd_benchmark(horizon: int = 1) -> None:
-    """Run walk-forward evaluation on accumulated history."""
+def cmd_benchmark() -> None:
+    """Run peak-month evaluation on accumulated history."""
     print("=" * 60)
-    print("BENCHMARK: Walk-Forward Evaluation")
+    print("BENCHMARK: Peak-Month Evaluation")
     print("=" * 60)
     if not HISTORY_FILE.exists():
         print("No history file found. Run 'collect' or 'backfill' first.")
@@ -343,26 +343,13 @@ def cmd_benchmark(horizon: int = 1) -> None:
     unique_days = len(set(pd.to_datetime(history["date"]).dt.date))
     print(f"History: {len(history)} rows, {unique_days} unique days")
 
-    results = temporal_split_evaluate(history, test_days=min(90, unique_days // 3), n_folds=horizon)
+    results, peak_month = peak_month_evaluate(history)
     if not results.empty:
-        print_evaluation_report(results)
+        print_evaluation_report(results, peak_month)
 
-        # Compare with DWD forecast
-        compare_with_dwd(results)
-
-        # Save results for further analysis
         results_path = DATA_DIR / "benchmark_results.csv"
         results.to_csv(results_path, index=False)
         print(f"\nDetailed results saved to {results_path}")
-
-        # Write text report to file
-        import io, contextlib
-        buf = io.StringIO()
-        with contextlib.redirect_stdout(buf):
-            print_evaluation_report(results)
-        report_path = DATA_DIR / "benchmark_report.txt"
-        report_path.write_text(buf.getvalue())
-        print(f"Report written to {report_path}")
 
 
 def cmd_dwd() -> None:
@@ -476,8 +463,7 @@ def main() -> None:
         start_year = int(sys.argv[2]) if len(sys.argv) > 2 else 2019
         cmd_backfill_pollenscience(start_year)
     elif command == "benchmark":
-        horizon = int(sys.argv[2]) if len(sys.argv) > 2 else 1
-        cmd_benchmark(horizon)
+        cmd_benchmark()
     elif command == "dwd":
         cmd_dwd()
     elif command == "phenology":

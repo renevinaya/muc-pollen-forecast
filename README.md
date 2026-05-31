@@ -21,7 +21,7 @@ ML-based pollen forecast for Munich at 3-hour resolution, using a three-stage XG
 │     → real-time observation assimilation                 │
 │     → upload forecast.json to S3                         │
 │                                                          │
-│  4. Evaluator  — walk-forward benchmark + DWD comparison │
+│  4. Evaluator  — peak-month accuracy benchmark           │
 │     → data/benchmark_results.csv                         │
 └───────────────────────┬──────────────────────────────────┘
                         │ forecast.json
@@ -118,7 +118,7 @@ python -m src.main run-train
 | `forecast` | Generate 5-day forecast at 3h resolution using trained models |
 | `backfill [days]` | Bulk import historical pollen, weather, and NDVI data (default: 365 days) |
 | `backfill-ps [start_year]` | Bulk import from pollenscience.eu at 3h resolution (default: 2019, 5s rate limit) |
-| `benchmark [horizon]` | Walk-forward evaluation with monthly CV folds and DWD comparison (default horizon: 1) |
+| `benchmark` | Trains on data older than 12 months, tests on the highest-pollen month in the last 12 months, reports MAE and accuracy (= 1 − MAE / RMS_pollen) |
 | `dwd` | Display the current DWD pollen danger index for Oberbayern |
 | `phenology` | Download DWD phenology data and show flowering-onset statistics |
 | `run` | Execute collect → forecast in sequence (every 3 hours) |
