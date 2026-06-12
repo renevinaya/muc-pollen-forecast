@@ -26,12 +26,10 @@ from .types import (
     NDVI_FEATURES,
     INTRADAY_FEATURES,
     FEATURE_COLS,
-    SPECIES_SEASON,
-    SPECIES_GDD_THRESHOLD,
-    SPECIES_ACTIVATION_TEMP,
-    _DEFAULT_GDD_THRESHOLD,
-    _DEFAULT_ACTIVATION_TEMP,
+    SPECIES_THRESHOLDS,
+    _DEFAULT_THRESHOLDS,
     is_season_active,
+    season_gate_active,
     value_to_level,
     SpeciesForecast,
     WindowForecast,
@@ -43,8 +41,43 @@ from .trainer import (
     TwoStageModel,
     load_models,
     inv_log_transform,
+    typical_onset_doy,
+    onset_anomaly_from_gdd,
     _add_weather_derived_features,
 )
+from .cams import fetch_cams_forecast, cams_value
+
+# Our categorical level → DWD-style numeric scale (0–3).
+_LEVEL_TO_NUM = {"none": 0, "low": 1, "moderate": 2, "high": 3, "very_high": 3}
+
+
+def _level_band_midpoint(species: str, level_num: int) -> float:
+    """Representative pollen value for a 0–3 level band, per species thresholds."""
+    low_max, mod_max, high_max = SPECIES_THRESHOLDS.get(species, _DEFAULT_THRESHOLDS)
+    if level_num <= 0:
+        return 0.0
+    if level_num == 1:
+        return low_max / 2.0
+    if level_num == 2:
+        return (low_max + mod_max) / 2.0
+    return (mod_max + high_max) / 2.0
+
+
+def _blend_with_dwd(value: float, species: str, dwd_num: float) -> float:
+    """Nudge a model value one level toward the DWD categorical forecast.
+
+    Conservative: moves at most one level step (never fabricates pollen far
+    outside the model's range) and blends 50% (never fully overrides the model,
+    so a nonzero prediction is never zeroed). Used only for DWD-covered dates.
+    """
+    our_num = _LEVEL_TO_NUM[value_to_level(value, species).value]
+    target_round = int(round(dwd_num))
+    if target_round == our_num:
+        return value
+    step = 1 if target_round > our_num else -1
+    target_num = max(0, min(3, our_num + step))
+    target_value = _level_band_midpoint(species, target_num)
+    return max(0.0, value * 0.5 + target_value * 0.5)
 
 
 def _calendar_features_for_datetime(dt: pd.Timestamp) -> dict[str, float]:
@@ -158,6 +191,26 @@ def generate_forecast(
         weather["temperature_mean"].fillna(0).diff(1).fillna(0)
     )
 
+    # --- Pre-fetch optional CAMS pollen forecast (fail-open: empty if inactive) ---
+    cams_df = fetch_cams_forecast(FORECAST_DAYS)
+
+    # --- Pre-fetch DWD categorical forecast for an inference-time level blend ---
+    # DWD only covers today/tomorrow/day-after, so most forecast windows are
+    # untouched. Fail-open: an empty lookup leaves predictions unchanged.
+    dwd_levels: dict[tuple[object, str], float] = {}
+    try:
+        from .dwd import fetch_dwd_forecast
+
+        dwd_df = fetch_dwd_forecast()
+        for _, row in dwd_df.iterrows():
+            dwd_levels[(pd.Timestamp(row["date"]).date(), str(row["species"]))] = float(
+                row["dwd_level"]
+            )
+        if dwd_levels:
+            print(f"DWD blend: {len(dwd_levels)} (date, species) levels available")
+    except Exception as exc:
+        print(f"  DWD forecast unavailable ({exc}); skipping DWD blend")
+
     # Build recent pollen history per species in LOG-SPACE (for lag features)
     # Keep 56 windows (7 days) for rolling_56 computation
     recent_log: dict[str, list[float]] = {}
@@ -261,19 +314,22 @@ def generate_forecast(
                     for f in NDVI_FEATURES:
                         features[f] = 0.0
 
-                # Phenology features
-                import calendar as _cal
-                window = SPECIES_SEASON.get(species)
-                if window:
-                    mean_onset_doy = sum(
-                        _cal.monthrange(2025, m)[1] for m in range(1, window[0])
-                    ) + 15
+                # Phenology features — real DWD onset (with fallback) + GDD-driven
+                # early/late signal. Shares logic with trainer for train/serve parity.
+                onset_doy = typical_onset_doy(species)
+                if onset_doy == onset_doy:  # not NaN
+                    features["days_since_typical_onset"] = float(
+                        max(-60.0, dt.day_of_year - onset_doy)
+                    )
+                    features["onset_anomaly"] = float(
+                        onset_anomaly_from_gdd(features.get("gdd", 0.0), species)
+                    )
                 else:
-                    mean_onset_doy = 1
-                features["days_since_typical_onset"] = float(
-                    max(-60, dt.day_of_year - mean_onset_doy)
-                )
-                features["onset_anomaly"] = 0.0
+                    features["days_since_typical_onset"] = 0.0
+                    features["onset_anomaly"] = 0.0
+
+                # CAMS feature (optional; 0.0 when CAMS is inactive)
+                features["cams_pollen"] = cams_value(cams_df, dt, species)
 
                 # Intra-day relative features
                 if dt in intraday_df.index:
@@ -318,8 +374,17 @@ def generate_forecast(
                 pred_log = float(np.log1p(prediction))
                 confidence = _confidence_for_day(day_idx, has_model)
 
-            # Force to zero if out of season
-            if not active:
+            # DWD inference-time blend: for dates DWD covers, nudge the emitted
+            # value toward DWD's expert level. Skip real observations (keep actual
+            # data) and apply before the season gate so the gate has the final say.
+            if not has_observation:
+                dwd_num = dwd_levels.get((dt.date(), species))
+                if dwd_num is not None:
+                    prediction = _blend_with_dwd(prediction, species, dwd_num)
+
+            # Force to zero only outside the *widened* season window (core ±
+            # shoulder), so early-onset events are no longer structurally zeroed.
+            if not season_gate_active(species, month):
                 prediction = 0.0
                 pred_log = 0.0
 

@@ -32,6 +32,18 @@ HOURLY_PARAMS = [
     "is_day",
 ]
 
+# Soil parameters — root-zone temperature/moisture drive grass & herbaceous
+# flowering onset better than air temperature alone. The forecast model and the
+# ERA5 archive expose soil under *different* variable names, so we request the
+# endpoint-appropriate names and normalise both to the canonical columns
+# ``soil_temperature_mean`` / ``soil_moisture_mean`` in _parse_hourly_response.
+FORECAST_SOIL_PARAMS = ["soil_temperature_6cm", "soil_moisture_3_to_9cm"]
+ARCHIVE_SOIL_PARAMS = ["soil_temperature_0_to_7cm", "soil_moisture_0_to_7cm"]
+
+# Candidate source columns for each canonical soil feature (first present wins).
+_SOIL_TEMP_SOURCES = ["soil_temperature_6cm", "soil_temperature_0_to_7cm"]
+_SOIL_MOISTURE_SOURCES = ["soil_moisture_3_to_9cm", "soil_moisture_0_to_7cm"]
+
 
 def _parse_hourly_response(data: dict[str, Any]) -> pd.DataFrame:
     """Parse an Open-Meteo hourly response and aggregate to 3-hour windows.
@@ -45,8 +57,12 @@ def _parse_hourly_response(data: dict[str, Any]) -> pd.DataFrame:
     times = pd.to_datetime(hourly["time"])
 
     df = pd.DataFrame({"datetime": times})
-    for param in HOURLY_PARAMS:
-        df[param] = hourly.get(param, [None] * len(times))
+    # Pull every hourly variable the response actually contains (base params
+    # plus whichever endpoint-specific soil params were requested).
+    for param, values in hourly.items():
+        if param == "time":
+            continue
+        df[param] = values
 
     # Floor to 3h window boundaries
     df["window"] = df["datetime"].dt.floor("3h")
@@ -88,8 +104,52 @@ def _parse_hourly_response(data: dict[str, Any]) -> pd.DataFrame:
     # Temperature variance within window (high variance = changing conditions)
     result["temp_variance_3h"] = grouped["temperature_2m"].var().fillna(0)
 
+    # Soil features — normalise the endpoint-specific source column to a
+    # canonical name. Default to 0.0 when the soil variable is unavailable so
+    # downstream code never sees NaN (consistent with the rest of the pipeline).
+    soil_temp_src = next((c for c in _SOIL_TEMP_SOURCES if c in df.columns), None)
+    result["soil_temperature_mean"] = (
+        grouped[soil_temp_src].mean() if soil_temp_src else 0.0
+    )
+    soil_moist_src = next((c for c in _SOIL_MOISTURE_SOURCES if c in df.columns), None)
+    result["soil_moisture_mean"] = (
+        grouped[soil_moist_src].mean() if soil_moist_src else 0.0
+    )
+    result["soil_temperature_mean"] = result["soil_temperature_mean"].fillna(0.0)
+    result["soil_moisture_mean"] = result["soil_moisture_mean"].fillna(0.0)
+
     result.index.name = None
     return result
+
+
+def _get_weather(
+    url: str, params: dict[str, Any], soil_params: list[str], timeout: float = 30
+) -> pd.DataFrame:
+    """GET Open-Meteo with soil params, falling back to base params on failure.
+
+    Soil variable names differ between the forecast model and the ERA5 archive.
+    If a soil param is ever rejected (HTTP 4xx), retry without soil rather than
+    let the whole weather request — and thus the forecast — fail. The canonical
+    soil columns then default to 0.0 in _parse_hourly_response.
+    """
+    try:
+        response = httpx.get(
+            url,
+            params={**params, "hourly": ",".join(HOURLY_PARAMS + soil_params)},
+            timeout=timeout,
+        )
+        response.raise_for_status()
+    except httpx.HTTPStatusError:
+        if not soil_params:
+            raise
+        print("  Weather API rejected soil params; retrying without soil features")
+        response = httpx.get(
+            url,
+            params={**params, "hourly": ",".join(HOURLY_PARAMS)},
+            timeout=timeout,
+        )
+        response.raise_for_status()
+    return _parse_hourly_response(response.json())
 
 
 _forecast_cache: tuple[pd.DataFrame, int] | None = None
@@ -111,19 +171,17 @@ def fetch_weather_forecast(days: int = 5) -> pd.DataFrame:
             cutoff = cached_df.index.min() + pd.Timedelta(days=days)
             return cached_df[cached_df.index < cutoff]
 
-    response = httpx.get(
+    result = _get_weather(
         FORECAST_URL,
-        params={
+        {
             "latitude": LAT,
             "longitude": LON,
-            "hourly": ",".join(HOURLY_PARAMS),
             "timezone": "Europe/Berlin",
             "forecast_days": days,
         },
+        FORECAST_SOIL_PARAMS,
         timeout=30,
     )
-    response.raise_for_status()
-    result = _parse_hourly_response(response.json())
     _forecast_cache = (result, days)
     return result
 
@@ -135,17 +193,15 @@ def fetch_historical_weather(start: date, end: date) -> pd.DataFrame:
     The archive API has data up to ~5 days ago.
     Returns a DataFrame indexed by window-start datetime with weather feature columns.
     """
-    response = httpx.get(
+    return _get_weather(
         HISTORICAL_URL,
-        params={
+        {
             "latitude": LAT,
             "longitude": LON,
-            "hourly": ",".join(HOURLY_PARAMS),
             "timezone": "Europe/Berlin",
             "start_date": start.isoformat(),
             "end_date": end.isoformat(),
         },
+        ARCHIVE_SOIL_PARAMS,
         timeout=60,
     )
-    response.raise_for_status()
-    return _parse_hourly_response(response.json())

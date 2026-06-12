@@ -12,7 +12,14 @@ from datetime import date
 import numpy as np
 import pandas as pd
 
-from .types import ALL_SPECIES, FEATURE_COLS, LAG_FEATURES, value_to_level, is_season_active
+from .types import (
+    ALL_SPECIES,
+    FEATURE_COLS,
+    LAG_FEATURES,
+    value_to_level,
+    is_season_active,
+    season_gate_active,
+)
 from .trainer import (
     prepare_training_data,
     train_species_model,
@@ -129,10 +136,11 @@ def temporal_split_evaluate(
             preds_log = model.predict(x_test)
             preds = inv_log_transform(np.maximum(0, preds_log))
 
-            # Match forecaster: force out-of-season predictions to zero
+            # Match forecaster: force predictions to zero only outside the
+            # widened season window (core ± shoulder).
             for i, (_, row) in enumerate(species_eval.iterrows()):
                 month = pd.Timestamp(row["date"]).month
-                if not is_season_active(species, month):
+                if not season_gate_active(species, month):
                     preds[i] = 0.0
 
             for i, (_, row) in enumerate(species_eval.iterrows()):

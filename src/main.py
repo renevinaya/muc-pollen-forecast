@@ -95,6 +95,10 @@ def cmd_forecast(history: pd.DataFrame | None = None) -> None:
         # Also back up history
         if HISTORY_FILE.exists():
             upload_csv(HISTORY_FILE, bucket, "data/history.csv")
+        # Back up phenology data so the live onset features have it next run
+        pheno_file = DATA_DIR / "phenology.csv"
+        if pheno_file.exists():
+            upload_csv(pheno_file, bucket, "data/phenology.csv")
     else:
         # Local dev: write to file
         output_path = DATA_DIR / "forecast.json"
@@ -428,15 +432,28 @@ def cmd_phenology() -> None:
     print(f"\nSaved to {pheno_path}")
 
 
+def _sync_phenology(bucket: str | None) -> None:
+    """Download phenology.csv from S3 if not present locally (best-effort)."""
+    if not bucket:
+        return
+    pheno_file = DATA_DIR / "phenology.csv"
+    if not pheno_file.exists():
+        from .s3 import download_csv
+
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        download_csv(bucket, "data/phenology.csv", pheno_file)
+
+
 def cmd_run() -> None:
     """Run forecast pipeline: collect -> forecast (every 3 hours)."""
     import os
     bucket = os.environ.get("S3_BUCKET")
-    # On CodeBuild: download history and models from S3 before running
+    # On CodeBuild: download history, models and phenology from S3 before running
     if bucket and not HISTORY_FILE.exists():
         sync_historical_data(HISTORY_FILE, bucket)
     if bucket:
         download_models(MODELS_DIR, bucket)
+    _sync_phenology(bucket)
     history = cmd_collect()
     cmd_forecast(history)
 
@@ -447,6 +464,13 @@ def cmd_run_train() -> None:
     bucket = os.environ.get("S3_BUCKET")
     if bucket and not HISTORY_FILE.exists():
         sync_historical_data(HISTORY_FILE, bucket)
+    _sync_phenology(bucket)
+    # Monthly: refresh phenology onset data so the onset features stay current
+    # (best-effort — failures are non-fatal; cmd_forecast backs it up to S3).
+    try:
+        cmd_phenology()
+    except Exception as exc:
+        print(f"Phenology refresh failed ({exc}); continuing with existing data.")
     history = cmd_collect()
     cmd_train(history)
     if bucket:

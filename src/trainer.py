@@ -36,9 +36,11 @@ from .types import (
     SPECIES_SEASON,
     SPECIES_GDD_THRESHOLD,
     SPECIES_ACTIVATION_TEMP,
+    SPECIES_TYPICAL_ONSET_DOY,
     _DEFAULT_GDD_THRESHOLD,
     _DEFAULT_ACTIVATION_TEMP,
 )
+from .dwd import load_onset_stats
 
 MODELS_DIR = Path(__file__).parent.parent / "models"
 
@@ -104,25 +106,60 @@ def _add_season_feature(df: pd.DataFrame, species: str) -> pd.DataFrame:
     return df
 
 
-def _add_phenology_features(df: pd.DataFrame, species: str) -> pd.DataFrame:
-    """Add phenology-derived features: days since typical flowering onset, onset anomaly."""
-    df = df.copy()
+def typical_onset_doy(species: str) -> float:
+    """Resolve a species' typical flowering-onset day-of-year.
+
+    Resolution order:
+      1. Real DWD phenology mean onset (data/phenology.csv) when available.
+      2. Central-European baseline (SPECIES_TYPICAL_ONSET_DOY).
+      3. Approximation: the 15th of the species' season-start month.
+    """
+    onset_stats = load_onset_stats()
+    if species in onset_stats:
+        return float(onset_stats[species])
+    if species in SPECIES_TYPICAL_ONSET_DOY:
+        return float(SPECIES_TYPICAL_ONSET_DOY[species])
+    import calendar
     window = SPECIES_SEASON.get(species)
     if window is None:
+        return float("nan")
+    start_month = window[0]
+    return float(sum(calendar.monthrange(2025, m)[1] for m in range(1, start_month)) + 15)
+
+
+def onset_anomaly_from_gdd(gdd: "pd.Series | np.ndarray[Any, Any] | float", species: str):
+    """Signed, normalised thermal readiness relative to the species GDD threshold.
+
+    ``(gdd - threshold) / threshold`` — strongly negative before the plant has
+    accumulated enough warmth (pre-onset), ~0 around the threshold crossing, and
+    positive afterwards. Because a warm year crosses the threshold at an earlier
+    calendar date, this encodes whether the current season is running early or
+    late, which is the signal the old constant-0 feature never delivered.
+    """
+    thresh = SPECIES_GDD_THRESHOLD.get(species, _DEFAULT_GDD_THRESHOLD)
+    anomaly = (np.asarray(gdd, dtype=float) - thresh) / max(thresh, 1.0)
+    return np.clip(anomaly, -3.0, 5.0)
+
+
+def _add_phenology_features(df: pd.DataFrame, species: str) -> pd.DataFrame:
+    """Add phenology-derived features: days since typical flowering onset, onset anomaly.
+
+    ``days_since_typical_onset`` uses the real DWD flowering-onset mean when
+    available; ``onset_anomaly`` is a GDD-driven early/late signal. Expects the
+    ``gdd`` column to already be present (added by _add_weather_derived_features).
+    """
+    df = df.copy()
+    mean_onset_doy = typical_onset_doy(species)
+    if mean_onset_doy != mean_onset_doy:  # NaN → unknown species, no phenology
         df["days_since_typical_onset"] = 0.0
         df["onset_anomaly"] = 0.0
         return df
 
-    # Approximate mean onset as day 15 of start_month
-    start_month = window[0]
-    # Convert to approximate day-of-year
-    import calendar
-    mean_onset_doy = sum(calendar.monthrange(2025, m)[1] for m in range(1, start_month)) + 15
-
     doys = pd.to_datetime(df["date"]).dt.dayofyear
     df["days_since_typical_onset"] = (doys - mean_onset_doy).clip(lower=-60).astype(float)
-    # onset_anomaly: 0 by default; will be overwritten when real phenology data is loaded
-    df["onset_anomaly"] = 0.0
+
+    gdd = df["gdd"] if "gdd" in df.columns else pd.Series(0.0, index=df.index)
+    df["onset_anomaly"] = onset_anomaly_from_gdd(gdd, species)
     return df
 
 

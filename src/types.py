@@ -46,6 +46,9 @@ WEATHER_FEATURES = [
     "temp_slope_3h",          # temperature change within window (warming ramp signal)
     "humidity_slope_3h",      # humidity change within window (rapid drying triggers release)
     "temp_variance_3h",       # temperature variance within window (changing conditions)
+    # Soil features — better predictors of herbaceous/grass onset than air temp
+    "soil_temperature_mean",  # soil temp (0–7cm) — drives root-zone phenology
+    "soil_moisture_mean",     # soil moisture (0–7cm) — wet soil delays grass flowering
 ]
 
 CALENDAR_FEATURES = [
@@ -121,7 +124,14 @@ NDVI_FEATURES = [
 # Phenology features (from DWD multi-year flowering onset data)
 PHENOLOGY_FEATURES = [
     "days_since_typical_onset",  # days since mean flowering onset for this species
-    "onset_anomaly",             # current year onset vs historical mean (needs runtime)
+    "onset_anomaly",             # thermal readiness vs species GDD threshold (early/late year)
+]
+
+# CAMS features (optional — from the Copernicus European pollen forecast).
+# When the CAMS integration is not activated (no ADS key / deps), this column
+# is simply 0 everywhere and the model ignores it. See src/cams.py.
+CAMS_FEATURES = [
+    "cams_pollen",  # CAMS-forecast pollen for this species (0 if not covered/available)
 ]
 
 # Intra-day relative features (capture diurnal position and short-term dynamics)
@@ -142,6 +152,7 @@ FEATURE_COLS = (
     + WEATHER_DERIVED_FEATURES
     + NDVI_FEATURES
     + PHENOLOGY_FEATURES
+    + CAMS_FEATURES
     + INTRADAY_FEATURES
     + LAG_FEATURES
 )
@@ -202,7 +213,7 @@ SPECIES_SEASON: dict[str, tuple[int, int]] = {
 
 
 def is_season_active(species: str, month: int) -> bool:
-    """Check if a species is within its pollen season for a given month."""
+    """Check if a species is within its **core** pollen season for a given month."""
     window = SPECIES_SEASON.get(species)
     if window is None:
         return True  # unknown species: assume always active
@@ -211,6 +222,49 @@ def is_season_active(species: str, month: int) -> bool:
         return start <= month <= end
     # wraps around year (e.g., Nov–Feb)
     return month >= start or month <= end
+
+
+# Typical flowering-onset day-of-year per species (central-European baseline).
+# Used as a fallback for the phenology features when real DWD phenology data
+# (data/phenology.csv) is not available. Real onset means override these.
+SPECIES_TYPICAL_ONSET_DOY: dict[str, int] = {
+    "Corylus":   45,    # mid-February (hazel)
+    "Alnus":     55,    # late February (alder)
+    "Populus":   95,    # early April (poplar)
+    "Salix":     95,    # early April (willow)
+    "Fraxinus":  105,   # mid-April (ash)
+    "Betula":    110,   # late April (birch)
+    "Quercus":   125,   # early May (oak)
+    "Poaceae":   145,   # late May (grasses)
+    "Urtica":    160,   # June (nettle)
+    "Artemisia": 205,   # late July (mugwort)
+    "Ambrosia":  225,   # mid-August (ragweed)
+}
+
+# Allow the model to emit non-zero predictions this many months before/after
+# the core season window. The hard month cutoff was forcing early-onset events
+# (e.g. a warm-December hazel/alder bloom) to zero; the shoulder lets the GDD
+# and burst features drive predictions in the transition period instead.
+SEASON_SHOULDER_MONTHS = 1
+
+
+def season_gate_active(species: str, month: int) -> bool:
+    """Whether the model is *allowed* to emit a non-zero prediction this month.
+
+    This is the **widened** season window (core ± SEASON_SHOULDER_MONTHS). It is
+    used to decide when to force predictions to zero. The binary ``season_active``
+    feature still uses the narrower :func:`is_season_active` core window so the
+    model keeps learning the canonical season.
+    """
+    window = SPECIES_SEASON.get(species)
+    if window is None:
+        return True
+    start, end = window
+    s = start - SEASON_SHOULDER_MONTHS
+    e = end + SEASON_SHOULDER_MONTHS
+    # Expand into the explicit set of allowed months, wrapping around the year.
+    allowed = {((s - 1 + i) % 12) + 1 for i in range(e - s + 1)}
+    return month in allowed
 
 
 class PollenLevel(str, Enum):

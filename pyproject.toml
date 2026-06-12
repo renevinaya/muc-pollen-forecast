@@ -19,6 +19,14 @@ dev = [
     "pytest>=8.0",
     "ruff>=0.3",
 ]
+# Optional: activates the Copernicus CAMS pollen feature (see src/cams.py).
+# Without these (and ADS credentials) the cams_pollen feature stays 0 and the
+# model is unaffected.
+cams = [
+    "cdsapi>=0.7",
+    "xarray>=2024.1",
+    "netCDF4>=1.6",
+]
 
 [project.scripts]
 muc-pollen-forecast = "src.main:main"

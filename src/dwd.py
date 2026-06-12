@@ -12,9 +12,13 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 from io import StringIO
+from pathlib import Path
 
 import httpx
 import pandas as pd
+
+DATA_DIR = Path(__file__).parent.parent / "data"
+PHENOLOGY_FILE = DATA_DIR / "phenology.csv"
 
 # ── DWD Pollenflug-Gefahrenindex (categorical forecast, updated ~daily) ──────
 
@@ -234,6 +238,34 @@ def fetch_dwd_phenology() -> pd.DataFrame:
         agg_df["onset_doy"] = agg_df["onset_doy"].round().astype(int)
         result = agg_df
     return result
+
+
+_onset_cache: dict[str, float] | None = None
+
+
+def load_onset_stats() -> dict[str, float]:
+    """Load real per-species mean flowering-onset day-of-year from phenology.csv.
+
+    Reads the file produced by ``python -m src.main phenology`` and returns
+    ``{species: mean_onset_doy}``. Returns ``{}`` (fail-open) when the file is
+    absent or unreadable, so callers fall back to the typical-onset defaults.
+    Cached in-process so repeated feature builds don't re-read the file.
+    """
+    global _onset_cache
+    if _onset_cache is not None:
+        return _onset_cache
+
+    means: dict[str, float] = {}
+    if PHENOLOGY_FILE.exists():
+        try:
+            df = pd.read_csv(PHENOLOGY_FILE)
+            stats = phenology_season_stats(df)
+            means = {sp: float(s["mean_onset_doy"]) for sp, s in stats.items()}
+        except Exception as exc:  # pragma: no cover - defensive
+            print(f"  Could not load phenology onset stats: {exc}")
+            means = {}
+    _onset_cache = means
+    return means
 
 
 def phenology_season_stats(phenology: pd.DataFrame) -> dict[str, dict[str, float | int]]:

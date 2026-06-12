@@ -38,9 +38,10 @@ ML-based pollen forecast for Munich at 3-hour resolution, using a three-stage XG
 |--------|-----|------------------|
 | [pollenscience.eu](https://pollenscience.eu/api/measurements) | Pollen measurements | Primary source: 3-hour pollen counts for Munich (station DEMUNC, 2019+) |
 | [LGL Bayern](https://d1ppjuhp1nvtc2.cloudfront.net/measurements) | Pollen measurements | Alternative: real-time 3-hour pollen counts for Munich |
-| [Open-Meteo](https://open-meteo.com/) | Weather forecast + historical archive | Hourly weather aggregated to 3-hour windows: temperature, precipitation, wind, humidity, sunshine, radiation, boundary layer height, dew point, CAPE, direct radiation (no API key required) |
+| [Open-Meteo](https://open-meteo.com/) | Weather forecast + historical archive | Hourly weather aggregated to 3-hour windows: temperature, precipitation, wind, humidity, sunshine, radiation, boundary layer height, dew point, CAPE, direct radiation, soil temperature + moisture (no API key required) |
 | [MODIS (ORNL DAAC)](https://modis.ornl.gov/rst/api/v1) | NDVI / EVI satellite data | MOD13Q1 250 m 16-day vegetation indices, cubic-interpolated to daily resolution |
-| [DWD Open Data](https://opendata.dwd.de/) | Pollenflug-Gefahrenindex + CDC Phenology | Official pollen danger levels for Oberbayern (partregion 121); multi-decade flowering-onset observations near Munich |
+| [DWD Open Data](https://opendata.dwd.de/) | Pollenflug-Gefahrenindex + CDC Phenology | Official pollen danger levels for Oberbayern (partregion 121) — used both for benchmarking and an inference-time level blend; multi-decade flowering-onset observations near Munich, used live for the phenology features |
+| [Copernicus CAMS](https://ads.atmosphere.copernicus.eu/) (optional) | European pollen forecast | Physics-based ensemble forecast for alder, birch, grass, mugwort, ragweed. **Off by default** — see [Optional: CAMS pollen feature](#optional-cams-pollen-feature) |
 
 ## Model
 
@@ -60,23 +61,24 @@ Each species gets a **three-stage pipeline** with species-specific hyperparamete
 | Populus | 4 | 6 | 400 | 0.88 |
 | Others (default) | 4 | 5 | 300 | 0.85 |
 
-**Combined prediction**: regression output is scaled by clamped activation probability. Out-of-season species are forced to zero using species-specific season windows.
+**Combined prediction**: regression output is scaled by clamped activation probability. Out-of-season species are forced to zero, but only outside a **widened season window** (the core month range ± a one-month shoulder) so unusually early onsets — e.g. a warm-December hazel/alder bloom — are no longer structurally suppressed. On the 1–3 days the DWD Pollenflug-Gefahrenindex covers, the emitted level is **blended** one step toward DWD's expert forecast (most useful at season onset, when lag features are near zero).
 
 **Pollen levels** are assigned using species-specific thresholds (based on DWD/ePIN): `none`, `low`, `moderate`, `high`, `very_high`.
 
 **Real-time observation assimilation**: when the pipeline runs every 3 hours, forecast windows that already have real pollen measurements use the observed values instead of model predictions. This breaks the autoregressive error cascade and grounds lag features for subsequent windows in actual data.
 
-## Features (69 total)
+## Features (72 total)
 
 | Category | Count | Features |
 |----------|-------|----------|
-| Weather | 17 | temp max/min/mean, precipitation, wind speed, wind direction, humidity, sunshine duration, shortwave radiation, boundary layer height, dew point, CAPE, direct radiation, is_day, temp slope (3h), humidity slope (3h), temp variance (3h) |
+| Weather | 19 | temp max/min/mean, precipitation, wind speed, wind direction, humidity, sunshine duration, shortwave radiation, boundary layer height, dew point, CAPE, direct radiation, is_day, temp slope (3h), humidity slope (3h), temp variance (3h), soil temperature (0–7 cm), soil moisture (0–7 cm) |
 | Calendar | 4 | day of year, sin/cos encoding, month |
 | Time-of-day | 3 | hour of day (0/3/6/.../21), sin/cos hour encoding |
 | Season | 1 | binary `season_active` per species |
 | Weather-derived | 23 | GDD + species GDD threshold, 3/7-day rolling temp/sunshine/rain, temp deltas (1d/3d), cold-to-warm flip, consecutive warm hours, dry streak, temp×sunshine, dry+warm, warming trend, wind×dry+warm, wind direction sin/cos, wind from south/north, transport south/north |
 | NDVI | 3 | NDVI, EVI, NDVI delta (green-up rate) |
-| Phenology | 2 | days since typical flowering onset, onset anomaly vs. historical mean |
+| Phenology | 2 | days since typical flowering onset (from real DWD onset data when available), onset anomaly (GDD-driven early/late signal) |
+| CAMS | 1 | `cams_pollen` — Copernicus CAMS forecast for the species (0 when CAMS is inactive) |
 | Intra-day | 3 | temp vs. daily max (ratio), precipitation in prior window (binary), temperature rate of change |
 | Lag | 13 | pollen at t-1/t-2/t-3/t-8(24h)/t-16(48h)/t-24(72h)/t-56(7d), 24h + 7d rolling mean, 24h + 7d rolling max, morning average (today's earlier windows), days since active (all log-space) |
 
@@ -89,6 +91,33 @@ uv sync
 ```
 
 Requires Python ≥ 3.11. Dependencies: httpx, pandas, numpy, xgboost, scikit-learn, joblib, boto3.
+
+### Optional: CAMS pollen feature
+
+The model can consume the [Copernicus CAMS](https://ads.atmosphere.copernicus.eu/)
+physics-based European pollen forecast as an extra feature (`cams_pollen`),
+which adds long-range-transport and season-onset signal a purely local model
+can't see. It is **off by default and fail-open**: with no Atmosphere Data Store
+(ADS) credentials or extra dependencies installed, the feature is simply `0`
+everywhere and the model is unaffected — production never breaks.
+
+To activate:
+
+```bash
+# 1. Install the optional dependencies (cdsapi, xarray, netCDF4)
+uv sync --extra cams
+
+# 2. Provide ADS credentials (or configure ~/.cdsapirc)
+export CAMS_ADS_URL="https://ads.atmosphere.copernicus.eu/api"
+export CAMS_ADS_KEY="<your-ads-key>"
+
+# 3. Backfill historical CAMS into history.csv and retrain so the feature is
+#    populated for training; it then becomes live at inference automatically.
+```
+
+The phenology features also use real DWD flowering-onset data when
+`data/phenology.csv` is present (run `python -m src.main phenology` to fetch it;
+the monthly `run-train` pipeline refreshes and backs it up to S3 automatically).
 
 ## Usage
 
