@@ -10,9 +10,9 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: 'forecast = collect + predict; train = also retrain models'
+        description: 'forecast = collect + predict; train = also retrain; seed = one-shot import from S3'
         type: choice
-        options: [forecast, train]
+        options: [forecast, train, seed]
         default: forecast
 
 permissions:
@@ -27,6 +27,8 @@ jobs:
   run:
     runs-on: ubuntu-latest
     timeout-minutes: 90
+    env:
+      MODE: ${{ inputs.mode || (github.event.schedule == '43 4 1 * *' && 'train' || 'forecast') }}
     steps:
       - uses: actions/checkout@v4
 
@@ -53,11 +55,20 @@ jobs:
           CAMS_ADS_URL: ${{ secrets.CAMS_ADS_URL }}
           CAMS_ADS_KEY: ${{ secrets.CAMS_ADS_KEY }}
         run: |
-          if [ "${{ inputs.mode || (github.event.schedule == '43 4 1 * *' && 'train' || 'forecast') }}" = "train" ]; then
-            uv run python -m src.main run-train
-          else
-            uv run python -m src.main run
-          fi
+          case "$MODE" in
+            seed)
+              # One-shot import of history/phenology/models out of S3, then a
+              # normal forecast on top of the freshly seeded state.
+              uv run python scripts/seed_from_s3.py
+              uv run python -m src.main run
+              ;;
+            train)
+              uv run python -m src.main run-train
+              ;;
+            *)
+              uv run python -m src.main run
+              ;;
+          esac
 
       - name: Publish forecast.json to GitHub Pages
         run: |

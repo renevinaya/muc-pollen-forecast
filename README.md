@@ -229,6 +229,21 @@ file cross-origin.
 | `DATA_RELEASE_TAG` | optional | Release tag holding the data assets (default: `data`). |
 | `CAMS_ADS_URL` / `CAMS_ADS_KEY` | repo secrets (optional) | Activates the Copernicus CAMS feature. |
 
+### One-shot migration from S3
+
+`scripts/seed_from_s3.py` imports the pre-migration state (history, phenology,
+models) out of the old S3 bucket into the data release. Run it via the
+workflow's `seed` mode; it seeds the release and then produces a forecast on
+top of the imported state.
+
+It needs public `s3:GetObject` on `data/*` and `models/*` for the duration of
+the run — but no bucket listing, since every key is derivable (`data/history.csv`,
+`data/phenology.csv`, `models/<species>.joblib`). Re-lock the bucket immediately
+afterwards.
+
+Both the script and the `seed` workflow mode are temporary scaffolding: delete
+them once the release is seeded.
+
 ### Repository setup
 
 One-time, in repository settings:
