@@ -41,9 +41,15 @@ from .trainer import (
     TwoStageModel,
     load_models,
     inv_log_transform,
-    typical_onset_doy,
     onset_anomaly_from_gdd,
     _add_weather_derived_features,
+)
+from .onset import (
+    gdd_threshold_by_year,
+    gdd_threshold_for_year,
+    onset_doy_by_day,
+    onset_doy_lookup,
+    _static_onset_doy,
 )
 from .cams import fetch_cams_forecast, cams_value
 
@@ -155,8 +161,21 @@ def generate_forecast(
     base_weather["species"] = "__dummy__"
     base_weather["value"] = 0.0
 
+    # Onset estimates and GDD thresholds come from the real history: the frame
+    # the weather features are derived on carries a dummy species and no
+    # measurements, so it cannot calibrate them itself.
+    onset_by_species = {sp: onset_doy_by_day(history, sp) for sp in ALL_SPECIES}
+    gdd_thresholds_by_species = {sp: gdd_threshold_by_year(history, sp) for sp in ALL_SPECIES}
+    # Same fallback the trainer uses. It is only reachable with no history at
+    # all, but a *better* fallback here than there would be exactly the
+    # train/serve skew the causal estimate exists to avoid.
+    onset_fallback = {sp: _static_onset_doy(sp) for sp in ALL_SPECIES}
+
     def _derive_for_species(sp: str) -> tuple[str, pd.DataFrame]:
-        return sp, _add_weather_derived_features(base_weather.copy(), sp).set_index("date")
+        derived = _add_weather_derived_features(
+            base_weather.copy(), sp, gdd_thresholds=gdd_thresholds_by_species[sp]
+        )
+        return sp, derived.set_index("date")
 
     from concurrent.futures import ThreadPoolExecutor
     with ThreadPoolExecutor(max_workers=len(ALL_SPECIES)) as pool:
@@ -314,15 +333,24 @@ def generate_forecast(
                     for f in NDVI_FEATURES:
                         features[f] = 0.0
 
-                # Phenology features — real DWD onset (with fallback) + GDD-driven
-                # early/late signal. Shares logic with trainer for train/serve parity.
-                onset_doy = typical_onset_doy(species)
+                # Phenology features — the season's measured onset estimate for
+                # this year plus a GDD-driven early/late signal, both resolved
+                # exactly as the trainer resolves them, for train/serve parity.
+                onset_doy = onset_doy_lookup(
+                    onset_by_species[species], dt, onset_fallback[species]
+                )
                 if onset_doy == onset_doy:  # not NaN
                     features["days_since_typical_onset"] = float(
                         max(-60.0, dt.day_of_year - onset_doy)
                     )
                     features["onset_anomaly"] = float(
-                        onset_anomaly_from_gdd(features.get("gdd", 0.0), species)
+                        onset_anomaly_from_gdd(
+                            features.get("gdd", 0.0),
+                            species,
+                            gdd_threshold_for_year(
+                                gdd_thresholds_by_species[species], dt.year, species
+                            ),
+                        )
                     )
                 else:
                     features["days_since_typical_onset"] = 0.0

@@ -33,14 +33,20 @@ from .types import (
     LAG_FEATURES,
     GDD_T_BASE,
     is_season_active,
-    SPECIES_SEASON,
     SPECIES_GDD_THRESHOLD,
     SPECIES_ACTIVATION_TEMP,
-    SPECIES_TYPICAL_ONSET_DOY,
     _DEFAULT_GDD_THRESHOLD,
     _DEFAULT_ACTIVATION_TEMP,
 )
-from .dwd import load_onset_stats
+from .onset import (
+    calibrated_gdd_threshold,
+    climatological_onset_doy,
+    gdd_threshold_by_year,
+    gdd_threshold_series,
+    observed_onsets,
+    onset_doy_by_day,
+    _static_onset_doy,
+)
 
 MODELS_DIR = Path(__file__).parent.parent / "models"
 
@@ -106,28 +112,28 @@ def _add_season_feature(df: pd.DataFrame, species: str) -> pd.DataFrame:
     return df
 
 
-def typical_onset_doy(species: str) -> float:
+def typical_onset_doy(species: str, history: pd.DataFrame | None = None) -> float:
     """Resolve a species' typical flowering-onset day-of-year.
 
     Resolution order:
-      1. Real DWD phenology mean onset (data/phenology.csv) when available.
+      1. Median onset measured from *history* (eight seasons and counting).
       2. Central-European baseline (SPECIES_TYPICAL_ONSET_DOY).
       3. Approximation: the 15th of the species' season-start month.
+
+    The DWD phenology file used to sit at the top of this list. It yields one
+    year of Munich observations with no Alnus at all, which put Corylus 24 days
+    and Alnus 17 days off their measured medians, so the measurements win now.
     """
-    onset_stats = load_onset_stats()
-    if species in onset_stats:
-        return float(onset_stats[species])
-    if species in SPECIES_TYPICAL_ONSET_DOY:
-        return float(SPECIES_TYPICAL_ONSET_DOY[species])
-    import calendar
-    window = SPECIES_SEASON.get(species)
-    if window is None:
-        return float("nan")
-    start_month = window[0]
-    return float(sum(calendar.monthrange(2025, m)[1] for m in range(1, start_month)) + 15)
+    if history is not None and not history.empty:
+        return climatological_onset_doy(history, species)
+    return _static_onset_doy(species)
 
 
-def onset_anomaly_from_gdd(gdd: "pd.Series | np.ndarray[Any, Any] | float", species: str):
+def onset_anomaly_from_gdd(
+    gdd: "pd.Series | np.ndarray[Any, Any] | float",
+    species: str,
+    threshold: "pd.Series | np.ndarray[Any, Any] | float | None" = None,
+):
     """Signed, normalised thermal readiness relative to the species GDD threshold.
 
     ``(gdd - threshold) / threshold`` — strongly negative before the plant has
@@ -135,31 +141,77 @@ def onset_anomaly_from_gdd(gdd: "pd.Series | np.ndarray[Any, Any] | float", spec
     positive afterwards. Because a warm year crosses the threshold at an earlier
     calendar date, this encodes whether the current season is running early or
     late, which is the signal the old constant-0 feature never delivered.
+
+    *threshold* may be per-row, which is how callers pass the walk-forward
+    calibration; without it the static constant applies.
     """
-    thresh = SPECIES_GDD_THRESHOLD.get(species, _DEFAULT_GDD_THRESHOLD)
-    anomaly = (np.asarray(gdd, dtype=float) - thresh) / max(thresh, 1.0)
+    if threshold is None:
+        threshold = SPECIES_GDD_THRESHOLD.get(species, _DEFAULT_GDD_THRESHOLD)
+    thresh = np.maximum(np.asarray(threshold, dtype=float), 1.0)
+    anomaly = (np.asarray(gdd, dtype=float) - thresh) / thresh
     return np.clip(anomaly, -3.0, 5.0)
 
 
-def _add_phenology_features(df: pd.DataFrame, species: str) -> pd.DataFrame:
-    """Add phenology-derived features: days since typical flowering onset, onset anomaly.
+def _add_phenology_features(
+    df: pd.DataFrame,
+    species: str,
+    onset_by_day: pd.Series | None = None,
+    gdd_thresholds: dict[int, float] | None = None,
+) -> pd.DataFrame:
+    """Add phenology-derived features: days since flowering onset, onset anomaly.
 
-    ``days_since_typical_onset`` uses the real DWD flowering-onset mean when
-    available; ``onset_anomaly`` is a GDD-driven early/late signal. Expects the
-    ``gdd`` column to already be present (added by _add_weather_derived_features).
+    ``days_since_typical_onset`` measures against a *per-year* onset estimate
+    rather than one constant for all time. Until this year's warmth reaches the
+    threshold the estimate is the median of previous seasons; from the crossing
+    onwards it is the crossing day itself. That switch is the whole point — it
+    is how the model learns the season is running early or late — and because
+    it only ever looks backwards it is equally computable while training and
+    while forecasting.
+
+    ``onset_anomaly`` is the same thermal-readiness signal expressed against the
+    walk-forward GDD threshold. Expects the ``gdd`` column to already be present
+    (added by _add_weather_derived_features).
+
+    *onset_by_day* and *gdd_thresholds* let a caller supply both from the real
+    history; the forecaster must, because it builds features on a weather-only
+    frame that carries no measurements to derive them from.
     """
     df = df.copy()
-    mean_onset_doy = typical_onset_doy(species)
-    if mean_onset_doy != mean_onset_doy:  # NaN → unknown species, no phenology
+    if onset_by_day is None:
+        onset_by_day = onset_doy_by_day(df, species)
+
+    days = pd.to_datetime(df["date"]).dt.normalize()
+    doys = pd.to_datetime(df["date"]).dt.dayofyear
+
+    # The static baseline, not a median over *df*, is the fallback: a median
+    # taken here would span every year in the frame, including the one being
+    # predicted, which is exactly the leak onset_doy_by_day exists to avoid.
+    fallback = _static_onset_doy(species)
+    if onset_by_day.empty:
+        onset = pd.Series(fallback, index=df.index, dtype=float)
+    else:
+        # Days past the end of the estimates (forecast windows) hold the last
+        # value that was actually available. Done by reindexing rather than by
+        # forward-filling *df*, so the result does not depend on row order.
+        resolved = onset_by_day.reindex(
+            onset_by_day.index.union(pd.DatetimeIndex(days.unique()))
+        ).ffill()
+        onset = days.map(resolved).astype(float).fillna(fallback)
+
+    if onset.isna().all():  # unknown species — no season to be early or late for
         df["days_since_typical_onset"] = 0.0
         df["onset_anomaly"] = 0.0
         return df
 
-    doys = pd.to_datetime(df["date"]).dt.dayofyear
-    df["days_since_typical_onset"] = (doys - mean_onset_doy).clip(lower=-60).astype(float)
+    df["days_since_typical_onset"] = (doys - onset).clip(lower=-60).astype(float)
 
     gdd = df["gdd"] if "gdd" in df.columns else pd.Series(0.0, index=df.index)
-    df["onset_anomaly"] = onset_anomaly_from_gdd(gdd, species)
+    if gdd_thresholds is None:
+        gdd_thresholds = gdd_threshold_by_year(df, species)
+    threshold = gdd_threshold_series(
+        gdd_thresholds, pd.DatetimeIndex(days), species
+    ).to_numpy()
+    df["onset_anomaly"] = onset_anomaly_from_gdd(gdd, species, threshold)
     return df
 
 
@@ -202,7 +254,7 @@ def _add_intraday_features(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _add_weather_derived_features(
-    df: pd.DataFrame, species: str = "",
+    df: pd.DataFrame, species: str = "", gdd_thresholds: dict[int, float] | None = None,
 ) -> pd.DataFrame:
     """
     Compute weather-derived features from the raw weather columns already in *df*.
@@ -218,6 +270,10 @@ def _add_weather_derived_features(
     - Dry + warm interaction
     - Burst potential: GDD above threshold, cold→warm flip, consecutive warm (#2)
     - Explosion likelihood: dry streak, warm-after-cold, wind×dry_warm (#6)
+
+    The GDD threshold behind the burst features is calibrated per year from the
+    seasons before it. Pass *gdd_thresholds* when *df* holds no measurements to
+    calibrate from — the forecaster derives weather features on a dummy frame.
     """
     df = df.copy().sort_values("date")
 
@@ -256,7 +312,10 @@ def _add_weather_derived_features(
     dry_warm = temp_mean * (100.0 - humidity) / 100.0
 
     # --- Burst potential features (#2) ---
-    gdd_thresh = SPECIES_GDD_THRESHOLD.get(species, _DEFAULT_GDD_THRESHOLD)
+    if gdd_thresholds is None:
+        gdd_thresholds = gdd_threshold_by_year(df, species)
+    gdd_thresh = gdd_threshold_series(gdd_thresholds, window_dates, species)
+    gdd_thresh.index = temp_mean.index
     activation_temp = SPECIES_ACTIVATION_TEMP.get(species, _DEFAULT_ACTIVATION_TEMP)
 
     gdd_above = (gdd - gdd_thresh).clip(lower=0)
@@ -537,6 +596,24 @@ def train_species_model(
     )
 
 
+def _print_onset_calibration(history: pd.DataFrame) -> None:
+    """Report the onset calibration this run is training against.
+
+    Both numbers drift as seasons accumulate, and both silently change what the
+    phenology features mean, so the retrain log is the right place to see them.
+    """
+    print("\n  Onset calibration (measured from history):")
+    print(f"    {'Species':<12} {'onset DOY':>10} {'seasons':>8} {'GDD thr':>9}")
+    print(f"    {'-'*12} {'-'*10} {'-'*8} {'-'*9}")
+    for species in ALL_SPECIES:
+        seasons = len(observed_onsets(history, species))
+        onset = typical_onset_doy(species, history)
+        threshold = calibrated_gdd_threshold(history, species)
+        measured = "" if seasons else "  (baseline)"
+        print(f"    {species:<12} {onset:>10.0f} {seasons:>8} {threshold:>9.1f}{measured}")
+    print()
+
+
 def train_all(history: pd.DataFrame) -> dict[str, TwoStageModel]:
     """
     Train one two-stage model per species.  Returns dict[species → TwoStageModel].
@@ -544,6 +621,8 @@ def train_all(history: pd.DataFrame) -> dict[str, TwoStageModel]:
     """
     MODELS_DIR.mkdir(parents=True, exist_ok=True)
     models: dict[str, TwoStageModel] = {}
+
+    _print_onset_calibration(history)
 
     for species in ALL_SPECIES:
         X, y, raw_values = prepare_training_data(history, species)

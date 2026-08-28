@@ -162,6 +162,12 @@ GDD_T_BASE = 5.0
 
 # Species-specific GDD thresholds for pollen burst readiness (#2)
 # When cumulative GDD exceeds this, species is primed for explosive release.
+#
+# These are a FALLBACK, not the live values. src/onset.py calibrates the
+# threshold per species per year from the seasons before it, and that
+# calibration is what the features actually use once two seasons of history
+# exist. Measured against eight Munich seasons these constants cross 15–23 days
+# after the observed onset, so they are kept only for a cold start.
 SPECIES_GDD_THRESHOLD: dict[str, float] = {
     "Alnus":     30.0,
     "Ambrosia":  800.0,
@@ -225,8 +231,8 @@ def is_season_active(species: str, month: int) -> bool:
 
 
 # Typical flowering-onset day-of-year per species (central-European baseline).
-# Used as a fallback for the phenology features when real DWD phenology data
-# (data/phenology.csv) is not available. Real onset means override these.
+# Also a fallback: src/onset.py measures onset from the accumulated history and
+# only falls back here for a species that has never been observed to start.
 SPECIES_TYPICAL_ONSET_DOY: dict[str, int] = {
     "Corylus":   45,    # mid-February (hazel)
     "Alnus":     55,    # late February (alder)

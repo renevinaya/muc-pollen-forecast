@@ -40,7 +40,7 @@ ML-based pollen forecast for Munich at 3-hour resolution, using a three-stage XG
 | [LGL Bayern](https://d1ppjuhp1nvtc2.cloudfront.net/measurements) | Pollen measurements | Alternative: real-time 3-hour pollen counts for Munich |
 | [Open-Meteo](https://open-meteo.com/) | Weather forecast + historical archive | Hourly weather aggregated to 3-hour windows: temperature, precipitation, wind, humidity, sunshine, radiation, boundary layer height, dew point, CAPE, direct radiation, soil temperature + moisture (no API key required) |
 | [MODIS (ORNL DAAC)](https://modis.ornl.gov/rst/api/v1) | NDVI / EVI satellite data | MOD13Q1 250 m 16-day vegetation indices, cubic-interpolated to daily resolution |
-| [DWD Open Data](https://opendata.dwd.de/) | Pollenflug-Gefahrenindex + CDC Phenology | Official pollen danger levels for Oberbayern (partregion 121) — used both for benchmarking and an inference-time level blend; multi-decade flowering-onset observations near Munich, used live for the phenology features |
+| [DWD Open Data](https://opendata.dwd.de/) | Pollenflug-Gefahrenindex + CDC Phenology | Official pollen danger levels for Oberbayern (partregion 121) — used both for benchmarking and an inference-time level blend; the phenology archive is fetched for reference but no longer feeds the model — see [Season onset](#season-onset) |
 | [Copernicus CAMS](https://ads.atmosphere.copernicus.eu/) (optional) | European pollen forecast | Physics-based ensemble forecast for alder, birch, grass, mugwort, ragweed. **Off by default** — see [Optional: CAMS pollen feature](#optional-cams-pollen-feature) |
 
 ## Model
@@ -77,12 +77,43 @@ Each species gets a **three-stage pipeline** with species-specific hyperparamete
 | Season | 1 | binary `season_active` per species |
 | Weather-derived | 23 | GDD + species GDD threshold, 3/7-day rolling temp/sunshine/rain, temp deltas (1d/3d), cold-to-warm flip, consecutive warm hours, dry streak, temp×sunshine, dry+warm, warming trend, wind×dry+warm, wind direction sin/cos, wind from south/north, transport south/north |
 | NDVI | 3 | NDVI, EVI, NDVI delta (green-up rate) |
-| Phenology | 2 | days since typical flowering onset (from real DWD onset data when available), onset anomaly (GDD-driven early/late signal) |
+| Phenology | 2 | days since flowering onset (measured from history, per year — see below), onset anomaly (GDD-driven early/late signal against a walk-forward threshold) |
 | CAMS | 1 | `cams_pollen` — Copernicus CAMS forecast for the species (0 when CAMS is inactive) |
 | Intra-day | 3 | temp vs. daily max (ratio), precipitation in prior window (binary), temperature rate of change |
 | Lag | 13 | pollen at t-1/t-2/t-3/t-8(24h)/t-16(48h)/t-24(72h)/t-56(7d), 24h + 7d rolling mean, 24h + 7d rolling max, morning average (today's earlier windows), days since active (all log-space) |
 
 Lag features are computed autoregressively during forecasting — each 3-hour window's prediction feeds into subsequent lag inputs.
+
+### Season onset
+
+Four features are parameterised by when the season is expected to start:
+`days_since_typical_onset`, `onset_anomaly`, `gdd_above_threshold` and
+`cold_to_warm_flip`. Together they carry 2–7% of model gain, so what feeds them
+matters. `src/onset.py` derives it from the accumulated history rather than from
+constants:
+
+- **Onset** is the first of three consecutive days at or above the species'
+  low/moderate boundary, inside its core season window. The window requirement
+  is what keeps long-range transport out — a February birch cloud over Munich
+  is not Munich's birches flowering.
+- **The GDD threshold** is the median accumulated GDD at those onsets, in the
+  same units the `gdd` feature uses. The hand-set constants it replaces crossed
+  15–23 days *after* the observed onset, so the burst features opened their gate
+  long after the season had begun.
+- **The onset estimate is per year, and causal.** Until the year's warmth
+  reaches the threshold it is the median of previous seasons; from the crossing
+  onwards it is the crossing day. That switch is what carries the signal — it
+  tells the model the season is running early or late as soon as the weather
+  confirms it — and because it only looks backwards, training and forecasting
+  compute it identically.
+
+Every estimate for year *Y* is calibrated only on seasons before *Y*, so a
+backtest never sees its own answer. `tests/test_onset.py` pins both properties
+down; they are invisible in the output when they break.
+
+The DWD phenology fetch (`python -m src.main phenology`) is unrelated to these
+features now. It returns a single year of Munich observations with no Alnus at
+all, which put Corylus 24 days and Alnus 17 days off their measured medians.
 
 ## Setup
 
@@ -115,10 +146,6 @@ export CAMS_ADS_KEY="<your-ads-key>"
 #    populated for training; it then becomes live at inference automatically.
 ```
 
-The phenology features also use real DWD flowering-onset data when
-`data/phenology.csv` is present (run `python -m src.main phenology` to fetch it;
-the monthly `run-train` pipeline refreshes and backs it up to the data release automatically).
-
 ## Usage
 
 ```bash
@@ -148,6 +175,7 @@ python -m src.main run-train
 | `backfill [days]` | Bulk import historical pollen, weather, and NDVI data (default: 365 days) |
 | `backfill-ps [start_year]` | Bulk import from pollenscience.eu at 3h resolution (default: 2019, 5s rate limit) |
 | `benchmark [horizon]` | Walk-forward evaluation with monthly CV folds and DWD comparison (default horizon: 1) |
+| `benchmark-onset [species...]` | Walk-forward evaluation restricted to the months around each season start (default: Corylus, Alnus, Betula) |
 | `dwd` | Display the current DWD pollen danger index for Oberbayern |
 | `phenology` | Download DWD phenology data and show flowering-onset statistics |
 | `run` | Execute collect → forecast in sequence (every 3 hours) |
