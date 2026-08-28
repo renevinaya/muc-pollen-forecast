@@ -19,7 +19,7 @@ ML-based pollen forecast for Munich at 3-hour resolution, using a three-stage XG
 │                                                          │
 │  3. Forecaster — predict 5-day pollen forecast           │
 │     → real-time observation assimilation                 │
-│     → upload forecast.json to S3                         │
+│     → write data/forecast.json                           │
 │                                                          │
 │  4. Evaluator  — walk-forward benchmark + DWD comparison │
 │     → data/benchmark_results.csv                         │
@@ -28,7 +28,7 @@ ML-based pollen forecast for Munich at 3-hour resolution, using a three-stage XG
                         ▼
 ┌──────────────────────────────────────────────────────────┐
 │  Vue frontend (muc-pollen)                               │
-│  → fetches forecast.json from CloudFront                 │
+│  → fetches forecast.json from GitHub Pages               │
 └──────────────────────────────────────────────────────────┘
 ```
 
@@ -90,7 +90,7 @@ Lag features are computed autoregressively during forecasting — each 3-hour wi
 uv sync
 ```
 
-Requires Python ≥ 3.11. Dependencies: httpx, pandas, numpy, xgboost, scikit-learn, joblib, boto3.
+Requires Python ≥ 3.11. Dependencies: httpx, pandas, numpy, xgboost, scikit-learn, joblib.
 
 ### Optional: CAMS pollen feature
 
@@ -117,7 +117,7 @@ export CAMS_ADS_KEY="<your-ads-key>"
 
 The phenology features also use real DWD flowering-onset data when
 `data/phenology.csv` is present (run `python -m src.main phenology` to fetch it;
-the monthly `run-train` pipeline refreshes and backs it up to S3 automatically).
+the monthly `run-train` pipeline refreshes and backs it up to the data release automatically).
 
 ## Usage
 
@@ -128,7 +128,7 @@ python -m src.main backfill 365
 # Train models on accumulated data (needs ≥ 14 data points per species)
 python -m src.main train
 
-# Generate forecast (writes to data/forecast.json locally, or uploads to S3 when S3_BUCKET is set)
+# Generate forecast (writes data/forecast.json)
 python -m src.main forecast
 
 # 3-hourly pipeline (collect → forecast)
@@ -153,104 +153,91 @@ python -m src.main run-train
 | `run` | Execute collect → forecast in sequence (every 3 hours) |
 | `run-train` | Execute collect → train → forecast in sequence (monthly retraining) |
 
-## AWS Deployment
+## Deployment
 
-The project runs on AWS, using CodeBuild for forecast generation, S3 for storage, and CloudFront for serving the forecast JSON to the Vue frontend.
+Everything runs on GitHub Actions and GitHub Pages, at no cost — both are free
+for public repositories.
 
-### Prerequisites
+### Pipeline
 
-- AWS CLI installed and configured with appropriate credentials
-- Permissions to create CloudFormation stacks, S3 buckets, CloudFront distributions, CodeBuild projects, EventBridge rules, and IAM roles
-- A GitHub repository containing this code (the CodeBuild project pulls source from GitHub)
+`.github/workflows/pipeline.yml` runs on `ubuntu-latest`:
 
-### Infrastructure Overview
+| Trigger | Cron (UTC) | Command |
+|---------|-----------|---------|
+| Forecast | `17 2,5,8,11,14,17,20,23 * * *` (every 3h) | `python -m src.main run` |
+| Retrain | `43 4 1 * *` (1st of the month) | `python -m src.main run-train` |
+| Manual | `workflow_dispatch` with a `mode` input | either |
 
-The CloudFormation template at `infrastructure/template.yaml` provisions:
+The schedules sit at `:17` and `:43` on purpose: GitHub queues scheduled
+workflows and the top of the hour is the most congested slot. Scheduled runs
+can still be delayed by several minutes under load — acceptable for a 3-hourly
+forecast, but it is not a hard guarantee the way a hosted scheduler is.
 
-| Resource | Type | Purpose |
-|----------|------|---------|
-| `ForecastBucket` | S3 Bucket | Stores `forecast.json` (public read), `data/history.csv` backup, model artifacts. Named `muc-pollen-forecast`. CORS enabled for `*`. Lifecycle rule expires objects under `data/` after 730 days. |
-| `ForecastBucketPolicy` | S3 Bucket Policy | Allows public `s3:GetObject` on `forecast.json` only |
-| `ForecastDistribution` | CloudFront Distribution | HTTPS CDN in front of the S3 bucket. Default root object: `forecast.json`. Price class: `PriceClass_100` (North America + Europe) |
-| `ForecastCodeBuild` | CodeBuild Project | ARM container (`amazonlinux2-aarch64-standard:3.0`, Python 3.12). Pulls source from GitHub, runs `buildspec.yml`. `S3_BUCKET` and `RUN_MODE` env vars set automatically. Timeout: 15 min |
-| `ForecastScheduleRule` | EventBridge Rule | Cron trigger every 3 hours (`0 2,5,8,11,14,17,20,23 * * ? *`) to run collect → forecast |
-| `TrainScheduleRule` | EventBridge Rule | Cron trigger on the 1st of each month at 4:00 UTC to run collect → train → forecast |
-| `CodeBuildServiceRole` | IAM Role | Grants CodeBuild access to CloudWatch Logs and read/write on the S3 bucket |
-| `EventBridgeRole` | IAM Role | Grants EventBridge permission to call `codebuild:StartBuild` |
+A `concurrency` group serialises runs so two jobs never rewrite the same
+release asset.
 
-### Deploy the Stack
+### State
+
+Runners are ephemeral, so accumulated state lives on a GitHub release tagged
+`data` (see `src/store.py`):
+
+| Asset | Contents |
+|-------|----------|
+| `history.csv.gz` | Accumulated 3h pollen + weather + NDVI observations |
+| `phenology.csv.gz` | DWD flowering-onset records |
+| `models.tar.gz` | All trained `*.joblib` models |
+
+Release assets are used rather than commits because `history.csv` is far too
+large to commit on every run — git rejects any single file over 100 MB, and
+eight commits a day would bloat the repository permanently. Gzip takes the CSV
+to roughly a tenth of its size.
+
+Reads are unauthenticated, so a local checkout picks up production history with
+no credentials:
 
 ```bash
-aws cloudformation deploy \
-  --template-file infrastructure/template.yaml \
-  --stack-name muc-pollen-forecast \
-  --capabilities CAPABILITY_IAM
+python -m src.main run    # downloads history + models, forecasts locally
 ```
 
-To use a different GitHub repo or schedule:
+Writes need `GITHUB_TOKEN`, which Actions injects automatically. Without a
+token the pipeline still runs end to end and simply skips the backup step.
 
-```bash
-aws cloudformation deploy \
-  --template-file infrastructure/template.yaml \
-  --stack-name muc-pollen-forecast \
-  --capabilities CAPABILITY_IAM \
-  --parameter-overrides \
-    GitHubRepo=https://github.com/<your-user>/muc-pollen-forecast.git \
-    ForecastSchedule="cron(0 2,5,8,11,14,17,20,23 * * ? *)" \
-    TrainSchedule="cron(0 4 1 * ? *)"
+### Publishing
+
+The forecast job writes `data/forecast.json` and force-pushes it as a single
+orphan commit to the `gh-pages` branch, which GitHub Pages serves at:
+
+```
+https://renevinaya.github.io/muc-pollen-forecast/forecast.json
 ```
 
-### After Deployment
+Force-pushing an orphan commit keeps the branch at exactly one commit, so the
+branch never grows. The push has a second purpose: GitHub disables scheduled
+workflows after 60 days without repository activity, and a push resets that
+clock on every run.
 
-1. **Get the stack outputs** (bucket name, CloudFront URL, CodeBuild project name):
-
-   ```bash
-   aws cloudformation describe-stacks \
-     --stack-name muc-pollen-forecast \
-     --query "Stacks[0].Outputs" \
-     --output table
-   ```
-
-2. **Connect CodeBuild to GitHub**: on first deploy, the CodeBuild project needs a GitHub connection. In the AWS Console, navigate to CodeBuild → Build projects → `muc-pollen-forecast` → Edit → Source, and authorize access to your repository. Alternatively, create a CodeBuild credential beforehand:
-
-   ```bash
-   aws codebuild import-source-credentials \
-     --server-type GITHUB \
-     --auth-type PERSONAL_ACCESS_TOKEN \
-     --token <your-github-pat>
-   ```
-
-3. **Trigger a manual build** to verify the pipeline works end-to-end:
-
-   ```bash
-   aws codebuild start-build --project-name muc-pollen-forecast
-   ```
-
-4. **Verify the forecast** is accessible via CloudFront:
-
-   ```bash
-   # Get the CloudFront URL from stack outputs, then:
-   curl https://<distribution-id>.cloudfront.net/forecast.json
-   ```
-
-### Build Pipeline
-
-The CodeBuild project runs `buildspec.yml`, which:
-
-1. Installs Python 3.12 and uv, then `uv pip install --system .`
-2. Checks `RUN_MODE`: if `train`, runs `python -m src.main run-train` (collect → train → forecast); otherwise runs `python -m src.main run` (collect → forecast)
-3. The forecast step uploads `forecast.json` and backs up `data/history.csv` to S3 (because `S3_BUCKET` is set)
+Pages serves `Access-Control-Allow-Origin: *`, so the frontend can fetch the
+file cross-origin.
 
 ### Environment Variables
 
 | Variable | Set by | Description |
 |----------|--------|-------------|
-| `S3_BUCKET` | CloudFormation (CodeBuild env) | S3 bucket name. When set, forecast is uploaded to S3 and history is backed up. When unset, forecast is written to `data/forecast.json` locally. |
-| `RUN_MODE` | CloudFormation (EventBridge overrides) | `forecast` (default, every 3h) or `train` (monthly, includes model retraining) |
+| `GITHUB_TOKEN` | Actions (automatic) | Required to write release assets and push `gh-pages`. Unset locally, in which case uploads are skipped. |
+| `GITHUB_REPOSITORY` | Actions (automatic) | `owner/repo` holding the data release. Falls back to `renevinaya/muc-pollen-forecast`. |
+| `DATA_REPO` | optional | Overrides `GITHUB_REPOSITORY` when pointing at a fork. |
+| `DATA_RELEASE_TAG` | optional | Release tag holding the data assets (default: `data`). |
+| `CAMS_ADS_URL` / `CAMS_ADS_KEY` | repo secrets (optional) | Activates the Copernicus CAMS feature. |
 
-### Local Development
+### Repository setup
 
-Without AWS, the app works entirely locally — forecast output is written to `data/forecast.json` and no S3 interaction occurs.
+One-time, in repository settings:
+
+1. **Settings → Actions → General → Workflow permissions**: *Read and write
+   permissions*. Without this the workflow's `contents: write` cannot be
+   granted, and both the release upload and the `gh-pages` push fail.
+2. **Settings → Pages → Source**: *Deploy from a branch* → `gh-pages` / `/ (root)`.
+   The branch only exists after the first successful run.
 
 ## Forecast Confidence
 

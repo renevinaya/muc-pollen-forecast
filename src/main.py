@@ -4,7 +4,7 @@ CLI entry point for the Munich pollen forecast system.
 Usage:
     python -m src.main collect      # Fetch recent data and append to history
     python -m src.main train        # Train models on accumulated history
-    python -m src.main forecast     # Generate forecast and upload to S3
+    python -m src.main forecast     # Generate forecast and write data/forecast.json
     python -m src.main run          # Collect + forecast (3-hourly cron)
     python -m src.main run-train    # Collect + train + forecast (monthly cron)
     python -m src.main backfill N   # Backfill N days of historical data
@@ -24,7 +24,16 @@ import pandas as pd
 from .collector import collect, update_history, HISTORY_FILE, DATA_DIR
 from .trainer import train_all, MODELS_DIR
 from .forecaster import generate_forecast
-from .s3 import upload_forecast, upload_csv, upload_models, download_models, sync_historical_data
+from .store import (
+    upload_csv,
+    download_csv,
+    upload_models,
+    download_models,
+    sync_historical_data,
+    can_upload,
+    HISTORY_ASSET,
+    PHENOLOGY_ASSET,
+)
 from .pollen import fetch_pollen, pivot_pollen
 from .pollenscience import fetch_pollenscience_chunked
 from .weather import fetch_historical_weather, fetch_weather_forecast as fetch_weather_fc
@@ -62,7 +71,7 @@ def cmd_train(history: pd.DataFrame | None = None) -> None:
 
 
 def cmd_forecast(history: pd.DataFrame | None = None) -> None:
-    """Generate forecast and optionally upload to S3."""
+    """Generate forecast, write it locally and back up accumulated state."""
     print("\n" + "=" * 60)
     print("STEP 3: GENERATE FORECAST")
     print("=" * 60)
@@ -86,27 +95,22 @@ def cmd_forecast(history: pd.DataFrame | None = None) -> None:
         top_str = ", ".join(f"{s.name}({s.level}:{s.value:.0f})" for s in top)
         print(f"  {day.date} ({len(day.windows)} windows): {top_str or 'no pollen'}")
 
-    # Upload to S3 if configured
-    import os
+    # The workflow publishes this file to GitHub Pages.
+    output_path = DATA_DIR / "forecast.json"
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(
+        json.dumps(forecast.to_web_dict(), indent=2, ensure_ascii=False)
+    )
+    print(f"\nForecast written to {output_path}")
 
-    bucket = os.environ.get("S3_BUCKET")
-    if bucket:
-        upload_forecast(forecast, bucket)
-        # Also back up history
+    # Back up accumulated state to the data release (CI only — needs a token)
+    if can_upload():
         if HISTORY_FILE.exists():
-            upload_csv(HISTORY_FILE, bucket, "data/history.csv")
+            upload_csv(HISTORY_FILE, HISTORY_ASSET)
         # Back up phenology data so the live onset features have it next run
         pheno_file = DATA_DIR / "phenology.csv"
         if pheno_file.exists():
-            upload_csv(pheno_file, bucket, "data/phenology.csv")
-    else:
-        # Local dev: write to file
-        output_path = DATA_DIR / "forecast.json"
-        DATA_DIR.mkdir(parents=True, exist_ok=True)
-        output_path.write_text(
-            json.dumps(forecast.to_web_dict(), indent=2, ensure_ascii=False)
-        )
-        print(f"\nForecast written to {output_path}")
+            upload_csv(pheno_file, PHENOLOGY_ASSET)
 
 
 def cmd_backfill(days: int = 365) -> pd.DataFrame:
@@ -432,49 +436,40 @@ def cmd_phenology() -> None:
     print(f"\nSaved to {pheno_path}")
 
 
-def _sync_phenology(bucket: str | None) -> None:
-    """Download phenology.csv from S3 if not present locally (best-effort)."""
-    if not bucket:
-        return
+def _sync_phenology() -> None:
+    """Download phenology.csv from the data release if absent locally (best-effort)."""
     pheno_file = DATA_DIR / "phenology.csv"
-    if not pheno_file.exists():
-        from .s3 import download_csv
-
-        DATA_DIR.mkdir(parents=True, exist_ok=True)
-        download_csv(bucket, "data/phenology.csv", pheno_file)
+    if pheno_file.exists():
+        return
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    download_csv(PHENOLOGY_ASSET, pheno_file)
 
 
 def cmd_run() -> None:
     """Run forecast pipeline: collect -> forecast (every 3 hours)."""
-    import os
-    bucket = os.environ.get("S3_BUCKET")
-    # On CodeBuild: download history, models and phenology from S3 before running
-    if bucket and not HISTORY_FILE.exists():
-        sync_historical_data(HISTORY_FILE, bucket)
-    if bucket:
-        download_models(MODELS_DIR, bucket)
-    _sync_phenology(bucket)
+    # Runners start empty: restore history, models and phenology first.
+    if not HISTORY_FILE.exists():
+        sync_historical_data(HISTORY_FILE)
+    download_models(MODELS_DIR)
+    _sync_phenology()
     history = cmd_collect()
     cmd_forecast(history)
 
 
 def cmd_run_train() -> None:
     """Run full pipeline with training: collect -> train -> forecast (monthly)."""
-    import os
-    bucket = os.environ.get("S3_BUCKET")
-    if bucket and not HISTORY_FILE.exists():
-        sync_historical_data(HISTORY_FILE, bucket)
-    _sync_phenology(bucket)
+    if not HISTORY_FILE.exists():
+        sync_historical_data(HISTORY_FILE)
+    _sync_phenology()
     # Monthly: refresh phenology onset data so the onset features stay current
-    # (best-effort — failures are non-fatal; cmd_forecast backs it up to S3).
+    # (best-effort — failures are non-fatal; cmd_forecast backs it up to the release).
     try:
         cmd_phenology()
     except Exception as exc:
         print(f"Phenology refresh failed ({exc}); continuing with existing data.")
     history = cmd_collect()
     cmd_train(history)
-    if bucket:
-        upload_models(MODELS_DIR, bucket)
+    upload_models(MODELS_DIR)
     cmd_forecast(history)
 
 

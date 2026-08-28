@@ -1,0 +1,82 @@
+name: forecast pipeline
+
+on:
+  schedule:
+    # Forecast every 3h. Deliberately at :17 — GitHub queues scheduled
+    # workflows and the top of the hour is the most congested slot.
+    - cron: '17 2,5,8,11,14,17,20,23 * * *'
+    # Retrain on the 1st of the month, before the 05:17 forecast.
+    - cron: '43 4 1 * *'
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'forecast = collect + predict; train = also retrain models'
+        type: choice
+        options: [forecast, train]
+        default: forecast
+
+permissions:
+  contents: write   # release assets (data) + gh-pages push
+
+# Runs mutate the same release assets, so never let two overlap.
+concurrency:
+  group: pipeline
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      # uv.lock is not committed, so key the cache on pyproject.toml.
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/uv
+          key: uv-${{ runner.os }}-${{ hashFiles('pyproject.toml') }}
+          restore-keys: uv-${{ runner.os }}-
+
+      - name: Install dependencies
+        run: |
+          pip install --quiet uv
+          uv sync
+
+      - name: Run pipeline
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Optional — enables the Copernicus CAMS feature when set.
+          CAMS_ADS_URL: ${{ secrets.CAMS_ADS_URL }}
+          CAMS_ADS_KEY: ${{ secrets.CAMS_ADS_KEY }}
+        run: |
+          if [ "${{ inputs.mode || (github.event.schedule == '43 4 1 * *' && 'train' || 'forecast') }}" = "train" ]; then
+            uv run python -m src.main run-train
+          else
+            uv run python -m src.main run
+          fi
+
+      - name: Publish forecast.json to GitHub Pages
+        run: |
+          test -s data/forecast.json || { echo "::error::no forecast.json produced"; exit 1; }
+
+          site="$(mktemp -d)"
+          cp data/forecast.json "$site/"
+          touch "$site/.nojekyll"
+
+          # A single orphan commit, force-pushed: the branch never accumulates
+          # history, and the push doubles as the repository activity that keeps
+          # scheduled workflows from being auto-disabled after 60 days.
+          cd "$site"
+          git init --quiet --initial-branch=gh-pages
+          git add -A
+          git -c user.name='github-actions[bot]' \
+              -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
+              commit --quiet -m "forecast $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          git push --quiet --force \
+            "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git" \
+            gh-pages
+          echo "Published to https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/forecast.json"
