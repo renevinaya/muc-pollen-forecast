@@ -40,8 +40,10 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: ~/.cache/uv
-          key: uv-${{ runner.os }}-${{ hashFiles('pyproject.toml') }}
-          restore-keys: uv-${{ runner.os }}-
+          # v2: bumped to drop caches carrying the obsolete nvidia-nccl-cu13
+          # wheel, which restore-keys would otherwise rehydrate forever.
+          key: uv-v2-${{ runner.os }}-${{ hashFiles('pyproject.toml') }}
+          restore-keys: uv-v2-${{ runner.os }}-
 
       - name: Install dependencies
         run: |
