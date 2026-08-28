@@ -39,6 +39,7 @@ from .pollenscience import fetch_pollenscience_chunked
 from .weather import fetch_historical_weather, fetch_weather_forecast as fetch_weather_fc
 from .evaluate import temporal_split_evaluate, print_evaluation_report, compare_with_dwd
 from .types import ALL_SPECIES
+from .clock import local_now, local_today
 
 
 def cmd_collect(days: int = 14) -> pd.DataFrame:
@@ -152,7 +153,7 @@ def cmd_backfill(days: int = 365) -> pd.DataFrame:
 
     # Fetch matching weather data at 3h resolution
     start = pollen.index.min().date() - timedelta(days=1)
-    archive_end = min(pollen.index.max().date(), date.today() - timedelta(days=5))
+    archive_end = min(pollen.index.max().date(), local_today() - timedelta(days=5))
 
     weather_parts: list[pd.DataFrame] = []
 
@@ -162,7 +163,7 @@ def cmd_backfill(days: int = 365) -> pd.DataFrame:
 
     # Use forecast API for the most recent days (archive is ~5 days behind)
     recent_weather = fetch_weather_fc(days=7)
-    now = pd.Timestamp.now().floor("3h")
+    now = local_now().floor("3h")
     recent_weather = recent_weather[recent_weather.index <= now]
     if not recent_weather.empty:
         weather_parts.append(recent_weather)
@@ -244,7 +245,7 @@ def cmd_backfill_pollenscience(start_year: int = 2019) -> pd.DataFrame:
     from .ndvi import ndvi_features
 
     start = date(start_year, 1, 1)
-    end = date.today() - timedelta(days=1)
+    end = local_today() - timedelta(days=1)
 
     print("=" * 60)
     print(f"BACKFILL POLLENSCIENCE.EU: {start} to {end}")
@@ -276,7 +277,7 @@ def cmd_backfill_pollenscience(start_year: int = 2019) -> pd.DataFrame:
 
     # 2. Fetch matching historical weather
     weather_start = pollen.index.min().date() - timedelta(days=1)
-    weather_end = min(end, date.today() - timedelta(days=5))
+    weather_end = min(end, local_today() - timedelta(days=5))
     print(f"\nFetching weather archive ({weather_start} to {weather_end})...")
     weather = fetch_historical_weather(weather_start, weather_end)
     print(f"  Weather windows: {len(weather)}")

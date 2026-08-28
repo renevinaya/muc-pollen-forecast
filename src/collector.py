@@ -8,7 +8,7 @@ from MODIS, producing one row per (datetime, species) at 3-hour resolution
 with all features attached.
 """
 
-from datetime import date, timedelta
+from datetime import timedelta
 from pathlib import Path
 
 import pandas as pd
@@ -19,6 +19,7 @@ from .weather import fetch_historical_weather, fetch_weather_forecast
 from .ndvi import fetch_ndvi, interpolate_ndvi, set_composites_cache
 from .cams import fetch_cams_forecast, cams_value
 from .types import ALL_SPECIES
+from .clock import local_now, local_today
 
 DATA_DIR = Path(__file__).parent.parent / "data"
 HISTORY_FILE = DATA_DIR / "history.csv"
@@ -54,7 +55,7 @@ def collect(days: int = 14) -> pd.DataFrame:
 
     print(f"Collecting last {days} days of data...")
 
-    end = date.today()
+    end = local_today()
     start = end - timedelta(days=days)
     archive_end = end - timedelta(days=5)
     archive_start = start - timedelta(days=1)
@@ -98,7 +99,7 @@ def collect(days: int = 14) -> pd.DataFrame:
         print(f"  Weather archive: {len(archive_weather)} windows")
 
     # Only keep past/today windows from the forecast
-    now = pd.Timestamp.now().floor("3h")
+    now = local_now().floor("3h")
     recent_weather = recent_weather_full[recent_weather_full.index <= now]
     if not recent_weather.empty:
         weather_parts.append(recent_weather)

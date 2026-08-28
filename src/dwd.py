@@ -10,12 +10,14 @@ Provides:
 
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import timedelta
 from io import StringIO
 from pathlib import Path
 
 import httpx
 import pandas as pd
+
+from .clock import local_today
 
 DATA_DIR = Path(__file__).parent.parent / "data"
 PHENOLOGY_FILE = DATA_DIR / "phenology.csv"
@@ -72,7 +74,7 @@ def fetch_dwd_forecast() -> pd.DataFrame:
     try:
         base_date = pd.Timestamp(last_update.split(" ")[0]).date()
     except Exception:
-        base_date = date.today()
+        base_date = local_today()
 
     # Find our region
     region = None

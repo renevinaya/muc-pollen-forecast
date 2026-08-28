@@ -29,6 +29,7 @@ from datetime import date
 import pandas as pd
 
 from .types import LAT, LON, FORECAST_DAYS
+from .clock import local_today
 
 CAMS_DATASET = "cams-europe-air-quality-forecasts"
 
@@ -130,7 +131,7 @@ def fetch_cams_forecast(days: int = FORECAST_DAYS) -> pd.DataFrame:
     if client is None:
         return pd.DataFrame()
     try:
-        df = _download_and_parse(client, date.today(), days)
+        df = _download_and_parse(client, local_today(), days)
         if not df.empty:
             print(f"  CAMS: {len(df)} windows, species: {list(df.columns)}")
         return df

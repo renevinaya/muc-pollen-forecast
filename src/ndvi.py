@@ -19,6 +19,7 @@ import numpy as np
 import pandas as pd
 
 from .types import LAT, LON
+from .clock import local_today
 
 MODIS_API = "https://modis.ornl.gov/rst/api/v1"
 PRODUCT = "MOD13Q1"  # 250m 16-day NDVI
@@ -51,7 +52,7 @@ def fetch_ndvi(
     import httpx
 
     if end is None:
-        end = date.today()
+        end = local_today()
     if start is None:
         # Default: 2 years back — covers the pollen history range
         start = date(end.year - 2, 1, 1)

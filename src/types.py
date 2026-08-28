@@ -386,9 +386,9 @@ class ForecastOutput:
         matching the format returned by the ePIN LGL Bayern API.
         """
         from datetime import datetime, timedelta
-        from zoneinfo import ZoneInfo
+        from .clock import LOCAL_TZ
 
-        tz = ZoneInfo("Europe/Berlin")
+        tz = LOCAL_TZ
         species_data: dict[str, list[dict[str, Any]]] = {}
 
         for day in self.forecast:
