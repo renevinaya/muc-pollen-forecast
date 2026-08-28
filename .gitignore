@@ -14,7 +14,7 @@ env/
 # Model artifacts (large, re-trainable)
 models/*.joblib
 
-# Local data (backed up to S3)
+# Local data (backed up to the GitHub data release)
 data/**
 
 # IDE

@@ -47,3 +47,9 @@ line-length = 100
 # Pinned explicitly rather than relying on ruff's defaults, which widen between
 # releases: 0.16 added ~43 findings to this codebase without a line changing.
 select = ["E4", "E7", "E9", "F"]
+
+[tool.pytest.ini_options]
+# The package is imported as ``src.*`` and is not installed into the
+# environment, so the repository root has to be on the path.
+pythonpath = ["."]
+testpaths = ["tests"]

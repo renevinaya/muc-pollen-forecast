@@ -19,7 +19,10 @@ from .types import (
     value_to_level,
     is_season_active,
     season_gate_active,
+    SPECIES_THRESHOLDS,
+    _DEFAULT_THRESHOLDS,
 )
+from .onset import ONSET_RUN_DAYS, observed_onsets
 from .trainer import (
     prepare_training_data,
     train_species_model,
@@ -37,6 +40,8 @@ def temporal_split_evaluate(
     history: pd.DataFrame,
     test_days: int = 60,
     n_folds: int = 3,
+    species: list[str] | None = None,
+    months: list[pd.Period] | None = None,
 ) -> pd.DataFrame:
     """
     Monthly forward-chaining cross-validation.
@@ -47,7 +52,10 @@ def temporal_split_evaluate(
     instead of only the most recent (often dormant) period.
 
     When *n_folds* is set, only that many evenly-spaced monthly folds are
-    evaluated (speeds up benchmarking significantly).
+    evaluated (speeds up benchmarking significantly). Passing *months* selects
+    the test folds explicitly instead, and *species* narrows which species are
+    evaluated — together they make it affordable to evaluate every consecutive
+    month around a season start rather than a scattered sample.
 
     Returns a DataFrame with columns:
         date, species, actual, predicted, fold, error, abs_error,
@@ -61,22 +69,30 @@ def temporal_split_evaluate(
 
     # Build monthly test blocks
     all_dates_ts = pd.to_datetime(dates)
-    months = all_dates_ts.to_period("M").unique().sort_values()
+    all_months = all_dates_ts.to_period("M").unique().sort_values()
 
     # Filter to eligible months (enough training data)
     eligible_months = []
-    for period in months:
+    for period in all_months:
         month_dates = [d for d in dates if pd.Timestamp(d).to_period("M") == period]
         train_dates = [d for d in dates if d < month_dates[0]]
         train_days = len(set(pd.to_datetime(d).date() for d in train_dates))
         if train_days >= min_train_days:
             eligible_months.append(period)
 
+    if months is not None:
+        wanted = set(months)
+        eligible_months = [p for p in eligible_months if p in wanted]
+        missing = wanted - set(eligible_months)
+        if missing:
+            print(f"  {len(missing)} requested month(s) lack enough training history; skipped")
     # Sub-sample to n_folds evenly-spaced months for speed
-    if n_folds and len(eligible_months) > n_folds:
+    elif n_folds and len(eligible_months) > n_folds:
         indices = np.linspace(0, len(eligible_months) - 1, n_folds, dtype=int)
         eligible_months = [eligible_months[i] for i in indices]
         print(f"  Sub-sampled to {n_folds} folds out of available months")
+
+    evaluated_species = list(species) if species else ALL_SPECIES
 
     results: list[dict[str, object]] = []
     fold_num = 0
@@ -98,31 +114,31 @@ def temporal_split_evaluate(
               f"({pd.Timestamp(test_dates[0]).strftime('%Y-%m-%d')} to "
               f"{pd.Timestamp(test_dates[-1]).strftime('%Y-%m-%d')})")
 
-        for species in ALL_SPECIES:
-            x_train, y_train, raw_train = prepare_training_data(train_data, species)
+        for species_name in evaluated_species:
+            x_train, y_train, raw_train = prepare_training_data(train_data, species_name)
             if len(x_train) < 14:
                 continue
 
-            model = train_species_model(x_train, y_train, raw_values=raw_train, species=species)
+            model = train_species_model(x_train, y_train, raw_values=raw_train, species=species_name)
             if model is None:
                 continue
 
             # Prepare test features
-            species_test = test_data[test_data["species"] == species].copy()
+            species_test = test_data[test_data["species"] == species_name].copy()
             if species_test.empty:
                 continue
 
             # We need lag features for the test set that include the training tail
             species_all = pd.concat([
-                train_data[train_data["species"] == species],
+                train_data[train_data["species"] == species_name],
                 species_test
             ]).sort_values("date").reset_index(drop=True)
-            species_all = _add_weather_derived_features(species_all, species)
+            species_all = _add_weather_derived_features(species_all, species_name)
             species_all = _add_ndvi_features(species_all)
             species_all = _add_intraday_features(species_all)
             species_all = _add_lag_features(species_all)
-            species_all = _add_season_feature(species_all, species)
-            species_all = _add_phenology_features(species_all, species)
+            species_all = _add_season_feature(species_all, species_name)
+            species_all = _add_phenology_features(species_all, species_name)
 
             # Only evaluate on test dates
             species_eval = species_all[
@@ -140,20 +156,20 @@ def temporal_split_evaluate(
             # widened season window (core ± shoulder).
             for i, (_, row) in enumerate(species_eval.iterrows()):
                 month = pd.Timestamp(row["date"]).month
-                if not season_gate_active(species, month):
+                if not season_gate_active(species_name, month):
                     preds[i] = 0.0
 
             for i, (_, row) in enumerate(species_eval.iterrows()):
                 results.append({
                     "date": row["date"],
-                    "species": species,
+                    "species": species_name,
                     "actual": y_test.iloc[i],
                     "predicted": float(preds[i]),
                     "fold": fold_num,
                     "error": float(preds[i]) - y_test.iloc[i],
                     "abs_error": abs(float(preds[i]) - y_test.iloc[i]),
-                    "level_actual": value_to_level(y_test.iloc[i], species).value,
-                    "level_predicted": value_to_level(float(preds[i]), species).value,
+                    "level_actual": value_to_level(y_test.iloc[i], species_name).value,
+                    "level_predicted": value_to_level(float(preds[i]), species_name).value,
                 })
 
     df = pd.DataFrame(results)
@@ -382,3 +398,185 @@ def _summarise_dwd(dwd_df: pd.DataFrame) -> None:
     """Print a summary of the current DWD forecast when no overlap is available."""
     for _, row in dwd_df.iterrows():
         print(f"    {row['date']}  {row['species']:<12}  level={int(row['dwd_level'])}")
+
+
+def onset_windows(history: pd.DataFrame, window_days: int) -> dict[tuple[str, int], pd.Timestamp]:
+    """Measured onset date per (species, year), for slicing evaluation results."""
+    windows: dict[tuple[str, int], pd.Timestamp] = {}
+    for species in ALL_SPECIES:
+        for year, doy in observed_onsets(history, species).items():
+            windows[(species, year)] = (
+                pd.Timestamp(year=year, month=1, day=1) + pd.Timedelta(days=doy - 1)
+            )
+    return windows
+
+
+def _onset_slice_mask(
+    results: pd.DataFrame, windows: dict[tuple[str, int], pd.Timestamp], window_days: int
+) -> pd.Series:
+    """True for result rows falling within ±*window_days* of their season's onset."""
+    dates = pd.to_datetime(results["date"])
+    onset_dates = [
+        windows.get((sp, ts.year)) for sp, ts in zip(results["species"], dates)
+    ]
+    deltas = [
+        abs((ts - onset).days) if onset is not None else None
+        for ts, onset in zip(dates, onset_dates)
+    ]
+    return pd.Series(
+        [d is not None and d <= window_days for d in deltas], index=results.index
+    )
+
+
+def _predicted_onset_doy(
+    daily: pd.DataFrame, column: str, species: str
+) -> int | None:
+    """Apply the observed-onset rule to a daily series of predictions or actuals."""
+    threshold = SPECIES_THRESHOLDS.get(species, _DEFAULT_THRESHOLDS)[0]
+    daily = daily.sort_values("doy")
+    above = (daily[column] >= threshold).to_numpy()
+    doys = daily["doy"].to_numpy()
+    for i in range(len(above) - ONSET_RUN_DAYS + 1):
+        if above[i : i + ONSET_RUN_DAYS].all():
+            return int(doys[i])
+    return None
+
+
+def print_onset_window_report(
+    results: pd.DataFrame, history: pd.DataFrame, window_days: int = 21
+) -> None:
+    """Report accuracy in the season-boundary windows specifically.
+
+    Onset windows are a tiny share of all predictions, so a change that helps
+    them a lot barely moves the aggregate MAE. This slice is where the
+    phenology features earn or lose their keep, and it reports two different
+    things: how well the model predicts *concentrations* around onset, and how
+    close it gets the *start date* itself.
+    """
+    if results.empty:
+        return
+
+    print("\n" + "=" * 70)
+    print(f"ONSET-WINDOW EVALUATION (±{window_days} days around measured onset)")
+    print("=" * 70)
+
+    windows = onset_windows(history, window_days)
+    mask = _onset_slice_mask(results, windows, window_days)
+    near = results[mask]
+    rest = results[~mask]
+
+    if near.empty:
+        print("\nNo evaluation rows fall inside an onset window "
+              "(the folds may not cover any season start).")
+        return
+
+    def _metrics(df: pd.DataFrame) -> tuple[float, float, float, float]:
+        return (
+            df["abs_error"].mean(),
+            np.sqrt((df["error"] ** 2).mean()),
+            (df["level_actual"] == df["level_predicted"]).mean(),
+            df["error"].mean(),
+        )
+
+    n_mae, n_rmse, n_lvl, n_bias = _metrics(near)
+    print(f"\nOnset windows ({len(near)} of {len(results)} predictions, "
+          f"{len(near) / len(results):.1%}):")
+    print(f"  MAE: {n_mae:.1f}   RMSE: {n_rmse:.1f}   "
+          f"Level accuracy: {n_lvl:.1%}   Bias: {n_bias:+.1f}")
+    if not rest.empty:
+        r_mae, r_rmse, r_lvl, r_bias = _metrics(rest)
+        print(f"Everything else ({len(rest)} predictions):")
+        print(f"  MAE: {r_mae:.1f}   RMSE: {r_rmse:.1f}   "
+              f"Level accuracy: {r_lvl:.1%}   Bias: {r_bias:+.1f}")
+
+    hdr = "\n  {:<12} {:>8} {:>8} {:>8} {:>9} {:>6}"  # pylint: disable=consider-using-f-string
+    print(hdr.format("Species", "MAE", "RMSE", "LvlAcc", "Bias", "N"))
+    print(f"  {'-'*12} {'-'*8} {'-'*8} {'-'*8} {'-'*9} {'-'*6}")
+    for species in sorted(near["species"].unique()):
+        sp = near[near["species"] == species]
+        s_mae, s_rmse, s_lvl, s_bias = _metrics(sp)
+        print(f"  {species:<12} {s_mae:>8.1f} {s_rmse:>8.1f} {s_lvl:>7.0%}"
+              f" {s_bias:>+9.1f} {len(sp):>6}")
+
+    _print_onset_timing(results, history, window_days)
+
+
+def _print_onset_timing(
+    results: pd.DataFrame, history: pd.DataFrame, window_days: int
+) -> None:
+    """Compare the season start the model predicts with the one that happened.
+
+    Only reported for (species, year) pairs whose test folds cover the whole
+    window contiguously — a monthly fold that clips the onset would otherwise
+    show up as a spurious miss.
+    """
+    daily = results.copy()
+    daily["day"] = pd.to_datetime(daily["date"]).dt.normalize()
+    daily = daily.groupby(["species", "day"], as_index=False)[["actual", "predicted"]].mean()
+    daily["year"] = daily["day"].dt.year
+    daily["doy"] = daily["day"].dt.dayofyear
+
+    rows: list[tuple[str, int, int, int | None]] = []
+    for species in sorted(daily["species"].unique()):
+        for year, obs_doy in observed_onsets(history, species).items():
+            grp = daily[(daily["species"] == species) & (daily["year"] == year)]
+            if grp.empty:
+                continue
+            covered = set(grp["doy"])
+            needed = set(range(max(1, obs_doy - window_days), obs_doy + window_days + 1))
+            if not needed.issubset(covered):
+                continue  # fold does not cover the window; a miss here means nothing
+            rows.append((species, year, obs_doy, _predicted_onset_doy(grp, "predicted", species)))
+
+    if not rows:
+        print("\n  Onset timing: no season start is fully covered by the test folds.")
+        return
+
+    print("\n  Onset timing (predicted season start vs measured, in days):")
+    print(f"    {'Species':<12} {'Year':>6} {'Actual':>8} {'Predicted':>10} {'Error':>8}")
+    print(f"    {'-'*12} {'-'*6} {'-'*8} {'-'*10} {'-'*8}")
+    errors: list[int] = []
+    for species, year, obs_doy, pred_doy in rows:
+        if pred_doy is None:
+            print(f"    {species:<12} {year:>6} {obs_doy:>8} {'never':>10} {'—':>8}")
+            continue
+        err = pred_doy - obs_doy
+        errors.append(err)
+        print(f"    {species:<12} {year:>6} {obs_doy:>8} {pred_doy:>10} {err:>+8d}")
+
+    if errors:
+        print(f"\n    Mean absolute timing error: {np.mean(np.abs(errors)):.1f} days"
+              f"   (bias {np.mean(errors):+.1f}, n={len(errors)})")
+    missed = sum(1 for _, _, _, p in rows if p is None)
+    if missed:
+        print(f"    Seasons the model never started: {missed} of {len(rows)}")
+
+
+def onset_focus_months(
+    history: pd.DataFrame,
+    species: list[str],
+    window_days: int = 21,
+    years: int | None = None,
+) -> list[pd.Period]:
+    """Test months that fully cover each species' season start.
+
+    The onset-timing diagnostic needs contiguous daily coverage across the whole
+    window, which evenly-spaced sample folds never give it. This returns every
+    month those windows touch, newest *years* seasons only when asked.
+    """
+    windows: list[tuple[pd.Timestamp, pd.Timestamp]] = []
+    for name in species:
+        onsets = observed_onsets(history, name)
+        chosen = sorted(onsets)[-years:] if years else sorted(onsets)
+        for year in chosen:
+            onset = pd.Timestamp(year=year, month=1, day=1) + pd.Timedelta(
+                days=onsets[year] - 1
+            )
+            windows.append(
+                (onset - pd.Timedelta(days=window_days), onset + pd.Timedelta(days=window_days))
+            )
+
+    periods: set[pd.Period] = set()
+    for start, end in windows:
+        periods.update(pd.period_range(start, end, freq="M"))
+    return sorted(periods)

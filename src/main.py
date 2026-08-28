@@ -10,6 +10,7 @@ Usage:
     python -m src.main backfill N   # Backfill N days of historical data
     python -m src.main backfill-ps  # Backfill from pollenscience.eu (2019+, slow)
     python -m src.main benchmark    # Walk-forward evaluation of forecast quality
+    python -m src.main benchmark-onset [species...]  # Season-start accuracy only
     python -m src.main dwd          # Show DWD pollen forecast for Oberbayern
     python -m src.main phenology    # Download DWD phenology data for Munich
 """
@@ -37,7 +38,13 @@ from .store import (
 from .pollen import fetch_pollen, pivot_pollen
 from .pollenscience import fetch_pollenscience_chunked
 from .weather import fetch_historical_weather, fetch_weather_forecast as fetch_weather_fc
-from .evaluate import temporal_split_evaluate, print_evaluation_report, compare_with_dwd
+from .evaluate import (
+    temporal_split_evaluate,
+    print_evaluation_report,
+    print_onset_window_report,
+    onset_focus_months,
+    compare_with_dwd,
+)
 from .types import ALL_SPECIES
 from .clock import local_now, local_today
 
@@ -355,6 +362,7 @@ def cmd_benchmark(horizon: int = 1) -> None:
     results = temporal_split_evaluate(history, test_days=min(90, unique_days // 3), n_folds=horizon)
     if not results.empty:
         print_evaluation_report(results)
+        print_onset_window_report(results, history)
 
         # Compare with DWD forecast
         compare_with_dwd(results)
@@ -373,6 +381,50 @@ def cmd_benchmark(horizon: int = 1) -> None:
         report_path = DATA_DIR / "benchmark_report.txt"
         report_path.write_text(buf.getvalue())
         print(f"Report written to {report_path}")
+
+
+def cmd_benchmark_onset(species: list[str] | None = None, years: int = 3) -> None:
+    """Evaluate only the season starts, where the phenology features matter.
+
+    The full benchmark samples months evenly across the history, which almost
+    never lands contiguously on a season start — so the aggregate it reports is
+    dominated by mid-season windows where the lag features carry the forecast.
+    This restricts training to the months around each measured onset, which
+    makes it cheap enough to run every one of them.
+    """
+    print("=" * 60)
+    print("BENCHMARK: Season-Start Accuracy")
+    print("=" * 60)
+    if not HISTORY_FILE.exists():
+        print("No history file found. Run 'collect' or 'backfill' first.")
+        return
+
+    targets = species or ["Corylus", "Alnus", "Betula"]
+    unknown = [s for s in targets if s not in ALL_SPECIES]
+    if unknown:
+        print(f"Unknown species: {', '.join(unknown)}")
+        print(f"Known species: {', '.join(ALL_SPECIES)}")
+        return
+
+    history = pd.read_csv(HISTORY_FILE, parse_dates=["date"])
+    months = onset_focus_months(history, targets, years=years)
+    print(f"History: {len(history)} rows")
+    print(f"Species: {', '.join(targets)}")
+    print(f"Evaluating {len(months)} month(s) covering the last {years} season(s) "
+          f"per species\n")
+
+    results = temporal_split_evaluate(history, species=targets, months=months)
+    if results.empty:
+        print("No evaluation results.")
+        return
+
+    print_evaluation_report(results)
+    print_onset_window_report(results, history)
+
+    results_path = DATA_DIR / "benchmark_onset_results.csv"
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    results.to_csv(results_path, index=False)
+    print(f"\nDetailed results saved to {results_path}")
 
 
 def cmd_dwd() -> None:
@@ -499,6 +551,8 @@ def main() -> None:
     elif command == "benchmark":
         horizon = int(sys.argv[2]) if len(sys.argv) > 2 else 1
         cmd_benchmark(horizon)
+    elif command == "benchmark-onset":
+        cmd_benchmark_onset(sys.argv[2:] or None)
     elif command == "dwd":
         cmd_dwd()
     elif command == "phenology":
