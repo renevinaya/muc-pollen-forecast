@@ -248,9 +248,9 @@ def cmd_backfill_pollenscience(start_year: int = 2019) -> pd.DataFrame:
 
     print("=" * 60)
     print(f"BACKFILL POLLENSCIENCE.EU: {start} to {end}")
-    print(f"  Stations: DEMUNC + DEBIED (Munich)")
+    print("  Stations: DEMUNC + DEBIED (Munich)")
     print(f"  Species: {', '.join(ALL_SPECIES)}")
-    print(f"  Fetching slowly with 5s delay between requests...")
+    print("  Fetching slowly with 5s delay between requests...")
     print("=" * 60)
 
     # 1. Fetch pollen data slowly
@@ -364,7 +364,8 @@ def cmd_benchmark(horizon: int = 1) -> None:
         print(f"\nDetailed results saved to {results_path}")
 
         # Write text report to file
-        import io, contextlib
+        import contextlib
+        import io
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
             print_evaluation_report(results)

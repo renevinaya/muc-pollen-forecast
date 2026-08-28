@@ -90,7 +90,7 @@ Lag features are computed autoregressively during forecasting — each 3-hour wi
 uv sync
 ```
 
-Requires Python ≥ 3.11. Dependencies: httpx, pandas, numpy, xgboost, scikit-learn, joblib.
+Requires Python ≥ 3.12 (the version the pipeline runs, and the minimum for current numpy/xgboost). Dependencies: httpx, pandas, numpy, xgboost, scikit-learn, joblib.
 
 ### Optional: CAMS pollen feature
 

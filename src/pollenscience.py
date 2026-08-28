@@ -163,7 +163,7 @@ def fetch_pollenscience_chunked(
                 print(f"    -> {len(merged)} rows, {n_nonzero} nonzero")
                 all_chunks.append(merged)
             else:
-                print(f"    -> no data")
+                print("    -> no data")
         except httpx.HTTPStatusError as exc:
             print(f"    -> HTTP error {exc.response.status_code}, skipping chunk")
         except Exception as exc:

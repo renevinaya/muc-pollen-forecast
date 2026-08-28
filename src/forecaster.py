@@ -12,7 +12,7 @@ feeds (log-space) predictions into subsequent windows.
 from __future__ import annotations
 
 from collections import OrderedDict
-from datetime import datetime
+from datetime import datetime, timezone
 
 import numpy as np
 import pandas as pd
@@ -426,7 +426,7 @@ def generate_forecast(
     ]
 
     return ForecastOutput(
-        generated=datetime.utcnow().isoformat() + "Z",
+        generated=datetime.now(timezone.utc).replace(tzinfo=None).isoformat() + "Z",
         location=LOCATION,
         forecast=forecast_days,
     )
