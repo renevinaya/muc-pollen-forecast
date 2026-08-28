@@ -10,9 +10,9 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: 'forecast = collect + predict; train = also retrain; seed = one-shot import from S3'
+        description: 'forecast = collect + predict; train = also retrain models'
         type: choice
-        options: [forecast, train, seed]
+        options: [forecast, train]
         default: forecast
 
 permissions:
@@ -55,20 +55,11 @@ jobs:
           CAMS_ADS_URL: ${{ secrets.CAMS_ADS_URL }}
           CAMS_ADS_KEY: ${{ secrets.CAMS_ADS_KEY }}
         run: |
-          case "$MODE" in
-            seed)
-              # One-shot import of history/phenology/models out of S3, then a
-              # normal forecast on top of the freshly seeded state.
-              uv run python scripts/seed_from_s3.py
-              uv run python -m src.main run
-              ;;
-            train)
-              uv run python -m src.main run-train
-              ;;
-            *)
-              uv run python -m src.main run
-              ;;
-          esac
+          if [ "$MODE" = "train" ]; then
+            uv run python -m src.main run-train
+          else
+            uv run python -m src.main run
+          fi
 
       - name: Publish forecast.json to GitHub Pages
         run: |

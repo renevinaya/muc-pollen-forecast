@@ -1,10 +1,10 @@
 """
 GitHub-backed persistence for history, phenology and model artifacts.
 
-Replaces the previous S3 backend. Large but regenerable state — history.csv,
-phenology.csv and models/*.joblib — is stored as compressed assets on a single
-GitHub release (tag: ``data``). Releases are free, allow 2 GB per file and,
-unlike committing the files, do not grow the git history on every run.
+Large but regenerable state — history.csv, phenology.csv and models/*.joblib —
+is stored as compressed assets on a single GitHub release (tag: ``data``).
+Releases are free, allow 2 GB per file and, unlike committing the files, do not
+grow the git history on every run.
 
 The generated forecast.json is deliberately *not* stored here: it is written to
 ``data/forecast.json`` and published to GitHub Pages by the workflow.
