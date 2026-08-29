@@ -4,6 +4,7 @@ Fetches hourly data and aggregates to 3-hour windows to match
 the LGL Bayern pollen measurement intervals.
 """
 
+import time
 from datetime import date
 from typing import Any
 
@@ -122,6 +123,58 @@ def _parse_hourly_response(data: dict[str, Any]) -> pd.DataFrame:
     return result
 
 
+# Four attempts, backing off 2s/4s/8s between them. Weather is on the critical
+# path: every 3-hourly run dies if this call does.
+_MAX_ATTEMPTS = 4
+
+
+def _fetch_json(url: str, params: dict[str, Any], timeout: float) -> Any:
+    """GET a JSON payload, retrying transient failures with exponential backoff.
+
+    Three kinds of failure are transient and retried: transport errors, 5xx,
+    and — the one that actually bit us — a *successful* response whose body is
+    not JSON. On 2026-08-29 Open-Meteo answered the archive endpoint with a 2xx
+    and an empty body, which sailed straight past raise_for_status() and killed
+    the run on the decode instead. The run before and after it succeeded.
+
+    4xx is deliberately not retried: it means the request itself is wrong, so
+    repeating it changes nothing, and _get_weather has a fallback ready for the
+    one 4xx we expect.
+    """
+    last_error: str | None = None
+
+    for attempt in range(_MAX_ATTEMPTS):
+        try:
+            response = httpx.get(url, params=params, timeout=timeout)
+        except httpx.HTTPError as exc:
+            last_error = f"{type(exc).__name__}: {exc}"
+        else:
+            if 400 <= response.status_code < 500:
+                response.raise_for_status()
+            elif response.status_code >= 500:
+                last_error = f"HTTP {response.status_code}"
+            else:
+                try:
+                    return response.json()
+                except ValueError:
+                    # Say what came back — a bare JSONDecodeError names only the
+                    # byte offset, which tells you nothing about the response.
+                    preview = " ".join(response.text[:200].split())
+                    last_error = (
+                        f"HTTP {response.status_code} with a non-JSON body: {preview!r}"
+                    )
+
+        if attempt < _MAX_ATTEMPTS - 1:
+            delay = 2**attempt
+            print(
+                f"  Weather API: {last_error} — retrying in {delay}s "
+                f"({attempt + 1}/{_MAX_ATTEMPTS - 1})"
+            )
+            time.sleep(delay)
+
+    raise RuntimeError(f"{url} failed after {_MAX_ATTEMPTS} attempts — {last_error}")
+
+
 def _get_weather(
     url: str, params: dict[str, Any], soil_params: list[str], timeout: float = 30
 ) -> pd.DataFrame:
@@ -131,25 +184,25 @@ def _get_weather(
     If a soil param is ever rejected (HTTP 4xx), retry without soil rather than
     let the whole weather request — and thus the forecast — fail. The canonical
     soil columns then default to 0.0 in _parse_hourly_response.
+
+    Transient failures are handled a level down, in _fetch_json.
     """
     try:
-        response = httpx.get(
+        payload = _fetch_json(
             url,
-            params={**params, "hourly": ",".join(HOURLY_PARAMS + soil_params)},
-            timeout=timeout,
+            {**params, "hourly": ",".join(HOURLY_PARAMS + soil_params)},
+            timeout,
         )
-        response.raise_for_status()
     except httpx.HTTPStatusError:
         if not soil_params:
             raise
         print("  Weather API rejected soil params; retrying without soil features")
-        response = httpx.get(
+        payload = _fetch_json(
             url,
-            params={**params, "hourly": ",".join(HOURLY_PARAMS)},
-            timeout=timeout,
+            {**params, "hourly": ",".join(HOURLY_PARAMS)},
+            timeout,
         )
-        response.raise_for_status()
-    return _parse_hourly_response(response.json())
+    return _parse_hourly_response(payload)
 
 
 _forecast_cache: tuple[pd.DataFrame, int] | None = None
