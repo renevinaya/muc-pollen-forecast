@@ -21,8 +21,8 @@ ML-based pollen forecast for Munich at 3-hour resolution, using a three-stage XG
 │     → real-time observation assimilation                 │
 │     → write data/forecast.json                           │
 │                                                          │
-│  4. Evaluator  — walk-forward benchmark + DWD comparison │
-│     → data/benchmark_results.csv                         │
+│  4. Evaluator  — autoregressive rollout, scored per day  │
+│     → data/benchmark_rollout.csv                         │
 └───────────────────────┬──────────────────────────────────┘
                         │ forecast.json
                         ▼
@@ -82,7 +82,28 @@ Each species gets a **three-stage pipeline** with species-specific hyperparamete
 | Intra-day | 3 | temp vs. daily max (ratio), precipitation in prior window (binary), temperature rate of change |
 | Lag | 13 | pollen at t-1/t-2/t-3/t-8(24h)/t-16(48h)/t-24(72h)/t-56(7d), 24h + 7d rolling mean, 24h + 7d rolling max, morning average (today's earlier windows), days since active (all log-space) |
 
+Lag features carry about half of all model gain, which is why forecast skill is
+reported per horizon day — see [Evaluation](#evaluation).
+
 Lag features are computed autoregressively during forecasting — each 3-hour window's prediction feeds into subsequent lag inputs.
+
+### Train/serve parity
+
+The trainer builds features in vectorised batches over the whole history; the
+forecaster has to build them one window at a time, because each prediction
+feeds the next window's lags. Those were two independent implementations of one
+definition, and a mismatch is invisible in the output — a forecast built from
+skewed features still looks like a forecast.
+
+`src/features.py` now owns the row-wise half, and both the forecaster and the
+rollout benchmark call it. `tests/test_feature_parity.py` builds the same
+windows both ways and requires all 72 features to agree.
+
+It found one immediately: `days_since_active` was computed with a cumulative
+sum that does not advance while a species is inactive, so training saw a
+**constant 0** on every row after the first active one, while the forecaster
+served a live count. The feature is worth 6.5% of model gain once it actually
+varies (0–980 windows).
 
 ### Season onset
 
@@ -163,6 +184,9 @@ python -m src.main run
 
 # Monthly pipeline (collect → train → forecast)
 python -m src.main run-train
+
+# Backtest the 5-day forecast the way it actually runs
+python -m src.main benchmark 5 --folds 3
 ```
 
 ## Commands
@@ -174,12 +198,89 @@ python -m src.main run-train
 | `forecast` | Generate 5-day forecast at 3h resolution using trained models |
 | `backfill [days]` | Bulk import historical pollen, weather, and NDVI data (default: 365 days) |
 | `backfill-ps [start_year]` | Bulk import from pollenscience.eu at 3h resolution (default: 2019, 5s rate limit) |
-| `benchmark [horizon]` | Walk-forward evaluation with monthly CV folds and DWD comparison (default horizon: 1) |
+| `benchmark [days]` | Walk-forward **rollout** of the real autoregressive forecast, scored per forecast day (default: 5). `--folds N`, `--species A,B`, `--classic` |
 | `benchmark-onset [species...]` | Walk-forward evaluation restricted to the months around each season start (default: Corylus, Alnus, Betula) |
 | `dwd` | Display the current DWD pollen danger index for Oberbayern |
 | `phenology` | Download DWD phenology data and show flowering-onset statistics |
 | `run` | Execute collect → forecast in sequence (every 3 hours) |
 | `run-train` | Execute collect → train → forecast in sequence (monthly retraining) |
+
+## Evaluation
+
+Two benchmarks, measuring two different things. The distinction matters more
+than it sounds: **lag features carry ~50% of total model gain**, and they are
+the only features whose quality depends on how far ahead you are forecasting.
+
+### `benchmark` — autoregressive rollout (the shipped forecast)
+
+`src/rollout.py` replays the forecast exactly as `generate_forecast` runs it:
+lag features start from measurements before the forecast origin and are then
+fed from the model's own predictions, through the same `src/features.py` code
+path production uses. A forecast is launched from every day of a test month and
+rolled five days out, and skill is reported **per forecast day** against a
+persistence baseline.
+
+Folds are spread across the calendar year rather than evenly along the
+timeline. Even spacing put all three folds in August — dormant for every tree
+species — so the benchmark was scoring an empty season.
+
+What it deliberately does not simulate, both of which flatter the model and are
+printed with the report rather than hidden:
+
+- **Weather is actual, not forecast.** A real 5-day forecast also carries the
+  weather model's error.
+- **No DWD blend.** The DWD index covers only today + 2 days and is not
+  archived, so it cannot be replayed historically.
+
+### What it currently says
+
+Three folds (Sep 2025, Jan 2026, May 2026), 92 forecast origins, 40 200 scored
+predictions:
+
+| Horizon | MAE | RMSE | Level acc. | Bias | Persistence MAE |
+|---------|-----|------|-----------|------|-----------------|
+| day 1 | 6.6 | 21.2 | 77.4% | +4.9 | **4.1** |
+| day 2 | 8.0 | 23.4 | 75.7% | +6.4 | **4.5** |
+| day 3 | 8.3 | 23.1 | 75.6% | +6.6 | **4.9** |
+| day 4 | 8.4 | 22.7 | 75.5% | +6.8 | **4.7** |
+| day 5 | 8.7 | 22.9 | 75.3% | +7.4 | **4.5** |
+
+Two things stand out, and neither was visible before:
+
+1. **The model is beaten by persistence** — "hold the last measured window
+   flat" — at every horizon, on MAE (by 60–94%) and on level accuracy (81% vs
+   76%). Persistence is a strong baseline for autocorrelated 3-hourly data, but
+   losing to it at *day 1* is not a horizon problem.
+2. **RMSE goes the other way**: 21–23 for the model against 26–29 for
+   persistence. Combined with a bias of +5 to +7 against persistence's +0.3 to
+   +1.6, the picture is consistent — the model buys peak capture with a
+   systematic over-prediction that costs it every ordinary window.
+
+That bias is the compounded effect of three separate upward pressures stacked
+on each other (quantile α = 0.85–0.92, √-value sample weights inside the same
+quantile loss, and an extreme-regressor blend gated on P(pollen > 0) rather
+than P(pollen > threshold)). Unpicking them is the next piece of work.
+
+Degradation across the horizon is mild by comparison (MAE +33%, level accuracy
+−2.1 points from day 1 to day 5), which says the lag cascade is not the main
+problem — the calibration is.
+
+### `benchmark --classic` — one window ahead (diagnostic only)
+
+`temporal_split_evaluate` hands every test row the *measured* recent counts.
+That is the right diagnostic for "are the weather and phenology features doing
+anything", and the wrong one for "how good is the forecast": on the same fold
+and species it reported MAE 76 / 37% level accuracy where the real day-1
+forecast delivers MAE 121 / 22.5%, and day 5 delivers MAE 172 / 16.7%. The DWD
+comparison and onset-timing diagnostics only make sense in this mode, so they
+live here.
+
+### Feature gain
+
+`train` prints the share of XGBoost gain each feature and feature family earns,
+so pruning decisions have evidence behind them. The current split is roughly:
+lag 50%, weather-derived 20%, weather 12%, calendar 10%, with NDVI, intra-day
+and phenology at 2–3% each and `cams_pollen` never split on.
 
 ## Deployment
 

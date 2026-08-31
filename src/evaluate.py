@@ -23,6 +23,7 @@ from .types import (
     _DEFAULT_THRESHOLDS,
 )
 from .onset import ONSET_RUN_DAYS, observed_onsets
+from .rollout import eligible_months
 from .trainer import (
     prepare_training_data,
     train_species_model,
@@ -57,47 +58,25 @@ def temporal_split_evaluate(
     evaluated — together they make it affordable to evaluate every consecutive
     month around a season start rather than a scattered sample.
 
+    **This scores one window ahead with measured lag features**, not the
+    5-day autoregressive forecast the product ships: every test row is handed
+    the true recent pollen counts. It is the right diagnostic for "are the
+    weather and phenology features doing anything", and the wrong one for "how
+    good is the forecast" — use :mod:`src.rollout` for that.
+
     Returns a DataFrame with columns:
         date, species, actual, predicted, fold, error, abs_error,
         level_actual, level_predicted
     """
     dates = sorted(history["date"].unique())
-
-    # Count in unique calendar days for minimum training threshold
-    unique_days = len(set(pd.to_datetime(d).date() for d in dates))
-    min_train_days = max(60, unique_days // 5)
-
-    # Build monthly test blocks
-    all_dates_ts = pd.to_datetime(dates)
-    all_months = all_dates_ts.to_period("M").unique().sort_values()
-
-    # Filter to eligible months (enough training data)
-    eligible_months = []
-    for period in all_months:
-        month_dates = [d for d in dates if pd.Timestamp(d).to_period("M") == period]
-        train_dates = [d for d in dates if d < month_dates[0]]
-        train_days = len(set(pd.to_datetime(d).date() for d in train_dates))
-        if train_days >= min_train_days:
-            eligible_months.append(period)
-
-    if months is not None:
-        wanted = set(months)
-        eligible_months = [p for p in eligible_months if p in wanted]
-        missing = wanted - set(eligible_months)
-        if missing:
-            print(f"  {len(missing)} requested month(s) lack enough training history; skipped")
-    # Sub-sample to n_folds evenly-spaced months for speed
-    elif n_folds and len(eligible_months) > n_folds:
-        indices = np.linspace(0, len(eligible_months) - 1, n_folds, dtype=int)
-        eligible_months = [eligible_months[i] for i in indices]
-        print(f"  Sub-sampled to {n_folds} folds out of available months")
+    eligible = eligible_months(history, n_folds=n_folds, months=months)
 
     evaluated_species = list(species) if species else ALL_SPECIES
 
     results: list[dict[str, object]] = []
     fold_num = 0
 
-    for period in eligible_months:
+    for period in eligible:
         month_dates = [d for d in dates if pd.Timestamp(d).to_period("M") == period]
         # Everything before this month is training
         train_dates = [d for d in dates if d < month_dates[0]]

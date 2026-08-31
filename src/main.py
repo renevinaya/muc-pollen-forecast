@@ -9,7 +9,7 @@ Usage:
     python -m src.main run-train    # Collect + train + forecast (monthly cron)
     python -m src.main backfill N   # Backfill N days of historical data
     python -m src.main backfill-ps  # Backfill from pollenscience.eu (2019+, slow)
-    python -m src.main benchmark    # Walk-forward evaluation of forecast quality
+    python -m src.main benchmark    # Walk-forward rollout of the 5-day forecast
     python -m src.main benchmark-onset [species...]  # Season-start accuracy only
     python -m src.main dwd          # Show DWD pollen forecast for Oberbayern
     python -m src.main phenology    # Download DWD phenology data for Munich
@@ -45,7 +45,8 @@ from .evaluate import (
     onset_focus_months,
     compare_with_dwd,
 )
-from .types import ALL_SPECIES
+from .rollout import rollout_evaluate, print_rollout_report
+from .types import ALL_SPECIES, FORECAST_DAYS
 from .clock import local_now, local_today
 
 
@@ -346,10 +347,25 @@ def cmd_backfill_pollenscience(start_year: int = 2019) -> pd.DataFrame:
     return history
 
 
-def cmd_benchmark(horizon: int = 1) -> None:
-    """Run walk-forward evaluation on accumulated history."""
+def cmd_benchmark(
+    horizon: int = FORECAST_DAYS,
+    folds: int = 3,
+    classic: bool = False,
+    species: list[str] | None = None,
+) -> None:
+    """Walk-forward backtest of the real autoregressive forecast.
+
+    *horizon* is the forecast depth in days — the thing the product ships and
+    the thing this reports skill for, per day. It used to be passed straight in
+    as the fold count, so asking for a longer horizon silently just changed how
+    many months were sampled; *folds* is now its own argument.
+
+    *classic* additionally runs the one-window-ahead evaluation with measured
+    lag features, which is the only mode the DWD comparison and the onset-timing
+    diagnostic make sense in.
+    """
     print("=" * 60)
-    print("BENCHMARK: Walk-Forward Evaluation")
+    print("BENCHMARK: Autoregressive Rollout")
     print("=" * 60)
     if not HISTORY_FILE.exists():
         print("No history file found. Run 'collect' or 'backfill' first.")
@@ -358,29 +374,45 @@ def cmd_benchmark(horizon: int = 1) -> None:
     history = pd.read_csv(HISTORY_FILE, parse_dates=["date"])
     unique_days = len(set(pd.to_datetime(history["date"]).dt.date))
     print(f"History: {len(history)} rows, {unique_days} unique days")
+    print(f"Horizon: {horizon} days   Folds: {folds}\n")
 
-    results = temporal_split_evaluate(history, test_days=min(90, unique_days // 3), n_folds=horizon)
-    if not results.empty:
-        print_evaluation_report(results)
-        print_onset_window_report(results, history)
+    results = rollout_evaluate(
+        history, horizon_days=horizon, n_folds=folds, species=species
+    )
+    if results.empty:
+        print("No rollout results.")
+        return
 
-        # Compare with DWD forecast
-        compare_with_dwd(results)
+    print_rollout_report(results, history)
 
-        # Save results for further analysis
-        results_path = DATA_DIR / "benchmark_results.csv"
-        results.to_csv(results_path, index=False)
-        print(f"\nDetailed results saved to {results_path}")
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    results_path = DATA_DIR / "benchmark_rollout.csv"
+    results.to_csv(results_path, index=False)
+    print(f"\nDetailed rollout results saved to {results_path}")
 
-        # Write text report to file
-        import contextlib
-        import io
-        buf = io.StringIO()
-        with contextlib.redirect_stdout(buf):
-            print_evaluation_report(results)
-        report_path = DATA_DIR / "benchmark_report.txt"
-        report_path.write_text(buf.getvalue())
-        print(f"Report written to {report_path}")
+    import contextlib
+    import io
+
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        print_rollout_report(results, history)
+    (DATA_DIR / "benchmark_rollout.txt").write_text(buf.getvalue())
+
+    if not classic:
+        return
+
+    print("\n" + "=" * 60)
+    print("BENCHMARK: One Window Ahead (measured lag features)")
+    print("=" * 60)
+    print("Not the shipped forecast — every row is handed the true recent counts.")
+    lagged = temporal_split_evaluate(history, n_folds=folds, species=species)
+    if lagged.empty:
+        return
+    print_evaluation_report(lagged)
+    print_onset_window_report(lagged, history)
+    compare_with_dwd(lagged)
+    lagged.to_csv(DATA_DIR / "benchmark_results.csv", index=False)
+    print(f"\nDetailed results saved to {DATA_DIR / 'benchmark_results.csv'}")
 
 
 def cmd_benchmark_onset(species: list[str] | None = None, years: int = 3) -> None:
@@ -527,6 +559,31 @@ def cmd_run_train() -> None:
     cmd_forecast(history)
 
 
+def _parse_benchmark_args(argv: list[str]) -> dict[str, Any]:
+    """Parse ``benchmark [horizon] [--folds N] [--species A,B] [--classic]``.
+
+    The bare positional stays the horizon in days, which is what the flag was
+    always documented to mean.
+    """
+    args: dict[str, Any] = {}
+    rest = list(argv)
+    if rest and not rest[0].startswith("-"):
+        args["horizon"] = int(rest.pop(0))
+    while rest:
+        flag = rest.pop(0)
+        if flag == "--classic":
+            args["classic"] = True
+        elif flag == "--folds":
+            args["folds"] = int(rest.pop(0))
+        elif flag == "--horizon":
+            args["horizon"] = int(rest.pop(0))
+        elif flag == "--species":
+            args["species"] = [s.strip() for s in rest.pop(0).split(",") if s.strip()]
+        else:
+            raise SystemExit(f"Unknown benchmark option: {flag}")
+    return args
+
+
 def main() -> None:
     """Parse CLI arguments and dispatch to the appropriate subcommand."""
     if len(sys.argv) < 2:
@@ -549,8 +606,7 @@ def main() -> None:
         start_year = int(sys.argv[2]) if len(sys.argv) > 2 else 2019
         cmd_backfill_pollenscience(start_year)
     elif command == "benchmark":
-        horizon = int(sys.argv[2]) if len(sys.argv) > 2 else 1
-        cmd_benchmark(horizon)
+        cmd_benchmark(**_parse_benchmark_args(sys.argv[2:]))
     elif command == "benchmark-onset":
         cmd_benchmark_onset(sys.argv[2:] or None)
     elif command == "dwd":

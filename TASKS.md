@@ -4,23 +4,42 @@ Ordered so that measurement comes first: most later tasks change model behavior,
 and none of them should be merged without a benchmark that can actually see the
 difference. Tasks reference the review findings from the forecast-app review.
 
-## Phase 1 — Fix the measurement (prerequisite for everything else)
+## Phase 1 — Fix the measurement — **DONE**
 
-- [ ] **1.1 Autoregressive rollout benchmark.** `temporal_split_evaluate`
+Result: the rollout benchmark says the model **loses to a persistence baseline
+at every horizon** (day-1 MAE 6.6 vs 4.1; level accuracy 76% vs 81%), while
+carrying a bias of +5 to +7 that persistence does not have. Its RMSE is *better*
+than persistence (21–23 vs 26–29), so the model is buying peak capture with a
+systematic over-prediction that costs it every ordinary window. Horizon
+degradation is comparatively mild (MAE +33% from day 1 to day 5), so the
+calibration — not the lag cascade — is the dominant problem. That promotes
+Phase 3 ahead of Phase 2.
+
+Two defects were found and fixed on the way:
+
+* `days_since_active` was a **constant 0** in training (a cumulative sum that
+  does not advance while a species is inactive) while the forecaster served a
+  live count — a dead feature and a train/serve skew at once. It is worth 6.5%
+  of model gain now that it varies.
+* Benchmark folds sampled evenly along the timeline landed **all three in
+  August**, when every tree species is dormant. Folds are now spread across the
+  calendar year.
+
+- [x] **1.1 Autoregressive rollout benchmark.** `temporal_split_evaluate`
   (src/evaluate.py) builds test-set lag features from *measured* values, so it
   scores 3h-ahead skill while the product ships a 5-day autoregressive
   forecast. Add a rollout mode that feeds predictions back into the lag
   features exactly as `generate_forecast` does, and report MAE / RMSE / level
   accuracy **per horizon day (1–5)**. This is the single most important task:
   day-3 to day-5 skill is currently unmeasured.
-- [ ] **1.2 Fix the `benchmark [horizon]` CLI parameter.** It is passed as
+- [x] **1.2 Fix the `benchmark [horizon]` CLI parameter.** It is passed as
   `n_folds` (src/main.py:362), not as a forecast horizon. Rename the fold
   count, and make `horizon` select the rollout depth from 1.1.
-- [ ] **1.3 Per-feature gain report at retrain.** Dump XGBoost gain per feature
+- [x] **1.3 Per-feature gain report at retrain.** Dump XGBoost gain per feature
   (grouped by feature family) next to `_print_onset_calibration` in
   src/trainer.py, so pruning decisions in Phase 2 are data-driven instead of
   argued.
-- [ ] **1.4 Train/serve parity test.** Build features for the same windows via
+- [x] **1.4 Train/serve parity test.** Build features for the same windows via
   `prepare_training_data` and via the forecaster's feature assembly, and assert
   they match. The two code paths construct 72 features independently; today
   only the onset features have tests pinning parity.
@@ -58,6 +77,13 @@ to the feature lists in src/types.py plus a retrain, so it is cheap to A/B.
   inference automatically"). Store a trained-with-CAMS flag in the model
   container and zero the feature at inference when it is unset. Also fix the
   UTC-vs-Europe/Berlin misalignment of CAMS 3h windows (src/cams.py).
+
+Measured gain shares from the first report (share of total across all models):
+lag 50.3%, weather-derived 20.2%, weather 11.7%, calendar 10.2%, NDVI 2.6%,
+intra-day 2.4%, phenology 2.1%, season 0.4%, CAMS 0.0% (never split on). The
+single largest features are `pollen_max_8` (13.2%), `pollen_rolling_8` (7.7%),
+`pollen_lag_1` (6.8%) and `days_since_active` (6.5%).
+
 - [ ] **2.8 A/B the pruned set.** Run the Phase 1 benchmark with the pruned
   (~40-feature) set vs. the current 72; accept the pruning if per-horizon
   metrics do not regress.
@@ -124,7 +150,18 @@ to the feature lists in src/types.py plus a retrain, so it is cheap to A/B.
 
 ## Suggested order of execution
 
-1.1 → 1.2 → 1.3 → 1.4 (one PR: measurement), then 2.x as a single pruning PR
-gated on 2.8, then 3.1 → 3.2 → 3.3 (each re-benchmarked), then 4.x
-independently, then 5.1 and 5.2 (the two highest-value modeling additions),
-then 5.3 → 5.4.
+Phase 1 is done. The benchmark it produced changes the order of the rest:
+**Phase 3 now comes before Phase 2.** The model's problem is calibration, not
+feature count — a pruning pass would shave training time without touching the
+bias that is costing it the persistence comparison.
+
+3.1 → 3.2 → 3.3 (each re-benchmarked against `benchmark 5 --folds 3`, with
+beating persistence on MAE as the bar), then 2.x as a single pruning PR gated
+on 2.8, then 4.x independently, then 5.1 and 5.2 (the two highest-value
+modeling additions), then 5.3 → 5.4.
+
+Add to Phase 3, from what the rollout showed:
+
+- [ ] **3.4 Beat persistence.** Track model-vs-persistence MAE per horizon as
+  the headline metric. A forecast that loses to "nothing changes" has no claim
+  on a user's attention, whatever its RMSE.

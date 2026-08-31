@@ -2,11 +2,15 @@
 Forecaster: generates a multi-day pollen forecast at 3-hour resolution
 using trained two-stage models.
 
-Loads trained XGBoost models (classifier + regressor), fetches hourly weather
-forecast from Open-Meteo (aggregated to 3h windows), and predicts pollen counts
-per species per 3h window.  Predictions are made in log-space and converted back.
-For lag features it uses the most recent historical data and then autoregressively
-feeds (log-space) predictions into subsequent windows.
+Loads trained XGBoost models (classifier + regressor), fetches the hourly
+weather forecast from Open-Meteo (aggregated to 3h windows), and predicts
+pollen counts per species per 3h window. Predictions are made in log-space and
+converted back. Lag features start from the most recent measurements and are
+then fed autoregressively from the predictions themselves.
+
+The feature vectors come from :mod:`src.features`, which the rollout benchmark
+also uses — a backtest that built its own features would stop measuring the
+thing being shipped the moment the two drifted.
 """
 
 from __future__ import annotations
@@ -21,14 +25,9 @@ from .types import (
     ALL_SPECIES,
     FORECAST_DAYS,
     LOCATION,
-    WEATHER_FEATURES,
-    WEATHER_DERIVED_FEATURES,
-    NDVI_FEATURES,
-    INTRADAY_FEATURES,
     FEATURE_COLS,
     SPECIES_THRESHOLDS,
     _DEFAULT_THRESHOLDS,
-    is_season_active,
     season_gate_active,
     value_to_level,
     SpeciesForecast,
@@ -37,21 +36,9 @@ from .types import (
     ForecastOutput,
 )
 from .weather import fetch_weather_forecast
-from .trainer import (
-    TwoStageModel,
-    load_models,
-    inv_log_transform,
-    onset_anomaly_from_gdd,
-    _add_weather_derived_features,
-)
-from .onset import (
-    gdd_threshold_by_year,
-    gdd_threshold_for_year,
-    onset_doy_by_day,
-    onset_doy_lookup,
-    _static_onset_doy,
-)
-from .cams import fetch_cams_forecast, cams_value
+from .trainer import TwoStageModel, load_models, inv_log_transform
+from .features import FeatureContext, LagState, build_context, build_feature_row
+from .cams import fetch_cams_forecast
 
 # Our categorical level → DWD-style numeric scale (0–3).
 _LEVEL_TO_NUM = {"none": 0, "low": 1, "moderate": 2, "high": 3, "very_high": 3}
@@ -86,41 +73,55 @@ def _blend_with_dwd(value: float, species: str, dwd_num: float) -> float:
     return max(0.0, value * 0.5 + target_value * 0.5)
 
 
-def _calendar_features_for_datetime(dt: pd.Timestamp) -> dict[str, float]:
-    """Compute calendar and time-of-day features for a single datetime."""
-    doy = dt.day_of_year
-    hour = dt.hour
-    return {
-        "day_of_year": float(doy),
-        "day_of_year_sin": float(np.sin(2 * np.pi * doy / 365.25)),
-        "day_of_year_cos": float(np.cos(2 * np.pi * doy / 365.25)),
-        "month": float(dt.month),
-        "hour_of_day": float(hour),
-        "hour_sin": float(np.sin(2 * np.pi * hour / 24)),
-        "hour_cos": float(np.cos(2 * np.pi * hour / 24)),
-    }
-
-
-def _get_recent_pollen_log(history: pd.DataFrame, species: str, n: int = 56) -> list[float]:
-    """
-    Get the last n pollen values for a species from history, in log-space.
-    Each value is a 3h window measurement.
-    These will be used directly as lag features (model trains on log1p values).
-    """
-    sp = history[history["species"] == species].sort_values("date")
-    raw_values = sp["value"].tail(n).tolist()
-    # Pad with zeros if not enough history
-    while len(raw_values) < n:
-        raw_values.insert(0, 0.0)
-    return [float(np.log1p(v)) for v in raw_values]
-
-
 def _confidence_for_day(day_index: int, has_model: bool) -> float:
     """Confidence decreases with forecast distance; lower if no model."""
     base = 0.90 - day_index * 0.08
     if not has_model:
         base *= 0.5
     return max(0.2, min(0.95, base))
+
+
+def predict_window(
+    model: TwoStageModel, ctx: FeatureContext, species: str, dt: pd.Timestamp, lag: LagState
+) -> float:
+    """Model prediction for one (window, species), in log space."""
+    features = build_feature_row(ctx, species, dt, lag)
+    x_features = pd.DataFrame([features])[FEATURE_COLS]
+    return max(0.0, float(model.predict(x_features)[0]))
+
+
+def _fetch_ndvi(days: pd.DatetimeIndex) -> pd.DataFrame:
+    """Daily NDVI for the forecast dates; zeros when the fetch fails."""
+    try:
+        from .ndvi import ndvi_features
+
+        return ndvi_features(days)
+    except Exception as exc:
+        print(f"  NDVI fetch failed ({exc}), using defaults")
+        return pd.DataFrame(
+            {"ndvi": 0.0, "evi": 0.0, "ndvi_delta": 0.0}, index=days
+        )
+
+
+def _fetch_dwd_levels() -> dict[tuple[object, str], float]:
+    """DWD categorical levels keyed by (date, species); empty when unavailable.
+
+    DWD only covers today/tomorrow/day-after, so most forecast windows are
+    untouched. Fail-open: an empty lookup leaves predictions unchanged.
+    """
+    levels: dict[tuple[object, str], float] = {}
+    try:
+        from .dwd import fetch_dwd_forecast
+
+        for _, row in fetch_dwd_forecast().iterrows():
+            levels[(pd.Timestamp(row["date"]).date(), str(row["species"]))] = float(
+                row["dwd_level"]
+            )
+        if levels:
+            print(f"DWD blend: {len(levels)} (date, species) levels available")
+    except Exception as exc:
+        print(f"  DWD forecast unavailable ({exc}); skipping DWD blend")
+    return levels
 
 
 def generate_forecast(
@@ -141,270 +142,72 @@ def generate_forecast(
         models = load_models()
         print(f"Loaded {len(models)} species models")
 
-    # Fetch weather forecast (3h resolution)
     weather = fetch_weather_forecast(FORECAST_DAYS)
     print(f"Weather forecast: {len(weather)} windows ({FORECAST_DAYS} days)")
 
-    # --- Pre-compute weather-derived features per species ---
-    # The burst potential features (#2) depend on species-specific thresholds,
-    # so we pre-compute a table for each species.
-    hist_weather = (
-        history.groupby("date")[[c for c in WEATHER_FEATURES if c in history.columns]].first()
-        if not history.empty
-        else pd.DataFrame(columns=WEATHER_FEATURES)
+    forecast_days_index = pd.DatetimeIndex(weather.index).normalize().unique()
+    ctx = build_context(
+        history,
+        weather,
+        ndvi=_fetch_ndvi(forecast_days_index),
+        cams=fetch_cams_forecast(FORECAST_DAYS),
     )
-    combined_weather = pd.concat([hist_weather, weather])
-    combined_weather = combined_weather[~combined_weather.index.duplicated(keep="last")]
-    combined_weather = combined_weather.sort_index()
-    # Add a dummy 'species' and 'value' so _add_weather_derived_features works
-    base_weather = combined_weather.reset_index().rename(columns={"index": "date"})
-    base_weather["species"] = "__dummy__"
-    base_weather["value"] = 0.0
+    dwd_levels = _fetch_dwd_levels()
 
-    # Onset estimates and GDD thresholds come from the real history: the frame
-    # the weather features are derived on carries a dummy species and no
-    # measurements, so it cannot calibrate them itself.
-    onset_by_species = {sp: onset_doy_by_day(history, sp) for sp in ALL_SPECIES}
-    gdd_thresholds_by_species = {sp: gdd_threshold_by_year(history, sp) for sp in ALL_SPECIES}
-    # Same fallback the trainer uses. It is only reachable with no history at
-    # all, but a *better* fallback here than there would be exactly the
-    # train/serve skew the causal estimate exists to avoid.
-    onset_fallback = {sp: _static_onset_doy(sp) for sp in ALL_SPECIES}
-
-    def _derive_for_species(sp: str) -> tuple[str, pd.DataFrame]:
-        derived = _add_weather_derived_features(
-            base_weather.copy(), sp, gdd_thresholds=gdd_thresholds_by_species[sp]
-        )
-        return sp, derived.set_index("date")
-
-    from concurrent.futures import ThreadPoolExecutor
-    with ThreadPoolExecutor(max_workers=len(ALL_SPECIES)) as pool:
-        futures = {pool.submit(_derive_for_species, sp): sp for sp in ALL_SPECIES}
-        weather_derived_by_species = dict(f.result() for f in futures)
-
-    # --- Pre-compute NDVI features for forecast dates (daily resolution) ---
-    try:
-        from .ndvi import ndvi_features
-        forecast_dates = pd.DatetimeIndex(weather.index).normalize().unique()
-        ndvi_df = ndvi_features(forecast_dates)
-    except Exception as exc:
-        print(f"  NDVI fetch failed ({exc}), using defaults")
-        ndvi_df = pd.DataFrame(
-            {"ndvi": 0.0, "evi": 0.0, "ndvi_delta": 0.0},
-            index=pd.DatetimeIndex(weather.index).normalize().unique(),
-        )
-
-    # --- Pre-compute intra-day relative features from weather ---
-    weather_days = pd.to_datetime(weather.index).normalize()
-    daily_temp_max = weather["temperature_mean"].groupby(weather_days).transform("max")
-    intraday_df = pd.DataFrame(index=weather.index)
-    intraday_df["temp_vs_daily_max"] = np.where(
-        daily_temp_max > 0,
-        weather["temperature_mean"].fillna(0) / daily_temp_max,
-        0.0,
-    )
-    intraday_df["precip_in_prior_window"] = (
-        weather["precipitation_sum"].fillna(0).shift(1) > 0.1
-    ).astype(float).fillna(0)
-    intraday_df["temp_rate_of_change"] = (
-        weather["temperature_mean"].fillna(0).diff(1).fillna(0)
-    )
-
-    # --- Pre-fetch optional CAMS pollen forecast (fail-open: empty if inactive) ---
-    cams_df = fetch_cams_forecast(FORECAST_DAYS)
-
-    # --- Pre-fetch DWD categorical forecast for an inference-time level blend ---
-    # DWD only covers today/tomorrow/day-after, so most forecast windows are
-    # untouched. Fail-open: an empty lookup leaves predictions unchanged.
-    dwd_levels: dict[tuple[object, str], float] = {}
-    try:
-        from .dwd import fetch_dwd_forecast
-
-        dwd_df = fetch_dwd_forecast()
-        for _, row in dwd_df.iterrows():
-            dwd_levels[(pd.Timestamp(row["date"]).date(), str(row["species"]))] = float(
-                row["dwd_level"]
-            )
-        if dwd_levels:
-            print(f"DWD blend: {len(dwd_levels)} (date, species) levels available")
-    except Exception as exc:
-        print(f"  DWD forecast unavailable ({exc}); skipping DWD blend")
-
-    # Build recent pollen history per species in LOG-SPACE (for lag features)
-    # Keep 56 windows (7 days) for rolling_56 computation
-    recent_log: dict[str, list[float]] = {}
-    for species in ALL_SPECIES:
-        recent_log[species] = _get_recent_pollen_log(history, species, n=56)
+    origin = pd.Timestamp(weather.index.min())
+    lags = {sp: LagState.from_history(history, sp, origin) for sp in ALL_SPECIES}
 
     # --- Real-time observation assimilation ---
-    # Build a lookup of observed pollen values from history so that forecast
-    # windows that already have real measurements use those instead of model
-    # predictions.  This breaks the autoregressive error cascade for same-day
-    # windows where data has already been collected.
+    # Forecast windows that already have a measurement use it instead of a
+    # prediction, which breaks the autoregressive error cascade for same-day
+    # windows and grounds every later window's lags in real data.
     observed: dict[tuple[pd.Timestamp, str], float] = {}
     if not history.empty:
-        recent_cutoff = weather.index.min()
-        recent_hist = history[history["date"] >= recent_cutoff]
-        for _, row in recent_hist.iterrows():
-            key = (pd.Timestamp(row["date"]), str(row["species"]))
-            observed[key] = float(row["value"])
+        recent = history[history["date"] >= origin]
+        for _, row in recent.iterrows():
+            observed[(pd.Timestamp(row["date"]), str(row["species"]))] = float(row["value"])
 
-    n_obs_windows = len(set(dt for dt, _ in observed))
+    n_obs_windows = len({dt for dt, _ in observed})
     if n_obs_windows > 0:
         print(f"Real-time assimilation: {n_obs_windows} observed windows will use actual data")
 
-    # Track today's earlier windows per species for pollen_morning_avg
-    morning_log: dict[str, list[float]] = {sp: [] for sp in ALL_SPECIES}
-    current_day: str | None = None
-
-    # Iterate over all 3h weather windows
     window_results: list[tuple[str, WindowForecast]] = []
     prev_date_str: str | None = None
     day_idx = -1
 
-    for dt_key, weather_row in weather.iterrows():
+    for dt_key in weather.index:
         dt = pd.Timestamp(str(dt_key))
         date_str = dt.strftime("%Y-%m-%d")
 
-        # Track day index for confidence scoring
         if date_str != prev_date_str:
             day_idx += 1
             prev_date_str = date_str
-            # Reset morning tracker for new day
-            if date_str != current_day:
-                for sp in ALL_SPECIES:
-                    morning_log[sp] = []
-                current_day = date_str
 
-        cal = _calendar_features_for_datetime(dt)
-        month = dt.month
         window_species: list[SpeciesForecast] = []
 
         for species in ALL_SPECIES:
-            log_vals = recent_log[species]
+            lag = lags[species]
+            lag.begin_window(dt)
             has_model = species in models
-            active = is_season_active(species, month)
-
-            # Check if we have a real observation for this window
-            obs_key = (dt, species)
-            has_observation = obs_key in observed
+            has_observation = (dt, species) in observed
 
             if has_observation:
-                # Use real observation — breaks autoregressive error cascade
-                prediction = observed[obs_key]
+                prediction = observed[(dt, species)]
                 pred_log = float(np.log1p(prediction))
-                # Higher confidence for observed windows
                 confidence = min(0.95, _confidence_for_day(day_idx, has_model) + 0.05)
             elif has_model:
-                # Build feature vector for model prediction
-                features: dict[str, float] = {}
-
-                # Weather features
-                for f in WEATHER_FEATURES:
-                    features[f] = float(weather_row.get(f, 0) or 0)
-
-                # Calendar + time-of-day features
-                features.update(cal)
-
-                # Season-active feature
-                features["season_active"] = 1.0 if active else 0.0
-
-                # Weather-derived features (GDD, rolling, interaction, burst, explosion)
-                weather_derived = weather_derived_by_species[species]
-                if dt in weather_derived.index:
-                    wd_row = weather_derived.loc[dt]
-                    if isinstance(wd_row, pd.DataFrame):
-                        wd_row = wd_row.iloc[0]
-                    for f in WEATHER_DERIVED_FEATURES:
-                        features[f] = float(wd_row.get(f, 0) or 0)
-                else:
-                    for f in WEATHER_DERIVED_FEATURES:
-                        features[f] = 0.0
-
-                # NDVI features (daily resolution, lookup by date)
-                day = dt.normalize()
-                if day in ndvi_df.index:
-                    ndvi_row = ndvi_df.loc[day]
-                    if isinstance(ndvi_row, pd.DataFrame):
-                        ndvi_row = ndvi_row.iloc[0]
-                    for f in NDVI_FEATURES:
-                        features[f] = float(ndvi_row.get(f, 0) or 0)
-                else:
-                    for f in NDVI_FEATURES:
-                        features[f] = 0.0
-
-                # Phenology features — the season's measured onset estimate for
-                # this year plus a GDD-driven early/late signal, both resolved
-                # exactly as the trainer resolves them, for train/serve parity.
-                onset_doy = onset_doy_lookup(
-                    onset_by_species[species], dt, onset_fallback[species]
-                )
-                if onset_doy == onset_doy:  # not NaN
-                    features["days_since_typical_onset"] = float(
-                        max(-60.0, dt.day_of_year - onset_doy)
-                    )
-                    features["onset_anomaly"] = float(
-                        onset_anomaly_from_gdd(
-                            features.get("gdd", 0.0),
-                            species,
-                            gdd_threshold_for_year(
-                                gdd_thresholds_by_species[species], dt.year, species
-                            ),
-                        )
-                    )
-                else:
-                    features["days_since_typical_onset"] = 0.0
-                    features["onset_anomaly"] = 0.0
-
-                # CAMS feature (optional; 0.0 when CAMS is inactive)
-                features["cams_pollen"] = cams_value(cams_df, dt, species)
-
-                # Intra-day relative features
-                if dt in intraday_df.index:
-                    id_row = intraday_df.loc[dt]
-                    for f in INTRADAY_FEATURES:
-                        features[f] = float(id_row.get(f, 0) or 0)
-                else:
-                    for f in INTRADAY_FEATURES:
-                        features[f] = 0.0
-
-                # Lag features in log-space (autoregressive, 3h windows)
-                features["pollen_lag_1"] = log_vals[-1]
-                features["pollen_lag_2"] = log_vals[-2]
-                features["pollen_lag_3"] = log_vals[-3]
-                features["pollen_lag_8"] = log_vals[-8] if len(log_vals) >= 8 else log_vals[0]
-                features["pollen_lag_16"] = log_vals[-16] if len(log_vals) >= 16 else log_vals[0]
-                features["pollen_lag_24"] = log_vals[-24] if len(log_vals) >= 24 else log_vals[0]
-                features["pollen_lag_56"] = log_vals[-56] if len(log_vals) >= 56 else log_vals[0]
-                features["pollen_rolling_8"] = float(np.mean(log_vals[-8:]))
-                features["pollen_rolling_56"] = float(np.mean(log_vals[-56:]))
-                features["pollen_max_8"] = float(np.max(log_vals[-8:]))
-                features["pollen_max_56"] = float(np.max(log_vals[-56:]))
-                # Mean of today's earlier windows (intra-day trend)
-                ml = morning_log[species]
-                features["pollen_morning_avg"] = float(np.mean(ml)) if ml else 0.0
-                # days_since_active: count back from end of log_vals to last > 0
-                dsa = 0
-                for v in reversed(log_vals):
-                    if v > 0:
-                        break
-                    dsa += 1
-                features["days_since_active"] = float(dsa)
-
-                x_features = pd.DataFrame([features])[FEATURE_COLS]
-                pred_log = float(models[species].predict(x_features)[0])
-                pred_log = max(0.0, pred_log)  # log-space, 0 = pollen count of 0
+                pred_log = predict_window(models[species], ctx, species, dt, lag)
                 prediction = float(inv_log_transform(np.array([pred_log]))[0])
                 confidence = _confidence_for_day(day_idx, has_model)
             else:
-                # Fallback: use last known value with seasonal decay
-                prediction = float(inv_log_transform(np.array([log_vals[-1]]))[0]) * 0.8
+                # Fallback: last known value with seasonal decay.
+                prediction = float(np.expm1(lag.lag_features()["pollen_lag_1"])) * 0.8
                 pred_log = float(np.log1p(prediction))
                 confidence = _confidence_for_day(day_idx, has_model)
 
-            # DWD inference-time blend: for dates DWD covers, nudge the emitted
-            # value toward DWD's expert level. Skip real observations (keep actual
-            # data) and apply before the season gate so the gate has the final say.
+            # DWD inference-time blend, for the dates DWD covers. Skips real
+            # observations (keep actual data) and runs before the season gate,
+            # so the gate has the final say.
             if not has_observation:
                 dwd_num = dwd_levels.get((dt.date(), species))
                 if dwd_num is not None:
@@ -412,7 +215,7 @@ def generate_forecast(
 
             # Force to zero only outside the *widened* season window (core ±
             # shoulder), so early-onset events are no longer structurally zeroed.
-            if not season_gate_active(species, month):
+            if not season_gate_active(species, dt.month):
                 prediction = 0.0
                 pred_log = 0.0
 
@@ -424,37 +227,26 @@ def generate_forecast(
                     confidence=confidence,
                 )
             )
+            lag.record(pred_log)
 
-            # Autoregressive: feed log-space value back for next window
-            # (real observation or prediction — real data grounds future predictions)
-            recent_log[species].append(pred_log)
-            # Track this window's value for morning average (for later windows today)
-            morning_log[species].append(pred_log)
-
-        # Sort by value descending, filter out zeros
         window_species.sort(key=lambda s: s.value, reverse=True)
         window_species = [s for s in window_species if s.value > 0.5]
 
-        from_time = dt.strftime("%H:%M")
-        to_time = (dt + pd.Timedelta(hours=3)).strftime("%H:%M")
         window_results.append((date_str, WindowForecast(
-            from_time=from_time,
-            to_time=to_time,
+            from_time=dt.strftime("%H:%M"),
+            to_time=(dt + pd.Timedelta(hours=3)).strftime("%H:%M"),
             species=window_species,
         )))
 
-    # Group windows into days
     days_dict: OrderedDict[str, list[WindowForecast]] = OrderedDict()
     for date_str, wf in window_results:
         days_dict.setdefault(date_str, []).append(wf)
 
-    forecast_days = [
-        DayForecast(date=date_str, windows=windows)
-        for date_str, windows in days_dict.items()
-    ]
-
     return ForecastOutput(
         generated=datetime.now(timezone.utc).replace(tzinfo=None).isoformat() + "Z",
         location=LOCATION,
-        forecast=forecast_days,
+        forecast=[
+            DayForecast(date=date_str, windows=windows)
+            for date_str, windows in days_dict.items()
+        ],
     )

@@ -29,8 +29,17 @@ from xgboost import XGBClassifier, XGBRegressor
 
 from .types import (
     ALL_SPECIES,
+    CALENDAR_FEATURES,
+    CAMS_FEATURES,
     FEATURE_COLS,
+    INTRADAY_FEATURES,
     LAG_FEATURES,
+    NDVI_FEATURES,
+    PHENOLOGY_FEATURES,
+    SEASON_FEATURE,
+    WEATHER_DERIVED_FEATURES,
+    WEATHER_FEATURES,
+    WINDOW_FEATURES,
     GDD_T_BASE,
     is_season_active,
     SPECIES_GDD_THRESHOLD,
@@ -96,11 +105,15 @@ def _add_lag_features(df: pd.DataFrame) -> pd.DataFrame:
         except (ValueError, IndexError):
             pass
     df["pollen_morning_avg"] = morning_avg.reindex(df.index).fillna(0).values
-    # Days (windows) since pollen was last > 0 (#3)
-    active_mask = (s > 0).astype(int)
-    cumactive = active_mask.cumsum()
-    last_active = cumactive.where(active_mask == 1).ffill().fillna(0)
-    df["days_since_active"] = (cumactive - last_active).shift(1).fillna(999).astype(float)
+    # Windows since pollen was last > 0.
+    # The cumsum formulation this replaces was degenerate: cumsum does not
+    # advance while a species is inactive, so ``cumactive - last_active`` was 0
+    # on every row after the first active one — the model trained on a constant
+    # while the forecaster served it a real count. Position arithmetic gives
+    # the distance the feature was always meant to carry (0–980 windows here).
+    positions = pd.Series(np.arange(len(s), dtype=float), index=s.index)
+    last_active = positions.where(s > 0).ffill()
+    df["days_since_active"] = (positions - last_active).shift(1).fillna(999).astype(float)
     return df
 
 
@@ -614,6 +627,88 @@ def _print_onset_calibration(history: pd.DataFrame) -> None:
     print()
 
 
+# Feature families, for the gain report. Keyed in the order they are printed.
+FEATURE_FAMILIES: dict[str, list[str]] = {
+    "weather": WEATHER_FEATURES,
+    "calendar": CALENDAR_FEATURES + WINDOW_FEATURES,
+    "season": SEASON_FEATURE,
+    "weather_derived": WEATHER_DERIVED_FEATURES,
+    "ndvi": NDVI_FEATURES,
+    "phenology": PHENOLOGY_FEATURES,
+    "cams": CAMS_FEATURES,
+    "intraday": INTRADAY_FEATURES,
+    "lag": LAG_FEATURES,
+}
+
+
+def feature_gain(models: dict[str, TwoStageModel]) -> pd.DataFrame:
+    """Total XGBoost gain per feature, summed over species and stages.
+
+    Gain is normalised per model before summing so that one species with a
+    large absolute gain does not decide the ranking for all of them.
+    """
+    totals: dict[str, float] = {col: 0.0 for col in FEATURE_COLS}
+    for model in models.values():
+        stages = [model.classifier, model.regressor, model.extreme_regressor]
+        for stage in stages:
+            if stage is None:
+                continue
+            scores = stage.get_booster().get_score(importance_type="gain")
+            total = sum(scores.values()) or 1.0
+            for name, value in scores.items():
+                if name in totals:
+                    totals[name] += value / total
+
+    family_of = {
+        col: family
+        for family, cols in FEATURE_FAMILIES.items()
+        for col in cols
+    }
+    frame = pd.DataFrame(
+        {
+            "feature": list(totals),
+            "family": [family_of.get(c, "other") for c in totals],
+            "gain": list(totals.values()),
+        }
+    )
+    grand = frame["gain"].sum() or 1.0
+    frame["share"] = frame["gain"] / grand
+    return frame.sort_values("gain", ascending=False).reset_index(drop=True)
+
+
+def _print_feature_gain(models: dict[str, TwoStageModel], top: int = 15) -> None:
+    """Report which features the trained models actually use.
+
+    72 features accumulated without anything reporting what they earn, so
+    pruning arguments had no evidence to run on. Both views matter: the family
+    totals say which *groups* are dead weight, and the per-feature list says
+    which single columns carry a family.
+    """
+    if not models:
+        return
+    frame = feature_gain(models)
+
+    print("\n  Feature gain by family (share of total gain across all models):")
+    print(f"    {'Family':<18} {'Share':>8} {'Features':>9} {'Top feature':<24}")
+    print(f"    {'-'*18} {'-'*8} {'-'*9} {'-'*24}")
+    families = frame.groupby("family")["share"].sum().sort_values(ascending=False)
+    for family, share in families.items():
+        members = frame[frame["family"] == family]
+        best = members.iloc[0]["feature"] if not members.empty else "—"
+        print(f"    {str(family):<18} {share:>7.1%} {len(members):>9} {best:<24}")
+
+    print(f"\n  Top {top} features:")
+    print(f"    {'Feature':<26} {'Family':<18} {'Share':>8}")
+    print(f"    {'-'*26} {'-'*18} {'-'*8}")
+    for _, row in frame.head(top).iterrows():
+        print(f"    {row['feature']:<26} {row['family']:<18} {row['share']:>7.2%}")
+
+    dead = frame[frame["gain"] <= 0.0]
+    if not dead.empty:
+        print(f"\n  Never split on ({len(dead)}): {', '.join(dead['feature'])}")
+    print()
+
+
 def train_all(history: pd.DataFrame) -> dict[str, TwoStageModel]:
     """
     Train one two-stage model per species.  Returns dict[species → TwoStageModel].
@@ -650,6 +745,7 @@ def train_all(history: pd.DataFrame) -> dict[str, TwoStageModel]:
         models[species] = model
 
     print(f"\nTrained {len(models)} / {len(ALL_SPECIES)} species models")
+    _print_feature_gain(models)
     return models
 
 
