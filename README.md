@@ -49,7 +49,9 @@ Each species gets a **three-stage pipeline** with species-specific hyperparamete
 
 1. **Stage 1 — XGBClassifier**: predicts P(pollen > 0). 200 estimators, learning rate 0.08, adaptive `scale_pos_weight`.
 2. **Stage 2 — XGBRegressor**: predicts log1p(pollen count) via quantile regression. Sample-weighted by `1 + √(value)` with tier bonuses (+8 for >100, +20 for >500, +40 for >1000).
-3. **Stage 3 — Extreme Regressor** (optional): trained only on high-pollen samples (>50), uses squared error on log-space. Blended with Stage 2 when classifier confidence > 0.6.
+3. **Stage 3 — Extreme Regressor** (optional): fitted only to high-pollen samples (>50), squared error in log space. Blended into Stage 2 in proportion to a **separate gate classifier for P(pollen > 50)**, ramping from 0.5 to 0.9 and capped at 70% weight.
+
+   The gate used to be the Stage 1 classifier's P(pollen > 0) at a 0.6 cutoff. In peak season that sits near 1.0 for weeks, so a regressor that has never seen an ordinary window was given its full weight on one: measured over this history the blend fired on **20–28% of all windows**, and at those windows the truth was at or below the threshold ~75% of the time and exactly zero 14–28% of the time. With the dedicated gate it fires on 4–7% of windows, and the truth is above the threshold 97–99% of the time.
 
 **Species-specific tuning:**
 
@@ -235,35 +237,35 @@ printed with the report rather than hidden:
 ### What it currently says
 
 Three folds (Sep 2025, Jan 2026, May 2026), 92 forecast origins, 40 200 scored
-predictions:
+predictions, before and after the stage-3 gate fix:
 
-| Horizon | MAE | RMSE | Level acc. | Bias | Persistence MAE |
-|---------|-----|------|-----------|------|-----------------|
-| day 1 | 6.6 | 21.2 | 77.4% | +4.9 | **4.1** |
-| day 2 | 8.0 | 23.4 | 75.7% | +6.4 | **4.5** |
-| day 3 | 8.3 | 23.1 | 75.6% | +6.6 | **4.9** |
-| day 4 | 8.4 | 22.7 | 75.5% | +6.8 | **4.7** |
-| day 5 | 8.7 | 22.9 | 75.3% | +7.4 | **4.5** |
+| Horizon | MAE (was) | RMSE (was) | Level acc. (was) | Bias (was) | Persistence MAE |
+|---------|-----------|------------|------------------|------------|-----------------|
+| day 1 | **4.2** (6.6) | **17.9** (21.2) | **79.4%** (77.4%) | **+2.1** (+4.9) | 4.1 |
+| day 2 | **4.5** (8.0) | **18.0** (23.4) | **78.6%** (75.7%) | **+2.4** (+6.4) | 4.5 |
+| day 3 | **4.3** (8.3) | **16.4** (23.1) | **78.6%** (75.6%) | **+2.1** (+6.6) | 4.9 |
+| day 4 | **4.2** (8.4) | **15.3** (22.7) | **78.6%** (75.5%) | **+2.0** (+6.8) | 4.7 |
+| day 5 | **4.1** (8.7) | **13.8** (22.9) | **78.5%** (75.3%) | **+2.2** (+7.4) | 4.5 |
 
-Two things stand out, and neither was visible before:
+The rollout's first job was to show that the model was **losing to persistence**
+— "hold the last measured window flat" — at every horizon, by 60–94% on MAE,
+while its RMSE was *better* than persistence. That combination said the model
+was buying peak capture with a systematic over-prediction that cost it every
+ordinary window, and pointed at calibration rather than the lag cascade.
 
-1. **The model is beaten by persistence** — "hold the last measured window
-   flat" — at every horizon, on MAE (by 60–94%) and on level accuracy (81% vs
-   76%). Persistence is a strong baseline for autocorrelated 3-hourly data, but
-   losing to it at *day 1* is not a horizon problem.
-2. **RMSE goes the other way**: 21–23 for the model against 26–29 for
-   persistence. Combined with a bias of +5 to +7 against persistence's +0.3 to
-   +1.6, the picture is consistent — the model buys peak capture with a
-   systematic over-prediction that costs it every ordinary window.
+Fixing one of the three stacked upward pressures (the stage-3 gate) confirmed
+it. MAE fell 36% at day 1 and 53% at day 5, RMSE fell too — so nothing was
+given up at the peaks — and the model now **beats persistence from day 3
+onward** (+12%, +11%, +8%) and ties it at days 1–2.
 
-That bias is the compounded effect of three separate upward pressures stacked
-on each other (quantile α = 0.85–0.92, √-value sample weights inside the same
-quantile loss, and an extreme-regressor blend gated on P(pollen > 0) rather
-than P(pollen > threshold)). Unpicking them is the next piece of work.
+Most of the apparent horizon degradation turned out to be the bias compounding
+through the autoregressive lags: it was +33% MAE from day 1 to day 5, and is
+now −3%. Level accuracy remains a little below persistence (78–79% vs 80–81%),
+which is the next thing to chase.
 
-Degradation across the horizon is mild by comparison (MAE +33%, level accuracy
-−2.1 points from day 1 to day 5), which says the lag cascade is not the main
-problem — the calibration is.
+Two upward pressures remain stacked (quantile α = 0.85–0.92 and √-value sample
+weights inside that same quantile loss); the residual +2.1 bias is where they
+show up.
 
 ### `benchmark --classic` — one window ahead (diagnostic only)
 

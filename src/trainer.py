@@ -59,6 +59,15 @@ from .onset import (
 
 MODELS_DIR = Path(__file__).parent.parent / "models"
 
+# Stage 3 blend gate. The extreme regressor sees only samples above
+# ``extreme_threshold``, so it has no idea what an ordinary window looks like and
+# must not be consulted about one. The gate is therefore a calibrated
+# P(value > threshold): the weight ramps in from EXTREME_GATE_LO ("more likely
+# than not") to EXTREME_GATE_HI, and peaks at EXTREME_MAX_WEIGHT.
+EXTREME_GATE_LO = 0.5
+EXTREME_GATE_HI = 0.9
+EXTREME_MAX_WEIGHT = 0.7
+
 # --- Log-transform helpers ---
 
 def log_transform(values: pd.Series | np.ndarray[Any, Any]) -> np.ndarray[Any, Any]:
@@ -455,9 +464,13 @@ class TwoStageModel:
     """Container for a multi-stage pollen model (classifier + regressor + optional extreme)."""
     classifier: XGBClassifier
     regressor: XGBRegressor
-    extreme_regressor: XGBRegressor | None  # (#7) trained only on high-pollen samples
+    extreme_regressor: XGBRegressor | None  # trained only on high-pollen samples
     species: str
     extreme_threshold: float = 50.0  # pollen count above which extreme model activates
+    # P(value > extreme_threshold), the gate for the stage-3 blend. Defaults to
+    # None so models pickled before this field existed still load; those are
+    # served without the blend rather than with the gate that used to be wrong.
+    extreme_classifier: XGBClassifier | None = None
 
     def predict(self, X: pd.DataFrame | np.ndarray[Any, Any]) -> np.ndarray[Any, Any]:  # pylint: disable=invalid-name
         """
@@ -473,14 +486,32 @@ class TwoStageModel:
         result = np.where(prob_active < 0.3, 0.0, reg_pred * np.clip(prob_active, 0.5, 1.0))
         result = np.maximum(0.0, result)
 
-        # (#7) Blend extreme regressor when available and classifier is confident
-        if self.extreme_regressor is not None:
-            extreme_pred = self.extreme_regressor.predict(X)
-            extreme_pred = np.maximum(0.0, extreme_pred)
-            # Use extreme model when classifier is confident (> 0.6)
-            # Blend: weighted average biased toward extreme model at high confidence
-            extreme_weight = np.clip((prob_active - 0.6) / 0.4, 0.0, 1.0)
-            result = result * (1.0 - extreme_weight * 0.7) + extreme_pred * (extreme_weight * 0.7)
+        # Blend in the extreme regressor, in proportion to how likely this
+        # window is to *be* extreme.
+        #
+        # This used to ramp on ``prob_active``, which is P(pollen > 0), not
+        # P(pollen > threshold). In peak season that sits near 1.0 for weeks, so
+        # a regressor fitted only to samples above the threshold was given its
+        # full weight on ordinary windows: measured over this history the blend
+        # fired on 20–28% of all windows, and at those windows the truth was at
+        # or below the threshold ~75% of the time and exactly zero 14–28% of the
+        # time. It was a large, permanent upward bias.
+        #
+        # getattr keeps models pickled before ``extreme_classifier`` existed
+        # loadable; without a gate the blend is skipped rather than fall back to
+        # the one that caused the bias.
+        extreme_regressor = getattr(self, "extreme_regressor", None)
+        extreme_classifier = getattr(self, "extreme_classifier", None)
+        if extreme_regressor is not None and extreme_classifier is not None:
+            prob_extreme = extreme_classifier.predict_proba(X)[:, 1]
+            gate = np.clip(
+                (prob_extreme - EXTREME_GATE_LO) / (EXTREME_GATE_HI - EXTREME_GATE_LO),
+                0.0,
+                1.0,
+            )
+            extreme_pred = np.maximum(0.0, extreme_regressor.predict(X))
+            weight = gate * EXTREME_MAX_WEIGHT
+            result = result * (1.0 - weight) + extreme_pred * weight
 
         return np.maximum(0.0, result)
 
@@ -510,7 +541,8 @@ def train_species_model(
 
     Stage 1: XGBClassifier — is pollen > 0 today?
     Stage 2: XGBRegressor  — how much? (quantile regression on all data)
-    Stage 3: XGBRegressor  — extreme regressor (trained only on high-pollen samples) (#7)
+    Stage 3: XGBRegressor  — extreme regressor (fitted only to high-pollen
+             samples), gated by an XGBClassifier for P(value > threshold)
 
     Improvements applied:
     - Stronger sample weighting for extreme events (#1)
@@ -571,16 +603,26 @@ def train_species_model(
 
     regressor.fit(X, y, sample_weight=sample_weight)
 
-    # --- Stage 3: extreme regressor (#7) ---
-    # Trained only on samples where pollen > extreme_threshold, using squared error
-    # on raw (non-log) values to directly optimize for high-count accuracy
+    # --- Stage 3: extreme regressor, plus the gate that decides when to use it ---
+    # The regressor is fitted only to samples above extreme_threshold, with
+    # squared error in log space (the same target the stage-2 regressor uses;
+    # squared error on raw counts would be dominated by the largest events to
+    # the point of ignoring everything else).
+    #
+    # Because it never sees an ordinary window, it cannot be asked about one.
+    # The gate is a separate classifier for P(value > extreme_threshold),
+    # trained on all the data. It deliberately does *not* balance classes:
+    # scale_pos_weight would inflate the probabilities, and this gate is only
+    # meaningful if 0.5 really means "more likely than not".
     extreme_regressor = None
+    extreme_classifier = None
     extreme_threshold = 50.0
     if raw_values is not None:
         rv_arr = raw_values.to_numpy(dtype=float)
         extreme_mask = rv_arr > extreme_threshold
         n_extreme = int(extreme_mask.sum())
-        if n_extreme >= 10:
+        # Both classes must be present for the gate to be learnable at all.
+        if n_extreme >= 10 and n_extreme < len(rv_arr):
             X_extreme = X[extreme_mask]
             y_extreme = y[extreme_mask]
             raw_extreme = rv_arr[extreme_mask]
@@ -600,12 +642,25 @@ def train_species_model(
             )
             extreme_regressor.fit(X_extreme, y_extreme, sample_weight=w_extreme)
 
+            extreme_classifier = XGBClassifier(
+                n_estimators=200,
+                max_depth=hp["clf_depth"],
+                learning_rate=0.08,
+                subsample=0.8,
+                colsample_bytree=0.8,
+                random_state=42,
+                verbosity=0,
+                eval_metric="logloss",
+            )
+            extreme_classifier.fit(X, extreme_mask.astype(int))
+
     return TwoStageModel(
         classifier=classifier,
         regressor=regressor,
         extreme_regressor=extreme_regressor,
         species=species,
         extreme_threshold=extreme_threshold,
+        extreme_classifier=extreme_classifier,
     )
 
 
@@ -649,7 +704,12 @@ def feature_gain(models: dict[str, TwoStageModel]) -> pd.DataFrame:
     """
     totals: dict[str, float] = {col: 0.0 for col in FEATURE_COLS}
     for model in models.values():
-        stages = [model.classifier, model.regressor, model.extreme_regressor]
+        stages = [
+            model.classifier,
+            model.regressor,
+            model.extreme_regressor,
+            getattr(model, "extreme_classifier", None),
+        ]
         for stage in stages:
             if stage is None:
                 continue

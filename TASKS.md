@@ -90,7 +90,28 @@ single largest features are `pollen_max_8` (13.2%), `pollen_rolling_8` (7.7%),
 
 ## Phase 3 — Model correctness
 
-- [ ] **3.1 Fix the extreme-regressor gate.** Stage 3 is blended whenever
+**3.1 is done.** Gating the stage-3 blend on a dedicated P(value > threshold)
+classifier instead of P(value > 0) improved every metric at every horizon:
+
+| Horizon | MAE | RMSE | Level acc. | Bias | vs persistence |
+|---------|-----|------|-----------|------|----------------|
+| day 1 | 6.6 → **4.2** | 21.2 → **17.9** | 77.4 → **79.4%** | +4.9 → **+2.1** | −2.9% |
+| day 3 | 8.3 → **4.3** | 23.1 → **16.4** | 75.6 → **78.6%** | +6.6 → **+2.1** | **+12.1%** |
+| day 5 | 8.7 → **4.1** | 22.9 → **13.8** | 75.3 → **78.5%** | +7.4 → **+2.2** | **+8.0%** |
+
+RMSE fell alongside MAE, so the peak capture the blend was supposed to buy was
+never actually being bought — it was being paid for and not delivered. The
+model now beats persistence from day 3 on and ties at days 1–2. Horizon
+degradation went from +33% MAE to −3%, which says most of it was the bias
+compounding through the autoregressive lags rather than the lag cascade itself.
+
+On real data the blend now fires on 4–7% of windows (was 20–28%), and when it
+fires the truth is above the threshold 97–99% of the time (was ~25%).
+
+Still open: level accuracy is 78–79% against persistence's 80–81%, and a +2.1
+bias remains — the two peak-emphasis mechanisms of 3.2 are the likely source.
+
+- [x] **3.1 Fix the extreme-regressor gate.** Stage 3 is blended whenever
   `prob_active > 0.6` (src/trainer.py:469), but that is P(pollen > 0), not
   P(pollen > 50) — in peak season the classifier sits at ~1.0 for weeks, so a
   model trained *only* on >50 samples gets its full 70 % weight on every
@@ -155,10 +176,11 @@ Phase 1 is done. The benchmark it produced changes the order of the rest:
 feature count — a pruning pass would shave training time without touching the
 bias that is costing it the persistence comparison.
 
-3.1 → 3.2 → 3.3 (each re-benchmarked against `benchmark 5 --folds 3`, with
-beating persistence on MAE as the bar), then 2.x as a single pruning PR gated
-on 2.8, then 4.x independently, then 5.1 and 5.2 (the two highest-value
-modeling additions), then 5.3 → 5.4.
+3.1 is done. Next: 3.2 → 3.3 (each re-benchmarked against
+`benchmark 5 --folds 3`, with beating persistence on MAE *and* level accuracy
+as the bar), then 2.x as a single pruning PR gated on 2.8, then 4.x
+independently, then 5.1 and 5.2 (the two highest-value modeling additions),
+then 5.3 → 5.4.
 
 Add to Phase 3, from what the rollout showed:
 
