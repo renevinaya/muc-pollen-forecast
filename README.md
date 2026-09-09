@@ -236,36 +236,48 @@ printed with the report rather than hidden:
 
 ### What it currently says
 
-Three folds (Sep 2025, Jan 2026, May 2026), 92 forecast origins, 40 200 scored
-predictions, before and after the stage-3 gate fix:
+Six folds spread across the year (Sep, Nov, Jan, Mar, May, Jul), 184 forecast
+origins, 80 680 scored predictions, before and after the stage-3 gate fix
+(3.1). Persistence is the same baseline in both runs — it does not depend on
+the model.
 
 | Horizon | MAE (was) | RMSE (was) | Level acc. (was) | Bias (was) | Persistence MAE |
 |---------|-----------|------------|------------------|------------|-----------------|
-| day 1 | **4.2** (6.6) | **17.9** (21.2) | **79.4%** (77.4%) | **+2.1** (+4.9) | 4.1 |
-| day 2 | **4.5** (8.0) | **18.0** (23.4) | **78.6%** (75.7%) | **+2.4** (+6.4) | 4.5 |
-| day 3 | **4.3** (8.3) | **16.4** (23.1) | **78.6%** (75.6%) | **+2.1** (+6.6) | 4.9 |
-| day 4 | **4.2** (8.4) | **15.3** (22.7) | **78.6%** (75.5%) | **+2.0** (+6.8) | 4.7 |
-| day 5 | **4.1** (8.7) | **13.8** (22.9) | **78.5%** (75.3%) | **+2.2** (+7.4) | 4.5 |
+| day 1 | **9.8** (11.9) | 51.1 (52.0) | **75.6%** (73.7%) | **+4.0** (+6.5) | 10.4 |
+| day 2 | **11.7** (14.7) | 52.3 (53.7) | **74.0%** (71.8%) | **+6.2** (+9.5) | 10.9 |
+| day 3 | **12.4** (15.6) | 50.5 (52.3) | **73.7%** (71.5%) | **+7.4** (+11.0) | 11.2 |
+| day 4 | **13.1** (16.3) | 51.2 (52.8) | **73.6%** (71.3%) | **+8.6** (+12.1) | 11.8 |
+| day 5 | **14.0** (17.1) | 53.6 (54.6) | **73.4%** (71.2%) | **+9.7** (+13.2) | 11.4 |
 
 The rollout's first job was to show that the model was **losing to persistence**
-— "hold the last measured window flat" — at every horizon, by 60–94% on MAE,
-while its RMSE was *better* than persistence. That combination said the model
-was buying peak capture with a systematic over-prediction that cost it every
-ordinary window, and pointed at calibration rather than the lag cascade.
+— "hold the last measured window flat" — at every horizon (−14% to −50% on
+MAE), while its RMSE was far *better* than persistence (50–54 against 85–92).
+That combination says the model captures large events well and pays for it with
+a standing over-prediction on ordinary windows.
 
-Fixing one of the three stacked upward pressures (the stage-3 gate) confirmed
-it. MAE fell 36% at day 1 and 53% at day 5, RMSE fell too — so nothing was
-given up at the peaks — and the model now **beats persistence from day 3
-onward** (+12%, +11%, +8%) and ties it at days 1–2.
+Fixing one of the three stacked upward pressures (3.1, the stage-3 gate) cut
+MAE by ~18% at every horizon and bias by ~38%, without giving anything up at
+the peaks. The model now beats persistence at **day 1** (+6.2%) and still
+loses from day 2 out (−7.7%, −10.5%, −11.7%, −22.9%).
 
-Most of the apparent horizon degradation turned out to be the bias compounding
-through the autoregressive lags: it was +33% MAE from day 1 to day 5, and is
-now −3%. Level accuracy remains a little below persistence (78–79% vs 80–81%),
-which is the next thing to chase.
+Two open problems, in order of size:
 
-Two upward pressures remain stacked (quantile α = 0.85–0.92 and √-value sample
-weights inside that same quantile loss); the residual +2.1 bias is where they
-show up.
+1. **Horizon degradation is the dominant issue.** MAE rises 43% from day 1 to
+   day 5 and bias more than doubles (+4.0 → +9.7). 3.1 barely touched this
+   (+44% before, +43% after), so it is the autoregressive lag cascade itself,
+   not calibration leaking into it. Fraxinus (63.8 → 115.5) and Betula
+   (25.2 → 57.0) degrade worst, and they are among the species that matter most.
+2. **A +4.0 bias remains even at day 1.** Two upward pressures are still stacked
+   — quantile α = 0.85–0.92 and √-value sample weights inside that same quantile
+   loss — which is what task 3.2 unpicks.
+
+> **On fold counts.** An earlier version of this section reported three folds
+> (Sep, Jan, May) and concluded that the model beat persistence from day 3 on
+> and that horizon degradation had essentially vanished. Both were artefacts of
+> that sample: the three months it happened to pick are quiet ones. Adding Nov,
+> Mar and Jul — birch/alder onset and the grass/nettle peak — reversed both
+> conclusions. Six folds is now the default for this reason; prefer more, not
+> fewer, when a result is going to be acted on.
 
 ### `benchmark --classic` — one window ahead (diagnostic only)
 

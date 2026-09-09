@@ -349,7 +349,7 @@ def cmd_backfill_pollenscience(start_year: int = 2019) -> pd.DataFrame:
 
 def cmd_benchmark(
     horizon: int = FORECAST_DAYS,
-    folds: int = 3,
+    folds: int = 6,
     classic: bool = False,
     species: list[str] | None = None,
 ) -> None:
@@ -363,6 +363,12 @@ def cmd_benchmark(
     *classic* additionally runs the one-window-ahead evaluation with measured
     lag features, which is the only mode the DWD comparison and the onset-timing
     diagnostic make sense in.
+
+    Six folds by default. Three — the previous default — picked Sep, Jan and May
+    out of this history, all quiet months, and reported the model beating
+    persistence from day 3 on; adding Nov, Mar and Jul reversed that. A fold
+    count small enough to miss the season is worse than no benchmark, because it
+    reads as evidence.
     """
     print("=" * 60)
     print("BENCHMARK: Autoregressive Rollout")

@@ -91,25 +91,36 @@ single largest features are `pollen_max_8` (13.2%), `pollen_rolling_8` (7.7%),
 ## Phase 3 — Model correctness
 
 **3.1 is done.** Gating the stage-3 blend on a dedicated P(value > threshold)
-classifier instead of P(value > 0) improved every metric at every horizon:
+classifier instead of P(value > 0) improved every metric at every horizon.
+Measured over six folds spread across the year (Sep, Nov, Jan, Mar, May, Jul),
+184 origins, 80 680 predictions:
 
 | Horizon | MAE | RMSE | Level acc. | Bias | vs persistence |
 |---------|-----|------|-----------|------|----------------|
-| day 1 | 6.6 → **4.2** | 21.2 → **17.9** | 77.4 → **79.4%** | +4.9 → **+2.1** | −2.9% |
-| day 3 | 8.3 → **4.3** | 23.1 → **16.4** | 75.6 → **78.6%** | +6.6 → **+2.1** | **+12.1%** |
-| day 5 | 8.7 → **4.1** | 22.9 → **13.8** | 75.3 → **78.5%** | +7.4 → **+2.2** | **+8.0%** |
+| day 1 | 11.9 → **9.8** | 52.0 → **51.1** | 73.7 → **75.6%** | +6.5 → **+4.0** | −14.1% → **+6.2%** |
+| day 3 | 15.6 → **12.4** | 52.3 → **50.5** | 71.5 → **73.7%** | +11.0 → **+7.4** | −38.7% → **−10.5%** |
+| day 5 | 17.1 → **14.0** | 54.6 → **53.6** | 71.2 → **73.4%** | +13.2 → **+9.7** | −50.2% → **−22.9%** |
 
-RMSE fell alongside MAE, so the peak capture the blend was supposed to buy was
-never actually being bought — it was being paid for and not delivered. The
-model now beats persistence from day 3 on and ties at days 1–2. Horizon
-degradation went from +33% MAE to −3%, which says most of it was the bias
-compounding through the autoregressive lags rather than the lag cascade itself.
-
+MAE fell ~18% at every horizon and bias ~38%, with RMSE slightly better too —
+so the peak capture the blend was supposed to buy was never being delivered.
 On real data the blend now fires on 4–7% of windows (was 20–28%), and when it
 fires the truth is above the threshold 97–99% of the time (was ~25%).
 
-Still open: level accuracy is 78–79% against persistence's 80–81%, and a +2.1
-bias remains — the two peak-emphasis mechanisms of 3.2 are the likely source.
+**Correction to an earlier version of this file.** The first write-up of 3.1
+used three folds and claimed the model beat persistence from day 3 on and that
+horizon degradation had gone from +33% to −3%. Both were artefacts of that
+sample — Sep, Jan and May are quiet months. On six folds the model beats
+persistence only at day 1, and degradation is +44% before 3.1 and +43% after.
+The default fold count is now 6.
+
+Still open, in order of size:
+
+* **The lag cascade, not calibration, is the dominant problem.** MAE rises 43%
+  from day 1 to day 5 and bias more than doubles (+4.0 → +9.7); 3.1 barely
+  moved this. This reverses the Phase 1 conclusion, which was drawn from the
+  same unrepresentative three folds. Worst species: Fraxinus (63.8 → 115.5) and
+  Betula (25.2 → 57.0).
+* **A +4.0 bias remains at day 1** — the two peak-emphasis mechanisms of 3.2.
 
 - [x] **3.1 Fix the extreme-regressor gate.** Stage 3 is blended whenever
   `prob_active > 0.6` (src/trainer.py:469), but that is P(pollen > 0), not
@@ -172,9 +183,14 @@ bias remains — the two peak-emphasis mechanisms of 3.2 are the likely source.
 ## Suggested order of execution
 
 Phase 1 is done. The benchmark it produced changes the order of the rest:
-**Phase 3 now comes before Phase 2.** The model's problem is calibration, not
-feature count — a pruning pass would shave training time without touching the
-bias that is costing it the persistence comparison.
+**Phase 3 now comes before Phase 2.** The model's problem is calibration and
+horizon decay, not feature count — a pruning pass would shave training time
+without touching either.
+
+Phase 1's finding that horizon degradation was mild, and that calibration was
+therefore the dominant problem, was drawn from three folds and does not hold on
+six: degradation is ~+44%, and 3.1 did not reduce it. Both problems are real;
+the lag cascade is the larger one.
 
 3.1 is done. Next: 3.2 → 3.3 (each re-benchmarked against
 `benchmark 5 --folds 3`, with beating persistence on MAE *and* level accuracy
@@ -184,6 +200,12 @@ then 5.3 → 5.4.
 
 Add to Phase 3, from what the rollout showed:
 
+- [ ] **3.5 Attack the horizon decay directly.** MAE rises 43% and bias more
+  than doubles from day 1 to day 5, and 3.1 did not touch it. Options worth
+  benchmarking: training a separate model per horizon bucket rather than one
+  autoregressive rollout; damping the fed-back predictions toward climatology
+  as the horizon grows; or feeding the rollout its own uncertainty so it stops
+  compounding a biased point estimate.
 - [ ] **3.4 Beat persistence.** Track model-vs-persistence MAE per horizon as
   the headline metric. A forecast that loses to "nothing changes" has no claim
   on a user's attention, whatever its RMSE.
