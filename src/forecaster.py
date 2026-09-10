@@ -37,6 +37,7 @@ from .types import (
 )
 from .weather import fetch_weather_forecast
 from .trainer import TwoStageModel, load_models, inv_log_transform
+from .confidence import confidence_for, load_table
 from .features import FeatureContext, LagState, build_context, build_feature_row
 from .cams import fetch_cams_forecast
 
@@ -75,12 +76,9 @@ def _blend_with_dwd(value: float, species: str, dwd_num: float) -> float:
     return max(0.0, value * 0.5 + target_value * 0.5)
 
 
-def _confidence_for_day(day_index: int, has_model: bool) -> float:
-    """Confidence decreases with forecast distance; lower if no model."""
-    base = 0.90 - day_index * 0.08
-    if not has_model:
-        base *= 0.5
-    return max(0.2, min(0.95, base))
+def _no_model_prediction(lag: LagState) -> float:
+    """Last known value with a flat decay, for a species with no model."""
+    return float(np.expm1(lag.lag_features()["pollen_lag_1"])) * 0.8
 
 
 def predict_window(
@@ -166,6 +164,14 @@ def generate_forecast(
     )
     dwd_levels = _fetch_dwd_levels()
 
+    calibration = load_table()
+    if calibration is None:
+        print("  No calibration table; publishing fallback confidence")
+    else:
+        print(f"Confidence calibrated {calibration['generated'][:10]}: "
+              f"exact {calibration['overall']['exact']:.2f}, "
+              f"within one level {calibration['overall']['within_one']:.2f}")
+
     # --- Real-time observation assimilation ---
     # Windows that already have a measurement emit it directly, and the origin
     # for a species is its first window without one. Everything measured before
@@ -211,7 +217,6 @@ def generate_forecast(
 
             if has_observation:
                 prediction = observed[(dt, species)]
-                confidence = min(0.95, _confidence_for_day(day_idx, has_model) + 0.05)
             else:
                 lead = max(1, int((dt - origins[species]) / WINDOW) + 1)
                 if has_model:
@@ -220,10 +225,7 @@ def generate_forecast(
                     )
                     prediction = float(inv_log_transform(np.array([pred_log]))[0])
                 else:
-                    # Fallback: last known value with seasonal decay.
-                    last = lags[species].lag_features()["pollen_lag_1"]
-                    prediction = float(np.expm1(last)) * 0.8
-                confidence = _confidence_for_day(day_idx, has_model)
+                    prediction = _no_model_prediction(lags[species])
 
             # DWD inference-time blend, for the dates DWD covers. Skips real
             # observations (keep actual data) and runs before the season gate,
@@ -238,12 +240,22 @@ def generate_forecast(
             if not season_gate_active(species, dt.month):
                 prediction = 0.0
 
+            level = value_to_level(prediction, species).value
+            exact, within_one = confidence_for(
+                calibration,
+                species,
+                level,
+                horizon_day=day_idx + 1,
+                has_model=has_model,
+                observed=has_observation,
+            )
             window_species.append(
                 SpeciesForecast(
                     name=species,
-                    level=value_to_level(prediction, species).value,
+                    level=level,
                     value=prediction,
-                    confidence=confidence,
+                    confidence=exact,
+                    confidence_within_one=within_one,
                 )
             )
 

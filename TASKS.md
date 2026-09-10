@@ -192,8 +192,33 @@ more than doubled — turned out to be the dominant problem, and 3.5 fixed it.
 - [ ] **4.3 Degradation flags in forecast.json.** Fail-open is right for
   availability, but NDVI/CAMS/DWD/pollen can silently default to zeros for
   weeks. Emit a per-run list of feature groups that were defaulted.
-- [ ] **4.4 Calibrated confidence.** Replace the invented 0.90 − 0.08/day decay
-  with per-species, per-horizon empirical error from the Phase 1 benchmark.
+- [x] **4.4 Calibrated confidence.** **Done.** ECE 0.393 → 0.053 (7.4×),
+  scored leave-one-fold-out.
+
+  The old `0.90 − 0.08/day` was wrong in both level and slope. On rows the
+  forecast actually emits, the level is exactly right **34.8%** of the time —
+  the 77% the benchmark reports overall is carried by `none` predictions, which
+  are filtered out before a user sees them — and accuracy is flat across the
+  horizon (35.8% → 33.9%) because the model is direct. So day 1 overstated by
+  ~2.5× and then decayed for a reason that does not exist.
+
+  **This task's own premise was wrong.** It called for per-species, per-horizon
+  rates; those calibrate *worse* held-out (ECE: flat 0.053, by level 0.063, by
+  species 0.077, by species × level 0.120). In-sample cell accuracy varies 5×
+  but is season- and year-specific. The published table is flat: one rate plus a
+  small horizon offset.
+
+  The harder finding: correlation between stated confidence and being right is
+  ~0 for *every* scheme tried. We can calibrate the average but cannot tell
+  which individual predictions are more reliable. Fixing that needs a predictive
+  distribution rather than a point estimate — logged as 4.6.
+- [ ] **4.6 Make confidence discriminative.** 4.4 calibrated the average but
+  found no scheme whose confidence correlates with being right. That ceiling is
+  the point-estimate output, not the lookup table. Options: quantile ensemble
+  spread (train several `quantile_alpha` and use the interval width), or
+  conformal prediction over the rollout residuals to emit an actual interval
+  per window. Either changes the output schema, so it wants the frontend in the
+  loop.
 - [ ] **4.5 Level-threshold semantics.** `value_to_level` applies daily-mean
   DWD/ePIN-style thresholds to 3h window values, overstating midday peaks.
   Either calibrate 3h thresholds or compute levels on a daily aggregate.

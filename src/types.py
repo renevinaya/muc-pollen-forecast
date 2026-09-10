@@ -360,11 +360,18 @@ def value_to_level(value: float, species: str | None = None) -> PollenLevel:
 
 @dataclass
 class SpeciesForecast:
-    """Forecast for a single species in one time window."""
+    """Forecast for a single species in one time window.
+
+    ``confidence`` is P(this level is exactly right) and
+    ``confidence_within_one`` is P(the truth is within one level of it), both
+    measured by the rollout benchmark rather than assumed — see
+    :mod:`src.confidence`.
+    """
     name: str
     level: str
     value: float
     confidence: float
+    confidence_within_one: float = 0.0
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize to a JSON-compatible dict."""
@@ -373,6 +380,7 @@ class SpeciesForecast:
             "level": self.level,
             "value": round(self.value, 1),
             "confidence": round(self.confidence, 3),
+            "confidence_within_one": round(self.confidence_within_one, 3),
         }
 
 

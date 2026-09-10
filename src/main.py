@@ -11,6 +11,7 @@ Usage:
     python -m src.main backfill-ps  # Backfill from pollenscience.eu (2019+, slow)
     python -m src.main benchmark    # Walk-forward rollout of the 5-day forecast
     python -m src.main benchmark-onset [species...]  # Season-start accuracy only
+    python -m src.main calibrate    # Regenerate the confidence table
     python -m src.main dwd          # Show DWD pollen forecast for Oberbayern
     python -m src.main phenology    # Download DWD phenology data for Munich
 """
@@ -465,6 +466,60 @@ def cmd_benchmark_onset(species: list[str] | None = None, years: int = 3) -> Non
     print(f"\nDetailed results saved to {results_path}")
 
 
+def cmd_calibrate(rebuild: bool = False) -> None:
+    """Regenerate the confidence table from a rollout benchmark.
+
+    Reads ``data/benchmark_rollout.csv`` — pass *rebuild* to run the benchmark
+    first. Writes ``src/confidence.json``, which is committed, so the published
+    confidence is auditable against the run that produced it.
+
+    Re-run this whenever the model changes materially; a stale table publishes
+    the accuracy of a model that no longer exists.
+    """
+    from .confidence import TABLE_PATH, breakdown, build_table
+
+    print("=" * 60)
+    print("CALIBRATE: Measured Forecast Confidence")
+    print("=" * 60)
+
+    results_path = DATA_DIR / "benchmark_rollout.csv"
+    if rebuild or not results_path.exists():
+        if not HISTORY_FILE.exists():
+            print("No history file found. Run 'collect' or 'backfill' first.")
+            return
+        history = pd.read_csv(HISTORY_FILE, parse_dates=["date"])
+        results = rollout_evaluate(history, horizon_days=FORECAST_DAYS, n_folds=6)
+        if results.empty:
+            print("Benchmark produced no results.")
+            return
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        results.to_csv(results_path, index=False)
+    else:
+        results = pd.read_csv(results_path)
+        print(f"Using existing {results_path}")
+
+    table = build_table(results)
+    TABLE_PATH.write_text(json.dumps(table, indent=2) + "\n")
+
+    src = table["source"]
+    print(f"\n  Scored {src['rows_scored']:,} predictions, "
+          f"{src['rows_emitted']:,} of them emitted (value > 0.5)")
+    print(f"  Exact level correct:      {table['overall']['exact']:.1%}")
+    print(f"  Within one level:         {table['overall']['within_one']:.1%}")
+    print("\n  Per horizon (offset from the overall rate):")
+    for day, delta in sorted(table["horizon_delta"].items()):
+        print(f"    day {day}: exact {delta['exact']:+.3f}   "
+              f"within one {delta['within_one']:+.3f}")
+
+    print("\n  Per species x level (diagnostic only — NOT published).")
+    print("  These vary 5x in-sample but do not generalise to a held-out fold,")
+    print("  which is why the published table is flat:")
+    detail = breakdown(results)
+    print("    " + detail.to_string(index=False,
+                                    float_format=lambda v: f"{v:.2f}").replace("\n", "\n    "))
+    print(f"\nWritten to {TABLE_PATH}")
+
+
 def cmd_dwd() -> None:
     """Fetch and display the current DWD pollen forecast for Oberbayern."""
     from .dwd import fetch_dwd_forecast
@@ -615,6 +670,8 @@ def main() -> None:
         cmd_benchmark(**_parse_benchmark_args(sys.argv[2:]))
     elif command == "benchmark-onset":
         cmd_benchmark_onset(sys.argv[2:] or None)
+    elif command == "calibrate":
+        cmd_calibrate(rebuild="--rebuild" in sys.argv[2:])
     elif command == "dwd":
         cmd_dwd()
     elif command == "phenology":
