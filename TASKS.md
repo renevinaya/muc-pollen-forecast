@@ -113,14 +113,8 @@ sample — Sep, Jan and May are quiet months. On six folds the model beats
 persistence only at day 1, and degradation is +44% before 3.1 and +43% after.
 The default fold count is now 6.
 
-Still open, in order of size:
-
-* **The lag cascade, not calibration, is the dominant problem.** MAE rises 43%
-  from day 1 to day 5 and bias more than doubles (+4.0 → +9.7); 3.1 barely
-  moved this. This reverses the Phase 1 conclusion, which was drawn from the
-  same unrepresentative three folds. Worst species: Fraxinus (63.8 → 115.5) and
-  Betula (25.2 → 57.0).
-* **A +4.0 bias remains at day 1** — the two peak-emphasis mechanisms of 3.2.
+The lag cascade this exposed — MAE rising 43% across the horizon while bias
+more than doubled — turned out to be the dominant problem, and 3.5 fixed it.
 
 - [x] **3.1 Fix the extreme-regressor gate.** Stage 3 is blended whenever
   `prob_active > 0.6` (src/trainer.py:469), but that is P(pollen > 0), not
@@ -192,7 +186,9 @@ therefore the dominant problem, was drawn from three folds and does not hold on
 six: degradation is ~+44%, and 3.1 did not reduce it. Both problems are real;
 the lag cascade is the larger one.
 
-3.1 is done. Next: 3.2 → 3.3 (each re-benchmarked against
+3.1 and 3.5 are done, and between them took day-5 MAE from 17.1 to 7.4 and
+day-5 bias from +13.2 to +0.6. The model now beats persistence at every horizon
+by 25–38%. Next: 3.2 → 3.3 (each re-benchmarked against
 `benchmark 5 --folds 3`, with beating persistence on MAE *and* level accuracy
 as the bar), then 2.x as a single pruning PR gated on 2.8, then 4.x
 independently, then 5.1 and 5.2 (the two highest-value modeling additions),
@@ -200,12 +196,28 @@ then 5.3 → 5.4.
 
 Add to Phase 3, from what the rollout showed:
 
-- [ ] **3.5 Attack the horizon decay directly.** MAE rises 43% and bias more
-  than doubles from day 1 to day 5, and 3.1 did not touch it. Options worth
-  benchmarking: training a separate model per horizon bucket rather than one
-  autoregressive rollout; damping the fed-back predictions toward climatology
-  as the horizon grows; or feeding the rollout its own uncertainty so it stops
-  compounding a biased point estimate.
+- [x] **3.5 Attack the horizon decay directly.** **Done — the largest single
+  improvement so far.** The forecast is now direct: lag features are anchored
+  at the forecast origin instead of the target window, with a `lead_windows`
+  feature saying how far ahead the window is, so nothing is fed back and no
+  bias can compound. Over the same six folds:
+
+  | Horizon | MAE | Bias | Level acc. | vs persistence |
+  |---------|-----|------|-----------|----------------|
+  | day 1 | 9.8 → **7.9** | +4.0 → **+0.3** | 75.6 → **76.9%** | +6.2% → **+24.6%** |
+  | day 3 | 12.4 → **7.5** | +7.4 → **+0.3** | 73.7 → **76.7%** | −10.5% → **+33.0%** |
+  | day 5 | 14.0 → **7.4** | +9.7 → **+0.6** | 73.4 → **76.5%** | −22.9% → **+35.6%** |
+
+  Horizon decay is gone (MAE −7% from day 1 to day 5, was +43%), and the model
+  now beats persistence at every horizon instead of only at day 1. Bias is
+  near zero — better calibrated than persistence, which sits at +1.5 to +2.8.
+  Worst-decaying species gained most at day 5: Fraxinus 115.5 → 47.2, Betula
+  57.0 → 17.7, Corylus 35.3 → 20.6.
+
+  Note this also resolves most of what 3.2 was for: the residual +4.0 day-1
+  bias that the stacked peak-emphasis mechanisms were blamed for is now +0.3.
+  3.2 is still worth doing on its merits (two mechanisms doing one job is hard
+  to reason about), but it is no longer urgent.
 - [ ] **3.4 Beat persistence.** Track model-vs-persistence MAE per horizon as
   the headline metric. A forecast that loses to "nothing changes" has no claim
   on a user's attention, whatever its RMSE.
