@@ -44,47 +44,91 @@ Two defects were found and fixed on the way:
   they match. The two code paths construct 72 features independently; today
   only the onset features have tests pinning parity.
 
-## Phase 2 — Parameter tidy-up (validated against the Phase 1 benchmark)
+## Phase 2 — Parameter tidy-up — **DONE**
 
 Raw columns stay in `history.csv` (collection is unchanged); pruning is an edit
 to the feature lists in src/types.py plus a retrain, so it is cheap to A/B.
 
-- [ ] **2.1 Drop near-duplicate temperature stats.** `temperature_max` /
+- [x] **2.1 Drop near-duplicate temperature stats.** `temperature_max` /
   `temperature_min` over a 3h window are nearly identical to
   `temperature_mean`; `temp_slope_3h` and `temp_variance_3h` carry the rest.
   Keep mean + slope + variance.
-- [ ] **2.2 Keep one radiation measure.** `sunshine_duration`,
+- [x] **2.2 Keep one radiation measure.** `sunshine_duration`,
   `shortwave_radiation_sum` and `direct_radiation_sum` are collinear; keep one
   (candidate: shortwave) and drop the other two. Re-derive `temp_x_sunshine`
   from the survivor or drop it too.
-- [ ] **2.3 Trim the wind family from 7 derived features to ~4.** Keep
+- [x] **2.3 Trim the wind family from 7 derived features to ~4.** Keep
   `wind_speed_max`, `wind_dir_sin`, `wind_dir_cos`, and a single transport
   interaction. While here, revisit the N/S-only transport axis — notable Munich
   transport episodes (early birch) often arrive from the NE/E.
-- [ ] **2.4 Drop raw `day_of_year` and `month`.** Five overlapping calendar
+- [x] **2.4 Drop raw `day_of_year` and `month`.** Five overlapping calendar
   encodings exist; the raw ones let trees memorize calendar dates from ~8
   seasons and reproduce climatology, masking the weather signal. Keep the
   sin/cos pair, `season_active`, and `days_since_typical_onset`.
-- [ ] **2.5 Drop `cape_max`.** Thunderstorm-asthma is real but too rare at this
+- [x] **2.5 Drop `cape_max`.** Thunderstorm-asthma is real but too rare at this
   data size to be anything but noise; confirm via the 1.3 gain report.
-- [ ] **2.6 NDVI: drop `evi`, widen the footprint.** EVI duplicates NDVI, and a
+- [x] **2.6 NDVI: drop `evi`, widen the footprint.** EVI duplicates NDVI, and a
   single 250 m pixel at the city-center coordinates (`kmAboveBelow: 0` in
   src/ndvi.py) measures urban greenery, not the regional source areas. Either
   average a few km around Munich or drop the NDVI family if the gain report
   shows nothing.
-- [ ] **2.7 CAMS hygiene.** Models trained while `cams_pollen` was constant-zero
+- [x] **2.7 CAMS hygiene.** Models trained while `cams_pollen` was constant-zero
   must not silently start receiving live CAMS values ("becomes live at
   inference automatically"). Store a trained-with-CAMS flag in the model
   container and zero the feature at inference when it is unset. Also fix the
   UTC-vs-Europe/Berlin misalignment of CAMS 3h windows (src/cams.py).
 
-Measured gain shares from the first report (share of total across all models):
-lag 50.3%, weather-derived 20.2%, weather 11.7%, calendar 10.2%, NDVI 2.6%,
-intra-day 2.4%, phenology 2.1%, season 0.4%, CAMS 0.0% (never split on). The
-single largest features are `pollen_max_8` (13.2%), `pollen_rolling_8` (7.7%),
-`pollen_lag_1` (6.8%) and `days_since_active` (6.5%).
+**Gain shares moved a lot after 3.5**, so the pruning plan above was written
+against a model that no longer exists. Re-measured on the direct model:
 
-- [ ] **2.8 A/B the pruned set.** Run the Phase 1 benchmark with the pruned
+| Family | before 3.5 | after 3.5 |
+|--------|-----------|-----------|
+| lag | 50.3% | **34.3%** |
+| weather-derived | 20.2% | 22.7% |
+| calendar | 10.2% | **17.0%** |
+| weather | 11.7% | 13.5% |
+| season | 0.4% | **3.8%** |
+| NDVI | 2.6% | 3.5% |
+| phenology | 2.1% | 3.4% |
+| intra-day | 2.4% | 1.7% |
+| CAMS | 0.0% | 0.0% (never split on) |
+
+Lags fell and calendar rose, which is what a direct model should do: at long
+leads the lag block is stale, so seasonality is the best signal left. That
+**argues against 2.4** — `month` is now the 5th-largest feature at 4.6%, and
+`day_of_year` another 1.9%. Dropping them is no longer an obvious win, so it is
+being tested separately rather than assumed.
+
+The plan's "~40 features" target was set against the old profile and is not
+supported by the new one. Two arms are being benchmarked instead:
+
+* **Arm A (62 features)** — the unambiguous duplicates only: 2.1, 2.2, 2.3,
+  2.5, 2.6, 2.7. Removes 6.8% of measured gain.
+* **Arm B (60 features)** — Arm A plus 2.4 (`month`, `day_of_year`). Removes
+  13.3%.
+
+**Result: Arm B, adopted.** Both arms beat the 73-feature baseline; Arm B is
+marginally ahead of Arm A and is the smaller model.
+
+| Features | MAE | RMSE | Level acc. | Bias |
+|----------|-----|------|-----------|------|
+| 73 baseline | 7.6 | 47.0 | 76.7% | +0.3 |
+| 62 (Arm A) | 7.3 | 46.4 | 76.7% | +0.0 |
+| **60 (Arm B)** | **7.3** | **46.4** | **76.9%** | **−0.0** |
+
+Arm A vs Arm B is within noise on MAE and RMSE — they are effectively tied.
+Arm B is chosen on two tiebreakers: level accuracy is consistently +0.2–0.5pp
+at days 1–4 (and level is what the frontend actually displays), and it is the
+simpler model. Day 5 marginally favours Arm A (7.1 vs 7.2). Do not read the
+A-vs-B gap as meaningful; the 73-vs-pruned gap is.
+
+The useful finding is that **dropping 13.3% of measured gain made the model
+better, not worse, at every horizon**. Gain share counts how often trees could
+split on a feature, not whether the split helped. That also settles 2.4 in
+favour of the original review's reasoning: raw `day_of_year` and `month` were
+largely redundant with the sin/cos pair despite `month` ranking 5th by gain.
+
+- [x] **2.8 A/B the pruned set.** Run the Phase 1 benchmark with the pruned
   (~40-feature) set vs. the current 72; accept the pruning if per-horizon
   metrics do not regress.
 
@@ -186,9 +230,9 @@ therefore the dominant problem, was drawn from three folds and does not hold on
 six: degradation is ~+44%, and 3.1 did not reduce it. Both problems are real;
 the lag cascade is the larger one.
 
-3.1 and 3.5 are done, and between them took day-5 MAE from 17.1 to 7.4 and
-day-5 bias from +13.2 to +0.6. The model now beats persistence at every horizon
-by 25–38%. Next: 3.2 → 3.3 (each re-benchmarked against
+3.1, 3.5 and Phase 2 are done. Between them day-5 MAE has gone 17.1 → 7.2 and
+day-5 bias +13.2 → +0.4, and the model beats persistence at every horizon by
+27–40%. Next: 3.2 → 3.3 (each re-benchmarked against
 `benchmark 5 --folds 3`, with beating persistence on MAE *and* level accuracy
 as the bar), then 2.x as a single pruning PR gated on 2.8, then 4.x
 independently, then 5.1 and 5.2 (the two highest-value modeling additions),

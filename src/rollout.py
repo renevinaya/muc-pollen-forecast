@@ -42,7 +42,7 @@ from .types import (
     FEATURE_COLS,
     FORECAST_DAYS,
     LAG_FEATURES,
-    WEATHER_FEATURES,
+    WEATHER_COLUMNS,
     WINDOWS_PER_DAY,
     season_gate_active,
     value_to_level,
@@ -140,7 +140,7 @@ def _fold_context(
     forecaster genuinely has, while the zeros cannot invent a season, because
     the climatology and threshold are medians over *earlier* years only.
     """
-    weather_cols = [c for c in WEATHER_FEATURES if c in history.columns]
+    weather_cols = [c for c in WEATHER_COLUMNS if c in history.columns]
     weather = (
         history[history["date"].isin(windows)]
         .groupby("date")[weather_cols]

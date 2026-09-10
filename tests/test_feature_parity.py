@@ -25,7 +25,7 @@ from src.trainer import (
     _add_season_feature,
     _add_weather_derived_features,
 )
-from src.types import ALL_SPECIES, FEATURE_COLS, WEATHER_FEATURES
+from src.types import ALL_SPECIES, FEATURE_COLS, WEATHER_COLUMNS
 
 WINDOW = pd.Timedelta(hours=3)
 
@@ -155,7 +155,7 @@ def serving_features(
     past = history[history["date"] < origin]
     future = history[history["date"] >= origin]
 
-    weather_cols = [c for c in WEATHER_FEATURES if c in history.columns]
+    weather_cols = [c for c in WEATHER_COLUMNS if c in history.columns]
     weather = future.groupby("date")[weather_cols].first().sort_index()
 
     days = pd.DatetimeIndex(weather.index).normalize().unique()

@@ -38,6 +38,7 @@ from .types import (
     PHENOLOGY_FEATURES,
     SEASON_FEATURE,
     WEATHER_DERIVED_FEATURES,
+    LEAD_FEATURES,
     WEATHER_FEATURES,
     WINDOW_FEATURES,
     GDD_T_BASE,
@@ -739,6 +740,7 @@ def _print_onset_calibration(history: pd.DataFrame) -> None:
 # Feature families, for the gain report. Keyed in the order they are printed.
 FEATURE_FAMILIES: dict[str, list[str]] = {
     "weather": WEATHER_FEATURES,
+    "lead": LEAD_FEATURES,
     "calendar": CALENDAR_FEATURES + WINDOW_FEATURES,
     "season": SEASON_FEATURE,
     "weather_derived": WEATHER_DERIVED_FEATURES,

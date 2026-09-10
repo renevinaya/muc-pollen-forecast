@@ -26,7 +26,14 @@ ALL_SPECIES = [
 ]
 
 # Feature columns used by the model (order matters for training/prediction)
-WEATHER_FEATURES = [
+# Raw weather columns the collector writes and the feature pipeline carries.
+# This is NOT the model's input list — several of these exist only so the
+# derived features can be computed from them. Pruning a column out of
+# WEATHER_FEATURES below must not remove it here: dropping `wind_direction`
+# from what gets carried, for instance, makes _add_weather_derived_features
+# silently fall back to a constant 0, which turns wind_dir_sin/cos and both
+# transport features into constants without any error.
+WEATHER_COLUMNS = [
     "temperature_max",
     "temperature_min",
     "temperature_mean",
@@ -36,26 +43,42 @@ WEATHER_FEATURES = [
     "humidity_mean",
     "sunshine_duration",
     "shortwave_radiation_sum",
+    "boundary_layer_height",
+    "dew_point_mean",
+    "cape_max",
+    "direct_radiation_sum",
+    "is_day",
+    "temp_slope_3h",
+    "humidity_slope_3h",
+    "temp_variance_3h",
+    "soil_temperature_mean",
+    "soil_moisture_mean",
+]
+
+# The weather columns the model actually reads. Six of WEATHER_COLUMNS are
+# deliberately absent — see the pruning note at FEATURE_COLS.
+WEATHER_FEATURES = [
+    "temperature_mean",
+    "precipitation_sum",
+    "wind_speed_max",
+    "humidity_mean",
+    "sunshine_duration",
     # Diurnal weather features
     "boundary_layer_height",  # PBL height — pollen disperses when PBL rises
     "dew_point_mean",         # dew point — morning dew suppresses pollen release
-    "cape_max",               # convective energy — thunderstorm asthma, vertical transport
-    "direct_radiation_sum",   # direct radiation — UV drives anther opening
-    "is_day",                 # binary day/night — pollen release is almost exclusively daytime
+    "is_day",                 # binary day/night — release is almost entirely daytime
     # Finer resolution features (computed from hourly data within 3h windows)
     "temp_slope_3h",          # temperature change within window (warming ramp signal)
     "humidity_slope_3h",      # humidity change within window (rapid drying triggers release)
     "temp_variance_3h",       # temperature variance within window (changing conditions)
     # Soil features — better predictors of herbaceous/grass onset than air temp
-    "soil_temperature_mean",  # soil temp (0–7cm) — drives root-zone phenology
-    "soil_moisture_mean",     # soil moisture (0–7cm) — wet soil delays grass flowering
+    "soil_temperature_mean",  # soil temp — drives root-zone phenology
+    "soil_moisture_mean",     # soil moisture — wet soil delays grass flowering
 ]
 
 CALENDAR_FEATURES = [
-    "day_of_year",
     "day_of_year_sin",
     "day_of_year_cos",
-    "month",
 ]
 
 WINDOW_FEATURES = [
@@ -90,12 +113,12 @@ WEATHER_DERIVED_FEATURES = [
     "warm_after_cold",      # recent warming: temp_rolling_3d - temp_rolling_7d
     "wind_x_dry_warm",      # wind × dry_warm interaction (dispersal capacity)
     # --- Upwind transport features ---
+    # wind_from_south/north and transport_north were dropped: they are
+    # rectified halves of wind_dir_cos, so the pair below plus one transport
+    # term carries the same information.
     "wind_dir_sin",         # sin(wind_direction) — E/W component
     "wind_dir_cos",         # cos(wind_direction) — N/S component
-    "wind_from_south",      # strength of southerly wind (alpine forests → Munich)
-    "wind_from_north",      # strength of northerly wind (plains → Munich)
-    "transport_south",      # wind_speed × wind_from_south (pollen transport potential)
-    "transport_north",      # wind_speed × wind_from_north
+    "transport_south",      # wind_speed × southerly strength (transport potential)
 ]
 
 LAG_FEATURES = [
@@ -115,9 +138,10 @@ LAG_FEATURES = [
 ]
 
 # NDVI / vegetation features (from MODIS satellite data)
+# EVI is dropped: it is a second index over the same 250 m pixel and moves with
+# NDVI, so it earned 1.1% of gain for no information NDVI did not already have.
 NDVI_FEATURES = [
     "ndvi",         # Normalized Difference Vegetation Index (0–1)
-    "evi",          # Enhanced Vegetation Index
     "ndvi_delta",   # Daily NDVI change rate (green-up speed)
 ]
 
@@ -130,9 +154,12 @@ PHENOLOGY_FEATURES = [
 # CAMS features (optional — from the Copernicus European pollen forecast).
 # When the CAMS integration is not activated (no ADS key / deps), this column
 # is simply 0 everywhere and the model ignores it. See src/cams.py.
-CAMS_FEATURES = [
-    "cams_pollen",  # CAMS-forecast pollen for this species (0 if not covered/available)
-]
+# Empty on purpose. `cams_pollen` was in the model's input list for its whole
+# life without ever being populated: it is NaN in 97% of history rows and 0.0 in
+# the rest, and no model ever split on it. The collector still writes the column
+# and src/cams.py still fetches when credentials exist, so activating CAMS is
+# a backfill plus putting "cams_pollen" back in this list and retraining.
+CAMS_FEATURES: list[str] = []
 
 # Intra-day relative features (capture diurnal position and short-term dynamics)
 INTRADAY_FEATURES = [

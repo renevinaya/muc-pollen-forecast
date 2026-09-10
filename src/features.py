@@ -30,6 +30,7 @@ import pandas as pd
 
 from .types import (
     ALL_SPECIES,
+    WEATHER_COLUMNS,
     WEATHER_FEATURES,
     WEATHER_DERIVED_FEATURES,
     NDVI_FEATURES,
@@ -186,11 +187,11 @@ def combined_weather(history: pd.DataFrame, weather: pd.DataFrame) -> pd.DataFra
     from the forecast window alone. Where the two overlap the forecast wins,
     which is what the collector would have written anyway.
     """
-    cols = [c for c in WEATHER_FEATURES if c in history.columns]
+    cols = [c for c in WEATHER_COLUMNS if c in history.columns]
     hist_weather = (
         history.groupby("date")[cols].first()
         if not history.empty and cols
-        else pd.DataFrame(columns=WEATHER_FEATURES)
+        else pd.DataFrame(columns=WEATHER_COLUMNS)
     )
     combined = pd.concat([hist_weather, weather])
     combined = combined[~combined.index.duplicated(keep="last")]

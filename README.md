@@ -69,23 +69,37 @@ Each species gets a **three-stage pipeline** with species-specific hyperparamete
 
 **Real-time observation assimilation**: when the pipeline runs every 3 hours, forecast windows that already have real pollen measurements use the observed values instead of model predictions. This breaks the autoregressive error cascade and grounds lag features for subsequent windows in actual data.
 
-## Features (72 total)
+## Features (60 total)
 
 | Category | Count | Features |
 |----------|-------|----------|
-| Weather | 19 | temp max/min/mean, precipitation, wind speed, wind direction, humidity, sunshine duration, shortwave radiation, boundary layer height, dew point, CAPE, direct radiation, is_day, temp slope (3h), humidity slope (3h), temp variance (3h), soil temperature (0–7 cm), soil moisture (0–7 cm) |
-| Calendar | 4 | day of year, sin/cos encoding, month |
+| Weather | 13 | temp mean, precipitation, wind speed, humidity, sunshine duration, boundary layer height, dew point, is_day, temp slope (3h), humidity slope (3h), temp variance (3h), soil temperature, soil moisture |
+| Calendar | 2 | day-of-year sin/cos encoding |
 | Time-of-day | 3 | hour of day (0/3/6/.../21), sin/cos hour encoding |
 | Season | 1 | binary `season_active` per species |
-| Weather-derived | 23 | GDD + species GDD threshold, 3/7-day rolling temp/sunshine/rain, temp deltas (1d/3d), cold-to-warm flip, consecutive warm hours, dry streak, temp×sunshine, dry+warm, warming trend, wind×dry+warm, wind direction sin/cos, wind from south/north, transport south/north |
-| NDVI | 3 | NDVI, EVI, NDVI delta (green-up rate) |
+| Weather-derived | 20 | GDD + species GDD threshold, 3/7-day rolling temp/sunshine/rain, temp deltas (1d/3d), cold-to-warm flip, consecutive warm hours, dry streak, temp×sunshine, dry+warm, warming trend, wind×dry+warm, wind direction sin/cos, transport south |
+| NDVI | 2 | NDVI, NDVI delta (green-up rate) |
 | Phenology | 2 | days since flowering onset (measured from history, per year — see below), onset anomaly (GDD-driven early/late signal against a walk-forward threshold) |
-| CAMS | 1 | `cams_pollen` — Copernicus CAMS forecast for the species (0 when CAMS is inactive) |
 | Intra-day | 3 | temp vs. daily max (ratio), precipitation in prior window (binary), temperature rate of change |
+| Lead | 1 | `lead_windows` — 3h windows between the last measurement and this one |
 | Lag | 13 | pollen at t-1/t-2/t-3/t-8(24h)/t-16(48h)/t-24(72h)/t-56(7d), 24h + 7d rolling mean, 24h + 7d rolling max, morning average (today's earlier windows), days since active (all log-space) |
 
-Lag features carry about half of all model gain, which is why forecast skill is
-reported per horizon day — see [Evaluation](#evaluation).
+Lag features carry about a third of all model gain, which is why forecast skill
+is reported per horizon day — see [Evaluation](#evaluation).
+
+**Twelve features were removed after measuring what they earned** (`temperature_max`,
+`temperature_min`, `shortwave_radiation_sum`, `direct_radiation_sum`,
+`wind_direction`, `cape_max`, `wind_from_south`, `wind_from_north`,
+`transport_north`, `evi`, `cams_pollen`, plus raw `day_of_year` and `month`).
+They accounted for 13.3% of measured gain, and dropping them made the model
+slightly *better* at every horizon — gain share counts how often trees could
+split on a feature, not whether it helped.
+
+Note `WEATHER_COLUMNS` (what the pipeline carries) is deliberately larger than
+`WEATHER_FEATURES` (what the model reads): `wind_direction`, for one, is no
+longer a model input but is still needed to derive `wind_dir_sin/cos` and
+`transport_south`. Removing it from the carried set would silently turn those
+into constants, which is what `tests/test_feature_columns.py` guards.
 
 ### Direct forecasting
 
@@ -266,32 +280,31 @@ origins, 80 680 scored predictions. Persistence is the same baseline throughout
 
 | Horizon | MAE | RMSE | Level acc. | Bias | Persistence MAE | Skill |
 |---------|-----|------|-----------|------|-----------------|-------|
-| day 1 | **7.9** | 49.9 | 76.9% | **+0.3** | 10.4 | **+24.6%** |
-| day 2 | **7.8** | 49.7 | 76.8% | **+0.1** | 10.9 | **+28.8%** |
-| day 3 | **7.5** | 46.3 | 76.7% | **+0.3** | 11.2 | **+33.0%** |
-| day 4 | **7.3** | 44.5 | 76.7% | **+0.4** | 11.8 | **+37.8%** |
-| day 5 | **7.4** | 44.4 | 76.5% | **+0.6** | 11.4 | **+35.6%** |
+| day 1 | **7.6** | 49.4 | 77.2% | **−0.2** | 10.4 | **+27.2%** |
+| day 2 | **7.5** | 49.2 | 77.1% | **−0.3** | 10.9 | **+31.4%** |
+| day 3 | **7.2** | 45.5 | 77.0% | **−0.1** | 11.2 | **+35.7%** |
+| day 4 | **7.0** | 43.7 | 76.8% | **+0.1** | 11.8 | **+40.2%** |
+| day 5 | **7.2** | 43.8 | 76.7% | **+0.4** | 11.4 | **+37.3%** |
 
-The model beats persistence at every horizon by 25–38%, with a bias near zero
-and essentially no decay across the five days (MAE −7% from day 1 to day 5).
+The model beats persistence at every horizon by 27–40%, with a bias near zero
+and no decay across the five days.
 
-Getting here took two fixes, both found by this benchmark:
+Three fixes got here, each measured on these same folds:
 
 | | day 1 MAE | day 5 MAE | day 1 bias | day 5 bias | day 5 skill |
 |---|---|---|---|---|---|
 | original | 11.9 | 17.1 | +6.5 | +13.2 | −50.2% |
-| after 3.1 (stage-3 gate) | 9.8 | 14.0 | +4.0 | +9.7 | −22.9% |
-| after 3.5 (direct forecast) | **7.9** | **7.4** | **+0.3** | **+0.6** | **+35.6%** |
+| 3.1 stage-3 gate | 9.8 | 14.0 | +4.0 | +9.7 | −22.9% |
+| 3.5 direct forecast | 7.9 | 7.4 | +0.3 | +0.6 | +35.6% |
+| Phase 2 prune | **7.6** | **7.2** | **−0.2** | **+0.4** | **+37.3%** |
 
 **3.1** stopped the extreme regressor being consulted about ordinary windows.
-**3.5** removed the feedback loop: the forecast is now *direct*, so nothing is
-fed back for a residual bias to compound through (see
-[Direct forecasting](#direct-forecasting)). Together they cut day-5 MAE by 57%
-and took the bias from +13.2 to +0.6 — the model is now better calibrated than
-persistence, which sits at +1.5 to +2.8.
+**3.5** removed the feedback loop that let a residual bias compound into the
+horizon. **Phase 2** cut 73 features to 60 — and the smaller model is better at
+every horizon, not merely equal, so those features were adding variance rather
+than signal.
 
-The species that decayed worst are the ones that gained most. Day-5 MAE:
-Fraxinus 115.5 → 47.2, Betula 57.0 → 17.7, Corylus 35.3 → 20.6.
+Day-5 MAE has gone 17.1 → 7.2 and day-5 bias +13.2 → +0.4.
 
 > **On fold counts.** An earlier version of this section reported three folds
 > (Sep, Jan, May) and concluded that the model beat persistence from day 3 on
