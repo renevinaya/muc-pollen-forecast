@@ -1,292 +1,272 @@
-# Task list — parameter tidy-up and forecast improvements
+# Task list — improving the forecast
 
-Ordered so that measurement comes first: most later tasks change model behavior,
-and none of them should be merged without a benchmark that can actually see the
-difference. Tasks reference the review findings from the forecast-app review.
+Rewritten after the second review (2026-09-10). The first task list is
+finished through Phase 3.5, Phase 2 and 4.4; what it achieved is summarised
+at the bottom. This list is ordered by expected value for the thing the review
+asked about — **the start of the birch, alder and hazel seasons** — and every
+task states the measurement that accepts or rejects it.
 
-## Phase 1 — Fix the measurement — **DONE**
+Two rules carried over from the first list still hold:
 
-Result: the rollout benchmark says the model **loses to a persistence baseline
-at every horizon** (day-1 MAE 6.6 vs 4.1; level accuracy 76% vs 81%), while
-carrying a bias of +5 to +7 that persistence does not have. Its RMSE is *better*
-than persistence (21–23 vs 26–29), so the model is buying peak capture with a
-systematic over-prediction that costs it every ordinary window. Horizon
-degradation is comparatively mild (MAE +33% from day 1 to day 5), so the
-calibration — not the lag cascade — is the dominant problem. That promotes
-Phase 3 ahead of Phase 2.
+* Nothing that changes model behaviour merges without a benchmark that can
+  see the difference. The general rollout benchmark **cannot** see onset: its
+  six folds fall in Sep, Nov, Jan, Mar, May and Jul, so the Jan and Mar folds
+  bracket the February hazel/alder start without covering it. Phase B.1
+  exists to fix that before anything else in Phase B is judged.
+* Feature changes are edits to the lists in `src/types.py` plus a retrain;
+  data changes are a backfill plus a retrain. Both are cheap to A/B.
 
-Two defects were found and fixed on the way:
+## What the second review found
 
-* `days_since_active` was a **constant 0** in training (a cumulative sum that
-  does not advance while a species is inactive) while the forecaster served a
-  live count — a dead feature and a train/serve skew at once. It is worth 6.5%
-  of model gain now that it varies.
-* Benchmark folds sampled evenly along the timeline landed **all three in
-  August**, when every tree species is dormant. Folds are now spread across the
-  calendar year.
+**The feature list is fine. The data behind ten of the sixty features is not.**
+Measured on `data/history.csv` (2019-01-01 → 2026-08-31, eight seasons):
 
-- [x] **1.1 Autoregressive rollout benchmark.** `temporal_split_evaluate`
-  (src/evaluate.py) builds test-set lag features from *measured* values, so it
-  scores 3h-ahead skill while the product ships a 5-day autoregressive
-  forecast. Add a rollout mode that feeds predictions back into the lag
-  features exactly as `generate_forecast` does, and report MAE / RMSE / level
-  accuracy **per horizon day (1–5)**. This is the single most important task:
-  day-3 to day-5 skill is currently unmeasured.
-- [x] **1.2 Fix the `benchmark [horizon]` CLI parameter.** It is passed as
-  `n_folds` (src/main.py:362), not as a forecast horizon. Rename the fold
-  count, and make `horizon` select the rollout depth from 1.1.
-- [x] **1.3 Per-feature gain report at retrain.** Dump XGBoost gain per feature
-  (grouped by feature family) next to `_print_onset_calibration` in
-  src/trainer.py, so pruning decisions in Phase 2 are data-driven instead of
-  argued.
-- [x] **1.4 Train/serve parity test.** Build features for the same windows via
-  `prepare_training_data` and via the forecaster's feature assembly, and assert
-  they match. The two code paths construct 72 features independently; today
-  only the onset features have tests pinning parity.
+| Feature(s) | First non-missing row | Seasons with real values |
+|---|---|---|
+| `boundary_layer_height`, `dew_point_mean`, `is_day`, `temp_slope_3h`, `humidity_slope_3h`, `temp_variance_3h` | 2025-03-24 | 1.5 of 8 |
+| `soil_temperature_mean`, `soil_moisture_mean` | 2026-06-17 | 0.2 of 8 (NaN in 97% of rows) |
+| `ndvi`, `ndvi_delta` | 2024-01-01 (a literal `0.0` before that, not NaN) | 2.7 of 8 |
 
-## Phase 2 — Parameter tidy-up — **DONE**
+Seven of the eight hazel, alder and birch season starts in the training set
+therefore carry none of the diurnal, soil or vegetation signal. Whatever those
+features earn today (NDVI 2.2–3.7% of gain per species, soil ≈ 0) is learned
+from at most two onsets, and part of it is an era marker: "NDVI is non-zero"
+identifies 2024–2026, which are also the three heaviest birch years.
 
-Raw columns stay in `history.csv` (collection is unchanged); pruning is an edit
-to the feature lists in src/types.py plus a retrain, so it is cheap to A/B.
+**The onset projection is wrong for two of the three species.** `src/onset.py`
+projects every species' onset with one rule — forcing accumulated from 1 Jan
+at base 0 °C — chosen because it fit hazel. Leave-one-out over the eight
+seasons (predict year *Y*'s onset from the other seven):
 
-- [x] **2.1 Drop near-duplicate temperature stats.** `temperature_max` /
-  `temperature_min` over a 3h window are nearly identical to
-  `temperature_mean`; `temp_slope_3h` and `temp_variance_3h` carry the rest.
-  Keep mean + slope + variance.
-- [x] **2.2 Keep one radiation measure.** `sunshine_duration`,
-  `shortwave_radiation_sum` and `direct_radiation_sum` are collinear; keep one
-  (candidate: shortwave) and drop the other two. Re-derive `temp_x_sunshine`
-  from the survivor or drop it too.
-- [x] **2.3 Trim the wind family from 7 derived features to ~4.** Keep
-  `wind_speed_max`, `wind_dir_sin`, `wind_dir_cos`, and a single transport
-  interaction. While here, revisit the N/S-only transport axis — notable Munich
-  transport episodes (early birch) often arrive from the NE/E.
-- [x] **2.4 Drop raw `day_of_year` and `month`.** Five overlapping calendar
-  encodings exist; the raw ones let trees memorize calendar dates from ~8
-  seasons and reproduce climatology, masking the weather signal. Keep the
-  sin/cos pair, `season_active`, and `days_since_typical_onset`.
-- [x] **2.5 Drop `cape_max`.** Thunderstorm-asthma is real but too rare at this
-  data size to be anything but noise; confirm via the 1.3 gain report.
-- [x] **2.6 NDVI: drop `evi`, widen the footprint.** EVI duplicates NDVI, and a
-  single 250 m pixel at the city-center coordinates (`kmAboveBelow: 0` in
-  src/ndvi.py) measures urban greenery, not the regional source areas. Either
-  average a few km around Munich or drop the NDVI family if the gain report
-  shows nothing.
-- [x] **2.7 CAMS hygiene.** Models trained while `cams_pollen` was constant-zero
-  must not silently start receiving live CAMS values ("becomes live at
-  inference automatically"). Store a trained-with-CAMS flag in the model
-  container and zero the feature at inference when it is unset. Also fix the
-  UTC-vs-Europe/Berlin misalignment of CAMS 3h windows (src/cams.py).
+| Species | Climatology only | Current rule (1 Jan, base 0) | Best single rule found | Rule |
+|---|---|---|---|---|
+| Corylus | 14.6 d | **4.6 d** | 3.8 d | 1 Jan, base 3 |
+| Alnus | 11.6 d | 12.8 d | **6.1 d** | 15 Jan, base 3 |
+| Betula | 9.0 d | 20.8 d | **6.9 d** | 1 Mar, base 5 |
 
-**Gain shares moved a lot after 3.5**, so the pruning plan above was written
-against a model that no longer exists. Re-measured on the direct model:
+For alder the projection is no better than the calendar; for birch it is more
+than twice as bad, because January and February warmth counts fully towards a
+tree that does not respond to it until March. The `days_since_typical_onset`
+and `onset_anomaly` features, and the `gdd_above_threshold` /
+`cold_to_warm_flip` gates, all inherit that error.
 
-| Family | before 3.5 | after 3.5 |
-|--------|-----------|-----------|
-| lag | 50.3% | **34.3%** |
-| weather-derived | 20.2% | 22.7% |
-| calendar | 10.2% | **17.0%** |
-| weather | 11.7% | 13.5% |
-| season | 0.4% | **3.8%** |
-| NDVI | 2.6% | 3.5% |
-| phenology | 2.1% | 3.4% |
-| intra-day | 2.4% | 1.7% |
-| CAMS | 0.0% | 0.0% (never split on) |
+**The onset detector is fooled by transport.** The 2025 birch "onset" is 4
+March: six days of 16–37 grains/m³ followed by seven days of zero, then real
+flowering three weeks later. It is the largest error (24–30 d) in every rule
+tested and drags the calibrated GDD threshold for every later year.
 
-Lags fell and calendar rose, which is what a direct model should do: at long
-leads the lag block is stale, so seasonality is the best signal left. That
-**argues against 2.4** — `month` is now the 5th-largest feature at 4.6%, and
-`day_of_year` another 1.9%. Dropping them is no longer an obvious win, so it is
-being tested separately rather than assumed.
+**Chilling did not help.** Sequential chill-then-forcing models (chill days
+< 7 °C from 1 Nov, forcing from when the requirement is met) tied plain
+forcing for hazel and were worse for alder and birch, at every requirement
+tried. With eight seasons the data cannot support a chill term; the earlier
+task 5.3 is downgraded accordingly.
 
-The plan's "~40 features" target was set against the old profile and is not
-supported by the new one. Two arms are being benchmarked instead:
+**Season load is unmodelled and large.** Birch season totals span 2,842
+(2025) to 24,640 (2026), lag-1 correlation −0.41 (alternation); the mean
+concentration in the first onset week ranges 20–811. No feature crosses a
+season boundary, so the model cannot know which kind of year it is entering.
 
-* **Arm A (62 features)** — the unambiguous duplicates only: 2.1, 2.2, 2.3,
-  2.5, 2.6, 2.7. Removes 6.8% of measured gain.
-* **Arm B (60 features)** — Arm A plus 2.4 (`month`, `day_of_year`). Removes
-  13.3%.
+**The confidence work never reached the frontend.** `to_web_dict()` in
+`src/types.py` emits only `from`/`to`/`value`; `confidence` and
+`confidence_within_one` exist in `to_dict()` only. Task 4.4 is correct and
+invisible.
 
-**Result: Arm B, adopted.** Both arms beat the 73-feature baseline; Arm B is
-marginally ahead of Arm A and is the smaller model.
+**The shipped forecast gets the onset *date* right and the onset *amount*
+wrong.** A first run of the onset rollout (B.1 below: the direct forecast
+scored over the seven months containing the 2024–2026 hazel, alder and birch
+starts; 210 origins, 25,181 predictions):
 
-| Features | MAE | RMSE | Level acc. | Bias |
-|----------|-----|------|-----------|------|
-| 73 baseline | 7.6 | 47.0 | 76.7% | +0.3 |
-| 62 (Arm A) | 7.3 | 46.4 | 76.7% | +0.0 |
-| **60 (Arm B)** | **7.3** | **46.4** | **76.9%** | **−0.0** |
+| | day 1 | day 3 | day 5 |
+|---|---|---|---|
+| Timing error of the first predicted 3-day run ≥ low, mean abs. (9 species-years) | 4.0 d | 4.0 d | 3.1 d |
+| False starts (predicted run > 10 d before the real one) | 0 of 8 | 0 of 8 | 0 of 8 |
+| Bias in the onset months, model | −65.6 | −69.2 | −68.9 |
+| Bias in the onset months, persistence | −14.4 | −17.6 | −16.9 |
+| MAE, model vs persistence | 84.7 vs 93.0 | 87.1 vs 122.3 | 85.6 vs 128.6 |
+| Level accuracy, model vs persistence | 48.3% vs 56.6% | 47.5% vs 48.1% | 46.3% vs 45.8% |
 
-Arm A vs Arm B is within noise on MAE and RMSE — they are effectively tied.
-Arm B is chosen on two tiebreakers: level accuracy is consistently +0.2–0.5pp
-at days 1–4 (and level is what the frontend actually displays), and it is the
-simpler model. Day 5 marginally favours Arm A (7.1 vs 7.2). Do not read the
-A-vs-B gap as meaningful; the 73-vs-pruned gap is.
+The only false start in nine species-years is Betula 2026, where the model
+called the season on the 27 Feb – 5 Mar transport episode, as a person reading
+the trap would have. Timing at day 5 is as good as at day 1, which is what a
+direct model with a calendar-and-warmth signal should give.
 
-The useful finding is that **dropping 13.3% of measured gain made the model
-better, not worse, at every horizon**. Gain share counts how often trees could
-split on a feature, not whether the split helped. That also settles 2.4 in
-favour of the original review's reasoning: raw `day_of_year` and `month` were
-largely redundant with the sin/cos pair despite `month` ranking 5th by gain.
+Amplitude is another matter. Predicted-over-actual daily means, day-3
+horizon, by days since onset:
 
-- [x] **2.8 A/B the pruned set.** Run the Phase 1 benchmark with the pruned
-  (~40-feature) set vs. the current 72; accept the pruning if per-horizon
-  metrics do not regress.
+| Species-year | 0–4 d | 5–9 d | 10–14 d | 15–19 d |
+|---|---|---|---|---|
+| Betula 2024 (heavy) | 0.07 | 0.06 | 0.18 | — |
+| Betula 2026 (heaviest) | 0.65 | 0.18 | 0.28 | 0.22 |
+| Alnus 2025 (heavy) | 0.01 | 0.32 | 0.02 | 0.78 |
+| Alnus 2026 | 0.89 | 0.67 | 0.39 | 0.17 |
+| Corylus 2025 | 0.30 | 0.11 | 0.17 | 0.37 |
+| Corylus 2026 | 0.14 | 0.16 | 0.04 | 0.23 |
+| Corylus 2024 (light) | 1.31 | 1.37 | — | — |
 
-## Phase 3 — Model correctness
+In a heavy year the model predicts a tenth to a third of what arrives for the
+first two to three weeks and only converges once the 7-day lag block has
+filled with big numbers. In the light hazel year it over-predicts by a third.
+That is a season-load problem (Phase C), not a timing one: the lag block is
+near zero at onset by definition, so the only things that can set the scale
+are the year's load and the weather of the day, and the model has no feature
+for the former. The general benchmark hides this because onset weeks are a
+few percent of its rows and it never samples February.
 
-**3.1 is done.** Gating the stage-3 blend on a dedicated P(value > threshold)
-classifier instead of P(value > 0) improved every metric at every horizon.
-Measured over six folds spread across the year (Sep, Nov, Jan, Mar, May, Jul),
-184 origins, 80 680 predictions:
+## Phase A — Fill the data behind the features (do first)
 
-| Horizon | MAE | RMSE | Level acc. | Bias | vs persistence |
-|---------|-----|------|-----------|------|----------------|
-| day 1 | 11.9 → **9.8** | 52.0 → **51.1** | 73.7 → **75.6%** | +6.5 → **+4.0** | −14.1% → **+6.2%** |
-| day 3 | 15.6 → **12.4** | 52.3 → **50.5** | 71.5 → **73.7%** | +11.0 → **+7.4** | −38.7% → **−10.5%** |
-| day 5 | 17.1 → **14.0** | 54.6 → **53.6** | 71.2 → **73.4%** | +13.2 → **+9.7** | −50.2% → **−22.9%** |
+Cheapest work on the list and the only change that touches seven of the
+eight onsets in the training set. The collector already requests every one of
+these variables from the Open-Meteo ERA5 archive (rows since 2025-03-24 are
+populated by exactly that path), so this is a re-fetch, not new integration.
 
-MAE fell ~18% at every horizon and bias ~38%, with RMSE slightly better too —
-so the peak capture the blend was supposed to buy was never being delivered.
-On real data the blend now fires on 4–7% of windows (was 20–28%), and when it
-fires the truth is above the threshold 97–99% of the time (was ~25%).
+- [ ] **A.1 `backfill-weather` command.** Re-fetch the hourly archive for
+  2019-01-01 → present, aggregate to 3 h windows with the existing
+  `_parse_hourly_response`, and overwrite only the weather columns of existing
+  `history.csv` rows (join on `date`; never touch `value`). Do **not** re-run
+  `backfill-ps` for this — it re-downloads eight years of pollen at 5 s per
+  chunk. Include `cape_max` and `direct_radiation_sum` even though they are
+  pruned, so a future un-pruning does not need another pass.
+- [ ] **A.2 NDVI backfill 2019–2023.** MOD13Q1 exists from 2000; `fetch_ndvi`
+  defaults its start to two years back. Fetch from 2019 and rewrite `ndvi` /
+  `ndvi_delta` on the rows that currently hold `0.0`. While there, replace the
+  `0.0` fill for missing NDVI with NaN so XGBoost treats it as missing rather
+  than as "winter".
+- [ ] **A.3 Re-benchmark and re-read the gain report.** General rollout (6
+  folds) must not regress; the onset rollout from B.1 is the number that
+  matters. Then decide per family from the gain report on *complete* data:
+  keep soil only if it now earns something for Poaceae/Urtica onset (its
+  stated purpose); keep NDVI only if its gain survives having values in every
+  year (if it was an era marker, it will collapse).
+- [ ] **A.4 Coverage guard.** Add a test / retrain-time report listing, per
+  feature, the share of training rows that are NaN or a constant fill, and
+  fail the retrain when a feature in `FEATURE_COLS` is missing in more than
+  half of the rows. This is the third time a carried-but-empty column has
+  been found by hand (`days_since_active`, `cams_pollen`, now these).
 
-**Correction to an earlier version of this file.** The first write-up of 3.1
-used three folds and claimed the model beat persistence from day 3 on and that
-horizon degradation had gone from +33% to −3%. Both were artefacts of that
-sample — Sep, Jan and May are quiet months. On six folds the model beats
-persistence only at day 1, and degradation is +44% before 3.1 and +43% after.
-The default fold count is now 6.
+## Phase B — Make the season start a first-class target
 
-The lag cascade this exposed — MAE rising 43% across the horizon while bias
-more than doubled — turned out to be the dominant problem, and 3.5 fixed it.
+- [ ] **B.1 Onset rollout benchmark.** Add `benchmark --months 2026-02,2026-04`
+  (or `benchmark-onset --rollout`) so the *shipped* direct forecast is scored
+  over the months containing each measured onset for Corylus, Alnus and
+  Betula, for every season with enough history behind it. Report per
+  species-year and horizon: (a) timing error of the first predicted 3-day run
+  at or above the low threshold, (b) MAE and bias in the ±10-day window,
+  (c) false starts (predicted runs more than 10 days before the real one).
+  The existing `benchmark-onset` scores one-window-ahead with measured lags,
+  which is not the product. The numbers in the box above are the first run
+  of this benchmark and are the baseline every B task is judged against.
+- [ ] **B.2 Robust onset detection for calibration.** `observed_onsets` is
+  only ever applied to completed past seasons, so it does not need to be
+  causal. Replace "first 3-day run ≥ low" with a definition that ignores a
+  transport episode: either require the run to be followed by no return to
+  zero within the next 7 days, or use "first day at which 5% of the season's
+  total has accumulated". Under the 5% definition birch climatology alone is
+  5.2 d LOO and the 2025 outlier moves from 4 March to 10 March — still an
+  outlier, still a transport season, so B.5 matters too. Accept when the
+  per-species LOO table above improves for all three species and the
+  calibrated thresholds stop moving by >10% when a single year is dropped.
+- [ ] **B.3 Species-specific forcing rules.** Give `src/onset.py` a per-species
+  (start date, base temperature) pair instead of one global rule, chosen by
+  leave-one-out on the history at calibration time — walk-forward, so year
+  *Y* uses a rule and threshold fitted on years before *Y*. Starting points
+  from the LOO table: Corylus 1 Jan / 3 °C, Alnus 15 Jan / 3 °C, Betula
+  1 Mar / 5 °C. Add the rule to `_print_onset_calibration` so the retrain
+  log shows which rule each species is running. **A species whose projection
+  does not beat its own climatology in LOO must fall back to climatology** —
+  that is the current state for birch, and the fallback is better than what
+  ships.
+- [ ] **B.4 Onset-phase features that survive B.3.** After B.3, re-read gain
+  for `days_since_typical_onset`, `onset_anomaly`, `gdd_above_threshold`,
+  `cold_to_warm_flip`, `consecutive_warm_hrs` per species. Expect the first
+  two to rise for alder and birch. Drop any of the five that stays below 0.5%
+  for every tree species — `cold_to_warm_flip` is at 0.0–0.1% today.
+- [ ] **B.5 Upwind stations (was 5.2).** Pre-onset birch pollen is transport:
+  in 2026 Munich measured 15–24 grains/m³ on 27 Feb – 5 Mar, five weeks before
+  local onset; the 2025 "onset" was the same thing. Nothing in the feature set
+  can see it coming. The pollenscience.eu client already queries two Munich
+  codes; add one or two upwind stations lagged 3–24 h. Accept on B.1 false
+  starts and ±10-day MAE.
+- [ ] **B.6 Ramp amplitude at onset.** With the lag block near zero, the
+  extreme stage's gate (`P(value > threshold)`) and the quantile regressor
+  both learn from rows where big counts were preceded by big counts. Test
+  (a) a sample weight that up-weights the first 14 days after each measured
+  onset, (b) an explicit `days_since_onset_projected` × `season_load`
+  interaction once C.1 exists, and (c) whether the extreme stage should be
+  allowed to fire on phenology alone. Accept on the amplitude table above:
+  the 0–4 d and 5–9 d ratios for heavy years must move toward 1 without the
+  light-year ratio (Corylus 2024, 1.3) getting worse.
+- [ ] **B.7 December continuity (was part of 5.3).** `gdd` and the forcing
+  accumulation reset on 1 Jan, so a hazel season that starts in a warm
+  December (2023 onset = 1 Jan, i.e. already running) is invisible to the
+  onset features. Start the accumulation on 1 Nov of the previous year for
+  Corylus and Alnus (LOO-check the start date as in B.3). Chill units
+  themselves are **not** supported by the data at eight seasons; revisit
+  when there are twelve.
 
-- [x] **3.1 Fix the extreme-regressor gate.** Stage 3 is blended whenever
-  `prob_active > 0.6` (src/trainer.py:469), but that is P(pollen > 0), not
-  P(pollen > 50) — in peak season the classifier sits at ~1.0 for weeks, so a
-  model trained *only* on >50 samples gets its full 70 % weight on every
-  ordinary in-season window. Train a dedicated P(> extreme_threshold)
-  classifier and gate on that. Also fix the comment/code mismatch: the comment
-  says squared error "on raw (non-log) values" but the model is fit on log `y`.
-- [ ] **3.2 One peak-emphasis mechanism, not three.** Quantile α = 0.85–0.92,
-  √-value + tier sample weights *inside the same quantile loss*, and the
-  stage-3 blend all push predictions upward and compound. Weighting by the
-  target inside quantile loss also shifts the effective quantile above the
-  nominal α. Keep either the raised quantile or the tier weights, and tune the
-  survivor against the benchmark's bias analysis.
-- [ ] **3.3 Reconsider log-space probability scaling.**
-  `TwoStageModel.predict` multiplies the log-space prediction by the clamped
-  probability, which is a power transform (~`count^p`) in real space. Move to a
-  hurdle formulation (scale after `expm1`) or justify the current shrinkage
-  against the benchmark.
+## Phase C — Season load (was 5.1)
 
-## Phase 4 — Robustness and honesty of the output
+- [ ] **C.1 Prior-season features.** Per species: last season's total, the
+  two-season mean, and last season's total as a ratio of the multi-year
+  mean. Computed at the season boundary so they are constant within a season
+  and causal. Alternation is measurable (Betula lag-1 corr −0.41, Alnus
+  +0.54), and the onset-week amplitude — 20 to 811 for birch — is the largest
+  unexplained variance in the onset window. Accept on B.1 ±10-day MAE and on
+  the general benchmark's Betula/Alnus/Corylus rows.
 
-- [ ] **4.1 Time-based lag alignment.** Lag features use row-based `shift(n)`
-  (src/trainer.py `_add_lag_features`), so a station outage silently turns
-  "24h ago" into "8 rows ago, whenever that was" — in training and at forecast
-  time. Reindex each species frame to the full 3h grid before shifting so gaps
-  become NaN and are handled explicitly.
-- [ ] **4.2 Staleness guard at forecast time.** If the last observation is older
-  than N windows, cap confidence and say so in the output; today a stale
-  history still forecasts at 0.90 confidence from outdated lags.
-- [ ] **4.3 Degradation flags in forecast.json.** Fail-open is right for
-  availability, but NDVI/CAMS/DWD/pollen can silently default to zeros for
-  weeks. Emit a per-run list of feature groups that were defaulted.
-- [x] **4.4 Calibrated confidence.** **Done.** ECE 0.393 → 0.053 (7.4×),
-  scored leave-one-fold-out.
+## Phase D — Honesty of the output
 
-  The old `0.90 − 0.08/day` was wrong in both level and slope. On rows the
-  forecast actually emits, the level is exactly right **34.8%** of the time —
-  the 77% the benchmark reports overall is carried by `none` predictions, which
-  are filtered out before a user sees them — and accuracy is flat across the
-  horizon (35.8% → 33.9%) because the model is direct. So day 1 overstated by
-  ~2.5× and then decayed for a reason that does not exist.
+- [ ] **D.1 Publish confidence.** Add `confidence` and `confidence_within_one`
+  to `to_web_dict()`. This changes the schema the Vue frontend reads, so it
+  wants the frontend in the loop — but until it is done 4.4 has no effect.
+- [ ] **D.2 Staleness guard (was 4.2).** If the last observation is older
+  than N windows, cap confidence and say so in the output.
+- [ ] **D.3 Degradation flags (was 4.3).** Emit a per-run list of feature
+  groups that were defaulted (NDVI, DWD, weather forecast fallback).
+- [ ] **D.4 Level-threshold semantics (was 4.5).** Daily-mean DWD/ePIN
+  thresholds are applied to 3 h values, overstating midday peaks. Either
+  calibrate 3 h thresholds or compute levels on a daily aggregate. This also
+  changes what "onset" means to a user, so do it before tuning B further.
+- [ ] **D.5 Discriminative confidence (was 4.6).** Quantile-ensemble spread or
+  conformal intervals over the rollout residuals. Schema change.
 
-  **This task's own premise was wrong.** It called for per-species, per-horizon
-  rates; those calibrate *worse* held-out (ECE: flat 0.053, by level 0.063, by
-  species 0.077, by species × level 0.120). In-sample cell accuracy varies 5×
-  but is season- and year-specific. The published table is flat: one rate plus a
-  small horizon offset.
+## Phase E — Model correctness leftovers
 
-  The harder finding: correlation between stated confidence and being right is
-  ~0 for *every* scheme tried. We can calibrate the average but cannot tell
-  which individual predictions are more reliable. Fixing that needs a predictive
-  distribution rather than a point estimate — logged as 4.6.
-- [ ] **4.6 Make confidence discriminative.** 4.4 calibrated the average but
-  found no scheme whose confidence correlates with being right. That ceiling is
-  the point-estimate output, not the lookup table. Options: quantile ensemble
-  spread (train several `quantile_alpha` and use the interval width), or
-  conformal prediction over the rollout residuals to emit an actual interval
-  per window. Either changes the output schema, so it wants the frontend in the
-  loop.
-- [ ] **4.5 Level-threshold semantics.** `value_to_level` applies daily-mean
-  DWD/ePIN-style thresholds to 3h window values, overstating midday peaks.
-  Either calibrate 3h thresholds or compute levels on a daily aggregate.
+- [ ] **E.1 Time-based lag alignment (was 4.1).** Row-based `shift(n)` turns
+  a station outage into "8 rows ago, whenever that was". Reindex each species
+  frame to the full 3 h grid before shifting.
+- [ ] **E.2 One peak-emphasis mechanism (was 3.2).** Bias is ~0 now, so this
+  is tidiness, not accuracy.
+- [ ] **E.3 Log-space probability scaling (was 3.3).**
+- [ ] **E.4 Beat persistence as the headline metric (was 3.4).** Already
+  reported; make it the first line of the benchmark output.
 
-## Phase 5 — New signal (prioritized by expected value)
+## Suggested order
 
-- [ ] **5.1 Interannual load / masting features.** Birch (and oak) alternate
-  high and low years; nothing in the feature set crosses seasons. Add last
-  season's cumulative total (or its anomaly vs. the species' multi-year mean)
-  per species — the largest missing signal for *amplitude*, and Betula is the
-  most allergologically important species here.
-- [ ] **5.2 Upwind stations as features.** The pollenscience.eu client already
-  queries two Munich codes; add 1–2 upwind stations (50–200 km, e.g. toward
-  Augsburg / the north-east) lagged by a few hours to a day. Best available
-  predictor of transport episodes — far stronger than wind direction alone.
-- [ ] **5.3 Chilling accumulation.** Standard phenology is chill + forcing, not
-  forcing alone. Add autumn/winter chill units, and fix the December GDD
-  incoherence: `gdd` resets on Jan 1, so in the December shoulder month — the
-  exact warm-December-hazel case the season shoulder was built for — the onset
-  features are meaningless.
-- [ ] **5.4 Post-onset frost interaction.** An explicit "frost after onset"
-  feature (catkin damage) — cheap to add once 5.3's plumbing exists; low
-  priority until the gain report says otherwise.
+A.1 → A.2 → B.1 (measure) → A.3 → C.1 → B.2 → B.3 → B.4 → B.6 → B.5 → D.1 →
+D.4 → B.7 → D.2/D.3 → E.x → D.5. A.1–A.3 first because they are a data fix
+with no modelling risk; B.1 before any B/C change so there is a baseline;
+C.1 ahead of the phenology work because the onset rollout says the loss is
+in amplitude, not timing; D.1 early because it is a five-line change that
+makes finished work visible.
 
-## Suggested order of execution
+## Done so far (first task list)
 
-Phase 1 is done. The benchmark it produced changes the order of the rest:
-**Phase 3 now comes before Phase 2.** The model's problem is calibration and
-horizon decay, not feature count — a pruning pass would shave training time
-without touching either.
+Measured over six folds (184 origins, 80,680 predictions), same folds throughout:
 
-Phase 1's finding that horizon degradation was mild, and that calibration was
-therefore the dominant problem, was drawn from three folds and does not hold on
-six: degradation is ~+44%, and 3.1 did not reduce it. Both problems are real;
-the lag cascade is the larger one.
+| Stage | day-1 MAE | day-5 MAE | day-1 bias | day-5 bias | day-5 skill vs persistence |
+|---|---|---|---|---|---|
+| original | 11.9 | 17.1 | +6.5 | +13.2 | −50.2% |
+| 3.1 extreme gate | 9.8 | 14.0 | +4.0 | +9.7 | −22.9% |
+| 3.5 direct forecast | 7.9 | 7.4 | +0.3 | +0.6 | +35.6% |
+| Phase 2 pruning (73 → 60 features) | 7.6 | 7.2 | −0.2 | +0.4 | +37.3% |
 
-3.1, 3.5 and Phase 2 are done. Between them day-5 MAE has gone 17.1 → 7.2 and
-day-5 bias +13.2 → +0.4, and the model beats persistence at every horizon by
-27–40%. Next: 3.2 → 3.3 (each re-benchmarked against
-`benchmark 5 --folds 3`, with beating persistence on MAE *and* level accuracy
-as the bar), then 2.x as a single pruning PR gated on 2.8, then 4.x
-independently, then 5.1 and 5.2 (the two highest-value modeling additions),
-then 5.3 → 5.4.
-
-Add to Phase 3, from what the rollout showed:
-
-- [x] **3.5 Attack the horizon decay directly.** **Done — the largest single
-  improvement so far.** The forecast is now direct: lag features are anchored
-  at the forecast origin instead of the target window, with a `lead_windows`
-  feature saying how far ahead the window is, so nothing is fed back and no
-  bias can compound. Over the same six folds:
-
-  | Horizon | MAE | Bias | Level acc. | vs persistence |
-  |---------|-----|------|-----------|----------------|
-  | day 1 | 9.8 → **7.9** | +4.0 → **+0.3** | 75.6 → **76.9%** | +6.2% → **+24.6%** |
-  | day 3 | 12.4 → **7.5** | +7.4 → **+0.3** | 73.7 → **76.7%** | −10.5% → **+33.0%** |
-  | day 5 | 14.0 → **7.4** | +9.7 → **+0.6** | 73.4 → **76.5%** | −22.9% → **+35.6%** |
-
-  Horizon decay is gone (MAE −7% from day 1 to day 5, was +43%), and the model
-  now beats persistence at every horizon instead of only at day 1. Bias is
-  near zero — better calibrated than persistence, which sits at +1.5 to +2.8.
-  Worst-decaying species gained most at day 5: Fraxinus 115.5 → 47.2, Betula
-  57.0 → 17.7, Corylus 35.3 → 20.6.
-
-  Note this also resolves most of what 3.2 was for: the residual +4.0 day-1
-  bias that the stacked peak-emphasis mechanisms were blamed for is now +0.3.
-  3.2 is still worth doing on its merits (two mechanisms doing one job is hard
-  to reason about), but it is no longer urgent.
-- [ ] **3.4 Beat persistence.** Track model-vs-persistence MAE per horizon as
-  the headline metric. A forecast that loses to "nothing changes" has no claim
-  on a user's attention, whatever its RMSE.
+- Phase 1: rollout benchmark per horizon, feature-gain report, train/serve
+  parity test, shared row-wise feature assembly (`src/features.py`). Fixed
+  `days_since_active` (was a constant 0 in training).
+- 3.1: extreme stage gated on a dedicated classifier.
+- 3.5: direct multi-horizon forecast with a `lead_windows` feature — horizon
+  decay went from +43% to −6%.
+- Phase 2: feature set pruned to 60; the dropped 13% of gain made the model
+  better at every horizon.
+- 4.4: confidence calibrated from the benchmark (ECE 0.393 → 0.053), flat
+  table because per-species/per-level tables overfit. Not yet published (D.1).
