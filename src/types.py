@@ -141,6 +141,15 @@ INTRADAY_FEATURES = [
     "temp_rate_of_change",     # temperature change from previous 3h window (°C)
 ]
 
+# How far ahead of the last measurement a prediction is being made, in 3h
+# windows (1 = the first unforecast window). The lag block is anchored at the
+# forecast origin rather than the target, so this is what tells the model how
+# stale that block is. See src/rollout.py for why the model is direct rather
+# than recursive.
+LEAD_FEATURES = [
+    "lead_windows",
+]
+
 FORECAST_DAYS = 5
 WINDOWS_PER_DAY = 8  # 3-hour windows: 00, 03, 06, 09, 12, 15, 18, 21
 
@@ -155,6 +164,7 @@ FEATURE_COLS = (
     + CAMS_FEATURES
     + INTRADAY_FEATURES
     + LAG_FEATURES
+    + LEAD_FEATURES
 )
 
 # GDD base temperature (°C) — standard for temperate deciduous phenology

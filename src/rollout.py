@@ -2,16 +2,22 @@
 Autoregressive rollout backtest — the benchmark that scores what ships.
 
 ``evaluate.temporal_split_evaluate`` builds every test row's lag features from
-*measured* pollen, so it answers "given yesterday's true counts, how good is
-the next window?". The product answers something else: a 5-day forecast whose
-lag features, after the first few windows, are made entirely of its own earlier
-predictions. Thirteen of the 72 features are lags, and they carry most of the
-in-season signal, so the two questions can have very different answers — and
-only the first one was ever measured.
+*measured* pollen at the target window, so it answers "given yesterday's true
+counts, how good is the next window?". The product answers something else: a
+5-day forecast in which only the first window is close to its lag data. Lags
+carry about half of all model gain, so the two questions can have very
+different answers — and only the first one was ever measured.
 
-This module rolls the model forward exactly as :func:`forecaster.generate_forecast`
+This module runs the forecast exactly as :func:`forecaster.generate_forecast`
 does, through the same :mod:`src.features` code path, and reports skill per
 forecast day.
+
+The forecast is *direct*: every window is predicted from the measurements
+available at the forecast origin, with ``lead_windows`` saying how far ahead it
+is. It used to be recursive — each prediction became the next window's lag —
+and because the predictions carry an upward bias, the bias compounded. Over six
+folds the mean prediction climbed 12.97 -> 17.35 from day 1 to day 5 while the
+mean actual was flat at 9.0 -> 7.7, and MAE degraded 43% across the horizon.
 
 Two things it deliberately does not simulate, both of which flatter the model
 and are called out in the report rather than hidden:
@@ -235,31 +241,32 @@ def rollout_evaluate(
             )
 
             states = [LagState.from_history(history, name, o) for o in origins]
+            lag_blocks = pd.DataFrame(
+                [st.lag_features() for st in states], columns=LAG_FEATURES
+            )
+
             for step in range(horizon_windows):
                 dts = [o + step * WINDOW for o in origins]
                 live = [i for i, dt in enumerate(dts) if dt in static.index]
                 if not live:
                     break
 
-                lag_rows = []
-                for i in live:
-                    states[i].begin_window(dts[i])
-                    lag_rows.append(states[i].lag_features())
-
                 frame = static.loc[[dts[i] for i in live]].reset_index(drop=True)
-                lag_frame = pd.DataFrame(lag_rows, columns=LAG_FEATURES)
-                x_step = pd.concat([frame, lag_frame], axis=1)[FEATURE_COLS].fillna(0)
+                lags = lag_blocks.iloc[live].reset_index(drop=True)
+                # Lead is measured from each origin, so it is the same at a
+                # given step for every origin: step 0 is the first unforecast
+                # window, which is lead 1.
+                lags["lead_windows"] = float(step + 1)
+                x_step = pd.concat([frame, lags], axis=1)[FEATURE_COLS].fillna(0)
                 preds_log = np.maximum(0.0, model.predict(x_step))
 
                 horizon_day = step // WINDOWS_PER_DAY + 1
                 for slot, i in enumerate(live):
                     dt = dts[i]
-                    pred_log = float(preds_log[slot])
-                    predicted = float(np.expm1(pred_log))
+                    predicted = float(np.expm1(float(preds_log[slot])))
                     # Same season gate the forecaster applies before emitting.
                     if not season_gate_active(name, dt.month):
-                        predicted, pred_log = 0.0, 0.0
-                    states[i].record(pred_log)
+                        predicted = 0.0
 
                     if dt not in actuals:
                         continue

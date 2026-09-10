@@ -40,6 +40,8 @@ from .trainer import TwoStageModel, load_models, inv_log_transform
 from .features import FeatureContext, LagState, build_context, build_feature_row
 from .cams import fetch_cams_forecast
 
+WINDOW = pd.Timedelta(hours=3)
+
 # Our categorical level → DWD-style numeric scale (0–3).
 _LEVEL_TO_NUM = {"none": 0, "low": 1, "moderate": 2, "high": 3, "very_high": 3}
 
@@ -82,10 +84,15 @@ def _confidence_for_day(day_index: int, has_model: bool) -> float:
 
 
 def predict_window(
-    model: TwoStageModel, ctx: FeatureContext, species: str, dt: pd.Timestamp, lag: LagState
+    model: TwoStageModel,
+    ctx: FeatureContext,
+    species: str,
+    dt: pd.Timestamp,
+    lag: LagState,
+    lead: int,
 ) -> float:
     """Model prediction for one (window, species), in log space."""
-    features = build_feature_row(ctx, species, dt, lag)
+    features = build_feature_row(ctx, species, dt, lag, lead)
     x_features = pd.DataFrame([features])[FEATURE_COLS]
     return max(0.0, float(model.predict(x_features)[0]))
 
@@ -131,6 +138,11 @@ def generate_forecast(
     """
     Generate a multi-day pollen forecast at 3-hour window resolution.
 
+    Every window is predicted directly from the measurements available at the
+    forecast origin, with ``lead_windows`` saying how far ahead it is. Nothing
+    is fed back: the forecast is 40 independent predictions off one shared block
+    of real data, not a chain of 40 predictions each standing on the last.
+
     All internal lag/prediction values are in log-space (log1p).
     Final output values are converted back to original pollen-count scale.
 
@@ -154,18 +166,27 @@ def generate_forecast(
     )
     dwd_levels = _fetch_dwd_levels()
 
-    origin = pd.Timestamp(weather.index.min())
-    lags = {sp: LagState.from_history(history, sp, origin) for sp in ALL_SPECIES}
-
     # --- Real-time observation assimilation ---
-    # Forecast windows that already have a measurement use it instead of a
-    # prediction, which breaks the autoregressive error cascade for same-day
-    # windows and grounds every later window's lags in real data.
+    # Windows that already have a measurement emit it directly, and the origin
+    # for a species is its first window without one. Everything measured before
+    # that origin feeds the lag block, so the forecast starts from as much real
+    # data as exists.
     observed: dict[tuple[pd.Timestamp, str], float] = {}
     if not history.empty:
-        recent = history[history["date"] >= origin]
+        recent = history[history["date"] >= pd.Timestamp(weather.index.min())]
         for _, row in recent.iterrows():
             observed[(pd.Timestamp(row["date"]), str(row["species"]))] = float(row["value"])
+
+    windows = [pd.Timestamp(str(w)) for w in weather.index]
+
+    def first_unobserved(species: str) -> pd.Timestamp:
+        for window in windows:
+            if (window, species) not in observed:
+                return window
+        return windows[-1] + WINDOW
+
+    origins = {sp: first_unobserved(sp) for sp in ALL_SPECIES}
+    lags = {sp: LagState.from_history(history, sp, origins[sp]) for sp in ALL_SPECIES}
 
     n_obs_windows = len({dt for dt, _ in observed})
     if n_obs_windows > 0:
@@ -175,8 +196,7 @@ def generate_forecast(
     prev_date_str: str | None = None
     day_idx = -1
 
-    for dt_key in weather.index:
-        dt = pd.Timestamp(str(dt_key))
+    for dt in windows:
         date_str = dt.strftime("%Y-%m-%d")
 
         if date_str != prev_date_str:
@@ -186,23 +206,23 @@ def generate_forecast(
         window_species: list[SpeciesForecast] = []
 
         for species in ALL_SPECIES:
-            lag = lags[species]
-            lag.begin_window(dt)
             has_model = species in models
             has_observation = (dt, species) in observed
 
             if has_observation:
                 prediction = observed[(dt, species)]
-                pred_log = float(np.log1p(prediction))
                 confidence = min(0.95, _confidence_for_day(day_idx, has_model) + 0.05)
-            elif has_model:
-                pred_log = predict_window(models[species], ctx, species, dt, lag)
-                prediction = float(inv_log_transform(np.array([pred_log]))[0])
-                confidence = _confidence_for_day(day_idx, has_model)
             else:
-                # Fallback: last known value with seasonal decay.
-                prediction = float(np.expm1(lag.lag_features()["pollen_lag_1"])) * 0.8
-                pred_log = float(np.log1p(prediction))
+                lead = max(1, int((dt - origins[species]) / WINDOW) + 1)
+                if has_model:
+                    pred_log = predict_window(
+                        models[species], ctx, species, dt, lags[species], lead
+                    )
+                    prediction = float(inv_log_transform(np.array([pred_log]))[0])
+                else:
+                    # Fallback: last known value with seasonal decay.
+                    last = lags[species].lag_features()["pollen_lag_1"]
+                    prediction = float(np.expm1(last)) * 0.8
                 confidence = _confidence_for_day(day_idx, has_model)
 
             # DWD inference-time blend, for the dates DWD covers. Skips real
@@ -217,7 +237,6 @@ def generate_forecast(
             # shoulder), so early-onset events are no longer structurally zeroed.
             if not season_gate_active(species, dt.month):
                 prediction = 0.0
-                pred_log = 0.0
 
             window_species.append(
                 SpeciesForecast(
@@ -227,14 +246,13 @@ def generate_forecast(
                     confidence=confidence,
                 )
             )
-            lag.record(pred_log)
 
         window_species.sort(key=lambda s: s.value, reverse=True)
         window_species = [s for s in window_species if s.value > 0.5]
 
         window_results.append((date_str, WindowForecast(
             from_time=dt.strftime("%H:%M"),
-            to_time=(dt + pd.Timedelta(hours=3)).strftime("%H:%M"),
+            to_time=(dt + WINDOW).strftime("%H:%M"),
             species=window_species,
         )))
 

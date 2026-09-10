@@ -11,6 +11,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from src.features import LagState
 from src.rollout import eligible_months, rollout_evaluate
 from src.types import WINDOWS_PER_DAY
 from tests.test_feature_parity import SPECIES, build_history
@@ -81,19 +82,64 @@ def test_model_never_sees_the_fold_it_is_scored_on(history: pd.DataFrame) -> Non
     ), "the fold's own measurements changed a prediction made before them"
 
 
-def test_predictions_feed_the_next_windows_lags(history: pd.DataFrame) -> None:
-    """The whole point: later windows must depend on earlier predictions.
+def test_later_windows_do_not_depend_on_earlier_predictions(
+    history: pd.DataFrame,
+) -> None:
+    """The forecast must be direct: no window may stand on another's output.
 
-    With measured lags every window would be independent of the ones before it,
-    which is the failure mode this module replaces. A rollout that produced a
-    constant per origin would also pass a weaker check, so variation *within*
-    an origin is what is asserted.
+    This is the whole point of the change. Under the recursive rollout each
+    prediction became the next window's lag, so an upward bias compounded into
+    the horizon. The check: predictions from one origin must be reproducible one
+    at a time, in isolation, with no shared running state.
     """
-    res = rollout_evaluate(
+    month = [pd.Period("2022-04", "M")]
+    full = rollout_evaluate(history, horizon_days=3, months=month, species=[SPECIES])
+    assert not full.empty
+
+    # Re-run with a single-day horizon: day 1 only, so nothing downstream of it
+    # exists to have influenced it. Its predictions must be unchanged.
+    day_one = rollout_evaluate(history, horizon_days=1, months=month, species=[SPECIES])
+    merged = full[full["horizon_day"] == 1].merge(
+        day_one, on=["origin", "date"], suffixes=("_full", "_short")
+    )
+    assert not merged.empty
+    assert np.allclose(merged["predicted_full"], merged["predicted_short"], rtol=1e-9)
+
+
+def test_lag_block_is_identical_across_a_whole_forecast(history: pd.DataFrame) -> None:
+    """Every window of one forecast reads the same measured block.
+
+    Only ``lead_windows`` distinguishes them, so if the block ever varied within
+    a forecast something would be feeding it.
+    """
+    origin = pd.Timestamp("2022-04-15")
+    blocks = [
+        LagState.from_history(history, SPECIES, origin).lag_features()
+        for _ in range(3)
+    ]
+    assert blocks[0] == blocks[1] == blocks[2]
+
+    # And the state carries no mutation API that could reintroduce a feedback
+    # loop by accident.
+    state = LagState.from_history(history, SPECIES, origin)
+    assert not hasattr(state, "record")
+    assert not hasattr(state, "begin_window")
+
+
+def test_bias_does_not_grow_with_horizon(history: pd.DataFrame) -> None:
+    """Mean prediction must not inflate as the forecast walks forward.
+
+    The recursive version climbed 12.97 -> 17.35 from day 1 to day 5 on real
+    data while the actuals were flat. A direct forecast has no mechanism for
+    that, and this pins it down on the synthetic history.
+    """
+    results = rollout_evaluate(
         history, horizon_days=3, months=[pd.Period("2022-04", "M")], species=[SPECIES]
     )
-    spread = res.groupby("origin")["predicted"].nunique()
-    assert (spread > 1).any(), "predictions never change across a forecast"
+    by_day = results.groupby("horizon_day")["predicted"].mean()
+    assert by_day.iloc[-1] <= by_day.iloc[0] * 1.5, (
+        f"mean prediction inflates across the horizon: {by_day.to_dict()}"
+    )
 
 
 def test_eligible_months_requires_training_history(history: pd.DataFrame) -> None:

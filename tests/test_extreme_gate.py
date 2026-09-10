@@ -153,3 +153,47 @@ def test_blend_weight_never_exceeds_its_cap(trained) -> None:
     with np.errstate(divide="ignore", invalid="ignore"):
         share = np.where(span > 1e-9, moved / span, 0.0)
     assert share.max() <= EXTREME_MAX_WEIGHT + 1e-6
+
+
+def test_model_records_the_features_it_was_fitted_on(trained) -> None:
+    model, x, _ = trained
+    assert model.feature_names == list(x[FEATURE_COLS].columns)
+
+
+def test_load_models_refuses_a_stale_feature_set(trained, tmp_path, monkeypatch) -> None:
+    """A feature-set change must not take the live forecast down.
+
+    The pipeline checks out new code every run but keeps serving the release's
+    models until the next retrain, so a commit that adds a feature is briefly
+    live against models fitted without it. XGBoost raises on that mismatch.
+    """
+    import joblib
+
+    from src import trainer
+
+    model, _, _ = trained
+    monkeypatch.setattr(trainer, "MODELS_DIR", tmp_path)
+
+    model.feature_names = ["some", "older", "feature", "set"]
+    joblib.dump(model, tmp_path / f"{SPECIES}.joblib")
+
+    assert SPECIES not in trainer.load_models()
+
+    model.feature_names = list(FEATURE_COLS)
+    joblib.dump(model, tmp_path / f"{SPECIES}.joblib")
+    assert SPECIES in trainer.load_models()
+
+
+def test_load_models_checks_legacy_models_by_feature_count(trained, tmp_path, monkeypatch) -> None:
+    """Models pickled before feature_names existed are judged on shape instead."""
+    import joblib
+
+    from src import trainer
+
+    model, _, _ = trained
+    monkeypatch.setattr(trainer, "MODELS_DIR", tmp_path)
+
+    model.feature_names = None  # what unpickling a pre-field model gives
+    joblib.dump(model, tmp_path / f"{SPECIES}.joblib")
+    # This model really was fitted on the current set, so shape agrees.
+    assert SPECIES in trainer.load_models()

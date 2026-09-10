@@ -27,6 +27,8 @@ from src.trainer import (
 )
 from src.types import ALL_SPECIES, FEATURE_COLS, WEATHER_FEATURES
 
+WINDOW = pd.Timedelta(hours=3)
+
 SPECIES = "Betula"
 
 
@@ -125,27 +127,29 @@ def build_history(
     return pd.DataFrame(rows)
 
 
-def trainer_features(history: pd.DataFrame, species: str) -> pd.DataFrame:
+def trainer_features(
+    history: pd.DataFrame, species: str, lead: int = 1
+) -> pd.DataFrame:
     """The trainer's batch path, in the order prepare_training_data applies it."""
     df = history[history["species"] == species].sort_values("date").reset_index(drop=True)
     df = _add_weather_derived_features(df, species)
     df = _add_ndvi_features(df)
     df = _add_intraday_features(df)
-    df = _add_lag_features(df)
     df = _add_season_feature(df, species)
     df = _add_phenology_features(df, species)
+    df = _add_lag_features(df, lead=lead)
     return df.set_index("date")
 
 
 def serving_features(
-    history: pd.DataFrame, species: str, windows: pd.DatetimeIndex
+    history: pd.DataFrame, species: str, windows: pd.DatetimeIndex, lead: int = 1
 ) -> pd.DataFrame:
-    """The forecaster's row path, walking *windows* with observations fed back.
+    """The forecaster's row path over *windows*, all from one origin.
 
-    Feeding the measured value back after each window is what the forecaster
-    does for assimilated windows, and it is what makes the comparison fair:
-    both paths then see the same lag inputs, so any difference is a real
-    definition mismatch rather than accumulated prediction error.
+    The forecaster is direct: it snapshots the measured past once at the origin
+    and predicts every window from it, varying only ``lead_windows``. So the
+    comparison here fixes a lead and checks that the snapshot the forecaster
+    takes equals the lead-anchored block the trainer builds.
     """
     origin = windows[0]
     past = history[history["date"] < origin]
@@ -160,16 +164,12 @@ def serving_features(
         parallel=False,
     )
 
-    measured = (
-        future[future["species"] == species].set_index("date")["value"].to_dict()
-    )
-    lag = LagState.from_history(history, species, origin)
-
     rows = {}
     for dt in windows:
-        lag.begin_window(dt)
-        rows[dt] = build_feature_row(ctx, species, dt, lag)
-        lag.record(float(np.log1p(measured.get(dt, 0.0))))
+        # Each window gets its own origin, `lead` windows back, which is the
+        # state the forecaster would have had when predicting it at that lead.
+        lag = LagState.from_history(history, species, dt - lead * WINDOW + WINDOW)
+        rows[dt] = build_feature_row(ctx, species, dt, lag, lead=lead)
     return pd.DataFrame.from_dict(rows, orient="index")
 
 
@@ -178,15 +178,21 @@ def history() -> pd.DataFrame:
     return build_history()
 
 
-def test_serving_matches_training_features(history: pd.DataFrame) -> None:
-    """Every feature agrees between the batch and row paths, on every window."""
-    batch = trainer_features(history, SPECIES)
+@pytest.mark.parametrize("lead", [1, 8, 40])
+def test_serving_matches_training_features(history: pd.DataFrame, lead: int) -> None:
+    """Every feature agrees between the batch and row paths, at every lead.
+
+    Checking lead 1 alone would miss the whole point of the direct model: the
+    forecast spends 39 of its 40 windows at leads above 1, and those are exactly
+    the rows a train/serve mismatch would silently corrupt.
+    """
+    batch = trainer_features(history, SPECIES, lead=lead)
 
     # Start well inside the frame so both paths have their lags warmed up, and
     # cover the season so the phenology and burst features are exercised.
     all_windows = pd.DatetimeIndex(batch.index)
     windows = all_windows[(all_windows >= all_windows[600]) & (all_windows <= all_windows[1400])]
-    served = serving_features(history, SPECIES, windows)
+    served = serving_features(history, SPECIES, windows, lead=lead)
 
     mismatches = []
     for col in FEATURE_COLS:

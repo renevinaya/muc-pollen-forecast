@@ -82,11 +82,29 @@ def inv_log_transform(values: np.ndarray[Any, Any]) -> np.ndarray[Any, Any]:
 
 # --- Feature engineering ---
 
-def _add_lag_features(df: pd.DataFrame) -> pd.DataFrame:
+def _add_lag_features(df: pd.DataFrame, lead: int = 1) -> pd.DataFrame:
     """
     Add lag and rolling features for a single species' time series.
     Lag features are computed in log-space. Each row is a 3h window.
     Expects df sorted by date with a 'value' column.
+
+    *lead* is how many windows ahead of the last known measurement each row is
+    being predicted. At ``lead=1`` the block is the state of the world one
+    window before the target, which is all a one-step forecast ever needs. At
+    ``lead=L`` the whole block is instead anchored L windows back — it describes
+    what was known at the forecast origin, not at the target.
+
+    That anchoring is what makes the model *direct* rather than recursive. The
+    recursive version fed each prediction back in as the next window's lag, and
+    since the predictions carry an upward bias, the bias compounded: over six
+    folds the mean prediction climbed 12.97 -> 17.35 from day 1 to day 5 while
+    the mean actual was flat at 9.0 -> 7.7. Anchoring at the origin means every
+    lag the model ever sees is a real measurement, in training and in serving
+    alike, so there is no loop for a bias to go round.
+
+    The shift is uniform across the block, which keeps its internal structure
+    intact (most recent known window, the one before it, the 24h mean ending
+    there, ...) and simply moves the whole thing back to the origin.
     """
     df = df.copy().sort_values("date")
     log_val = log_transform(df["value"])
@@ -123,6 +141,13 @@ def _add_lag_features(df: pd.DataFrame) -> pd.DataFrame:
     positions = pd.Series(np.arange(len(s), dtype=float), index=s.index)
     last_active = positions.where(s > 0).ffill()
     df["days_since_active"] = (positions - last_active).shift(1).fillna(999).astype(float)
+
+    # Move the finished block back to the forecast origin. Every column above
+    # describes the state as of one window before its row, so shifting by
+    # lead - 1 makes it describe the state as of `lead` windows before instead.
+    if lead > 1:
+        df[LAG_FEATURES] = df[LAG_FEATURES].shift(lead - 1)
+    df["lead_windows"] = float(lead)
     return df
 
 
@@ -419,13 +444,28 @@ def _add_weather_derived_features(
     return df
 
 
+# Leads the model is trained at, in 3h windows. A 5-day forecast spans leads
+# 1..40, and one row per lead would be 40x the training data, so these sample
+# the range: dense early, where a window's own recent past still dominates, and
+# sparse later, where it barely matters. ``lead_windows`` is a feature, so the
+# model interpolates between them.
+TRAINING_LEADS = (1, 4, 8, 16, 24, 32, 40)
+
+
 def prepare_training_data(
-    history: pd.DataFrame, species: str
+    history: pd.DataFrame, species: str, leads: tuple[int, ...] = TRAINING_LEADS
 ) -> tuple[pd.DataFrame, pd.Series, pd.Series]:
     """
     Prepare feature matrix X, target y (log-transformed), and raw_values
     (original scale) for a single species.
-    Drops rows where lag features are NaN (first few days).
+
+    One copy of the history per entry in *leads*: the same target windows, each
+    time with the lag block anchored that many windows further back. This is
+    what teaches the model to forecast several days ahead directly, instead of
+    forecasting one window ahead and being fed its own output forty times.
+
+    Drops rows where lag features are NaN (the first few days, plus the first
+    *lead* windows of each copy).
     """
     species_df = history[history["species"] == species].copy()
     if species_df.empty:
@@ -439,19 +479,26 @@ def prepare_training_data(
     species_df = _add_weather_derived_features(species_df, species)
     species_df = _add_ndvi_features(species_df)
     species_df = _add_intraday_features(species_df)
-    species_df = _add_lag_features(species_df)
     species_df = _add_season_feature(species_df, species)
     species_df = _add_phenology_features(species_df, species)
 
-    # Drop rows with missing lags (first 3 days)
-    species_df = species_df.dropna(subset=LAG_FEATURES)
+    # Everything above is independent of the lead, so it is built once and only
+    # the lag block is rebuilt per lead.
+    per_lead: list[pd.DataFrame] = []
+    for lead in leads:
+        frame = _add_lag_features(species_df, lead=lead)
+        frame = frame.dropna(subset=LAG_FEATURES)
+        if not frame.empty:
+            per_lead.append(frame)
 
-    if species_df.empty:
+    if not per_lead:
         return pd.DataFrame(), pd.Series(dtype=float), pd.Series(dtype=float)
 
-    X = species_df[FEATURE_COLS].copy()
-    raw_values = species_df["value"].reset_index(drop=True)
-    y = pd.Series(log_transform(species_df["value"]), index=species_df.index)
+    combined = pd.concat(per_lead, ignore_index=True)
+
+    X = combined[FEATURE_COLS].copy()
+    raw_values = combined["value"].reset_index(drop=True)
+    y = pd.Series(log_transform(combined["value"]), index=combined.index)
 
     # Fill any remaining NaN in features with 0
     X = X.fillna(0)
@@ -471,6 +518,12 @@ class TwoStageModel:
     # None so models pickled before this field existed still load; those are
     # served without the blend rather than with the gate that used to be wrong.
     extreme_classifier: XGBClassifier | None = None
+    # The feature columns this model was fitted on. Serving a model a different
+    # set is never merely degraded — XGBoost raises on a name mismatch, and a
+    # silent reordering would be worse — so load_models refuses the mismatch
+    # rather than letting it reach a running pipeline. Defaults to None for
+    # models pickled before this field existed.
+    feature_names: list[str] | None = None
 
     def predict(self, X: pd.DataFrame | np.ndarray[Any, Any]) -> np.ndarray[Any, Any]:  # pylint: disable=invalid-name
         """
@@ -661,6 +714,7 @@ def train_species_model(
         species=species,
         extreme_threshold=extreme_threshold,
         extreme_classifier=extreme_classifier,
+        feature_names=list(X.columns),
     )
 
 
@@ -810,11 +864,42 @@ def train_all(history: pd.DataFrame) -> dict[str, TwoStageModel]:
 
 
 def load_models() -> dict[str, TwoStageModel]:
-    """Load all trained two-stage models from disk."""
+    """Load trained models from disk, skipping any that no longer fit.
+
+    The pipeline checks out new code every run but keeps serving the models on
+    the data release until the next retrain, so a commit that changes
+    FEATURE_COLS is briefly live against models fitted on the old set. XGBoost
+    raises on a feature-name mismatch, which would take the whole forecast down.
+
+    A skipped species falls back to the forecaster's no-model path for one
+    cycle — a worse forecast, but a published one — and comes back at the next
+    retrain. Models pickled before ``feature_names`` existed carry None; those
+    predate the field rather than disagreeing with it, so they are checked
+    against the count XGBoost itself reports.
+    """
     models: dict[str, TwoStageModel] = {}
+    stale: list[str] = []
     for species in ALL_SPECIES:
         model_path = MODELS_DIR / f"{species}.joblib"
-        if model_path.exists():
-            loaded: TwoStageModel = joblib.load(model_path)
+        if not model_path.exists():
+            continue
+        loaded: TwoStageModel = joblib.load(model_path)
+
+        names = getattr(loaded, "feature_names", None)
+        if names is None:
+            fitted = getattr(loaded.regressor, "n_features_in_", len(FEATURE_COLS))
+            matches = int(fitted) == len(FEATURE_COLS)
+        else:
+            matches = list(names) == list(FEATURE_COLS)
+
+        if matches:
             models[species] = loaded
+        else:
+            stale.append(species)
+
+    if stale:
+        print(
+            f"  Skipped {len(stale)} model(s) fitted on a different feature set "
+            f"({', '.join(stale)}) — they will be replaced at the next retrain."
+        )
     return models

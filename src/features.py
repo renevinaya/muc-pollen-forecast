@@ -68,21 +68,22 @@ def _f(value: object) -> float:
 
 @dataclass
 class LagState:
-    """The autoregressive state one species carries between windows.
+    """One species' measured recent past, as of a forecast origin.
 
     ``log_vals`` holds the last :data:`LAG_WINDOW` values in log space, oldest
-    first; the final entry is always the window immediately before the one
-    being predicted.
+    first; the final entry is the window immediately before the origin.
+
+    This is a snapshot, not a running state. It used to be fed each prediction
+    as the forecast walked forward, which is what let an upward bias compound
+    into the horizon. The model is now direct — every window of the forecast is
+    predicted from this same block of *measured* values, with ``lead_windows``
+    saying how far ahead the window is — so nothing is ever fed back.
     """
 
     log_vals: list[float] = field(default_factory=list)
     morning: list[float] = field(default_factory=list)
     days_since_active: float = NEVER_ACTIVE
     day: pd.Timestamp | None = None
-    # Before the species has ever been seen active the counter is a sentinel,
-    # not a distance, so it must not tick upward — the trainer's batch path
-    # holds those rows at NEVER_ACTIVE too.
-    seen_active: bool = False
 
     @classmethod
     def from_history(
@@ -105,40 +106,14 @@ class LagState:
 
         # days_since_active over the *whole* history, not just the tail.
         active = np.flatnonzero(values > 0)
-        seen_active = active.size > 0
-        dsa = float(len(values) - 1 - active[-1]) if seen_active else NEVER_ACTIVE
+        dsa = float(len(values) - 1 - active[-1]) if active.size else NEVER_ACTIVE
 
         # Earlier windows of the origin's own calendar day are already measured.
         day = pd.Timestamp(origin).normalize()
         same_day = sp[pd.to_datetime(sp["date"]).dt.normalize() == day]
         morning = list(np.log1p(same_day["value"].to_numpy(dtype=float)))
 
-        return cls(
-            log_vals=log_vals,
-            morning=morning,
-            days_since_active=dsa,
-            day=day,
-            seen_active=seen_active,
-        )
-
-    def begin_window(self, dt: pd.Timestamp) -> None:
-        """Reset the intra-day accumulator when the calendar day turns over."""
-        day = pd.Timestamp(dt).normalize()
-        if self.day is None or day != self.day:
-            self.day = day
-            self.morning = []
-
-    def record(self, log_value: float) -> None:
-        """Fold a window's value (predicted or observed) into the state."""
-        self.log_vals.append(log_value)
-        if len(self.log_vals) > LAG_WINDOW:
-            del self.log_vals[: len(self.log_vals) - LAG_WINDOW]
-        self.morning.append(log_value)
-        if log_value > 0:
-            self.days_since_active = 0.0
-            self.seen_active = True
-        elif self.seen_active:
-            self.days_since_active += 1.0
+        return cls(log_vals=log_vals, morning=morning, days_since_active=dsa, day=day)
 
     def lag_features(self) -> dict[str, float]:
         """The 13 lag features implied by the current state."""
@@ -374,10 +349,23 @@ def static_features(ctx: FeatureContext, species: str, dt: pd.Timestamp) -> dict
 
 
 def build_feature_row(
-    ctx: FeatureContext, species: str, dt: pd.Timestamp, lag: LagState
+    ctx: FeatureContext,
+    species: str,
+    dt: pd.Timestamp,
+    lag: LagState,
+    lead: int = 1,
 ) -> dict[str, float]:
-    """The full feature vector for one (window, species)."""
-    return {**static_features(ctx, species, dt), **lag.lag_features()}
+    """The full feature vector for one (window, species).
+
+    *lead* is how many 3h windows *dt* sits ahead of the last measurement in
+    *lag*, counting the first unforecast window as 1. It is the only part of
+    the vector that changes as the forecast walks forward.
+    """
+    return {
+        **static_features(ctx, species, dt),
+        **lag.lag_features(),
+        "lead_windows": float(lead),
+    }
 
 
 def static_feature_frame(
