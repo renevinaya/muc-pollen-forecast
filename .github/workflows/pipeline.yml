@@ -10,9 +10,12 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: 'forecast = collect + predict; train = also retrain models'
+        description: >-
+          forecast = collect + predict; train = also retrain models;
+          backfill = rewrite the weather and NDVI columns of the stored history
+          from the archives (no forecast is published)
         type: choice
-        options: [forecast, train]
+        options: [forecast, train, backfill]
         default: forecast
 
 permissions:
@@ -59,11 +62,14 @@ jobs:
         run: |
           if [ "$MODE" = "train" ]; then
             uv run python -m src.main run-train
+          elif [ "$MODE" = "backfill" ]; then
+            uv run python -m src.main run-backfill
           else
             uv run python -m src.main run
           fi
 
       - name: Publish forecast.json to GitHub Pages
+        if: env.MODE != 'backfill'
         run: |
           test -s data/forecast.json || { echo "::error::no forecast.json produced"; exit 1; }
 

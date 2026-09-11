@@ -36,6 +36,46 @@ def _modis_date(d: date) -> str:
     return f"A{d.year}{d.timetuple().tm_yday:03d}"
 
 
+# The ORNL API is slow and drops requests under load: on 2026-09-10 one chunk
+# of the routine fetch timed out and the run continued with a 150-day hole,
+# which the interpolator then bridged silently. Retry before giving up.
+_MAX_ATTEMPTS = 3
+_TIMEOUT_SECONDS = 60
+
+
+def _fetch_chunk(start: date, end: date) -> dict | None:
+    """One ORNL subset request with retries; None when every attempt failed."""
+    import time
+
+    import httpx
+
+    last_exc: Exception | None = None
+    for attempt in range(_MAX_ATTEMPTS):
+        try:
+            resp = httpx.get(
+                f"{MODIS_API}/{PRODUCT}/subset",
+                params={
+                    "latitude": LAT,
+                    "longitude": LON,
+                    "startDate": _modis_date(start),
+                    "endDate": _modis_date(end),
+                    "kmAboveBelow": 0,
+                    "kmLeftRight": 0,
+                },
+                timeout=_TIMEOUT_SECONDS,
+                headers={"Accept": "application/json"},
+            )
+            resp.raise_for_status()
+            return resp.json()
+        except Exception as exc:  # noqa: BLE001 — any failure is worth one more try
+            last_exc = exc
+            if attempt < _MAX_ATTEMPTS - 1:
+                time.sleep(2 ** (attempt + 1))
+    print(f"  Warning: MODIS fetch failed for {start}–{end} after "
+          f"{_MAX_ATTEMPTS} attempts: {last_exc}")
+    return None
+
+
 def fetch_ndvi(
     start: date | None = None,
     end: date | None = None,
@@ -49,8 +89,6 @@ def fetch_ndvi(
     Results are cached locally.  On subsequent calls only the missing
     tail is fetched and appended.
     """
-    import httpx
-
     if end is None:
         end = local_today()
     if start is None:
@@ -84,24 +122,8 @@ def fetch_ndvi(
 
     while current_start < end:
         chunk_end = min(current_start + timedelta(days=chunk_days), end)
-        try:
-            resp = httpx.get(
-                f"{MODIS_API}/{PRODUCT}/subset",
-                params={
-                    "latitude": LAT,
-                    "longitude": LON,
-                    "startDate": _modis_date(current_start),
-                    "endDate": _modis_date(chunk_end),
-                    "kmAboveBelow": 0,
-                    "kmLeftRight": 0,
-                },
-                timeout=30,
-                headers={"Accept": "application/json"},
-            )
-            resp.raise_for_status()
-            data = resp.json()
-        except Exception as exc:
-            print(f"  Warning: MODIS fetch failed for {current_start}–{chunk_end}: {exc}")
+        data = _fetch_chunk(current_start, chunk_end)
+        if data is None:
             current_start = chunk_end + timedelta(days=1)
             continue
 

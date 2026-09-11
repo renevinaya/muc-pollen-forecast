@@ -825,15 +825,109 @@ def _print_feature_gain(models: dict[str, TwoStageModel], top: int = 15) -> None
     print()
 
 
+# Raw history columns for which an exact 0.0 is a fill value rather than a
+# measurement: NDVI over Munich never reads 0, a 3 h mean dew point or boundary
+# layer height of exactly 0.0 does not happen, and the weather parser writes
+# 0.0 for soil when the source column is missing. Everything else in the
+# feature list (rain, sunshine, is_day, ndvi_delta on a flat day, the lags) is
+# legitimately zero often.
+ZERO_MEANS_MISSING = frozenset(
+    [
+        "ndvi",
+        "soil_temperature_mean",
+        "soil_moisture_mean",
+        "boundary_layer_height",
+        "dew_point_mean",
+    ]
+)
+
+# A feature missing on more than this share of training rows is not a feature
+# the model can learn; the retrain refuses rather than fit an era marker.
+MAX_MISSING_SHARE = 0.5
+
+
+class FeatureCoverageError(ValueError):
+    """Raised when a model input is missing on most of the training rows."""
+
+
+def feature_coverage(history: pd.DataFrame) -> pd.DataFrame:
+    """Share of rows on which each *raw* model input is missing.
+
+    Checked on the raw columns rather than the prepared matrix because the
+    derived features are computed from these, and ``prepare_training_data``
+    fills every NaN with 0 before XGBoost sees it — so a column that is NaN
+    for six seasons reaches the model as six seasons of zeros, which is why
+    this was invisible until someone looked. "Missing" is NaN, or an exact 0.0
+    for the columns in :data:`ZERO_MEANS_MISSING`.
+
+    One row per feature, sorted by missing share: ``missing`` (share),
+    ``first_present`` (first date with a real value), ``mode_share`` (share of
+    rows holding the single most common value, as a hint for other fills).
+    """
+    raw = [c for c in FEATURE_COLS if c in history.columns]
+    if history.empty or not raw:
+        return pd.DataFrame(columns=["feature", "missing", "first_present", "mode_share"])
+
+    dates = pd.to_datetime(history["date"])
+    rows: list[dict[str, object]] = []
+    for col in raw:
+        values = pd.to_numeric(history[col], errors="coerce")
+        missing = values.isna()
+        if col in ZERO_MEANS_MISSING:
+            missing = missing | (values == 0.0)
+        present = dates[~missing]
+        counts = values.value_counts(dropna=False)
+        rows.append(
+            {
+                "feature": col,
+                "missing": float(missing.mean()),
+                "first_present": present.min() if not present.empty else pd.NaT,
+                "mode_share": float(counts.iloc[0] / len(values)) if len(counts) else 1.0,
+            }
+        )
+    return pd.DataFrame(rows).sort_values("missing", ascending=False).reset_index(drop=True)
+
+
+def check_feature_coverage(
+    history: pd.DataFrame, max_missing: float = MAX_MISSING_SHARE
+) -> pd.DataFrame:
+    """Print the coverage report and refuse to train on mostly-missing inputs."""
+    report = feature_coverage(history)
+    flagged = report[report["missing"] > 0]
+    print("\n  Feature coverage (raw columns missing on more than 0% of rows):")
+    if flagged.empty:
+        print("    every model input is present on every row")
+    else:
+        print(f"    {'Feature':<26} {'missing':>8} {'first present':>14} {'mode share':>11}")
+        for _, r in flagged.iterrows():
+            first = r["first_present"].date() if pd.notna(r["first_present"]) else "never"
+            print(f"    {r['feature']:<26} {r['missing']:>7.1%} {str(first):>14} "
+                  f"{r['mode_share']:>10.1%}")
+
+    bad = report[report["missing"] > max_missing]
+    if not bad.empty:
+        names = ", ".join(f"{r.feature} ({r.missing:.0%})" for r in bad.itertuples())
+        raise FeatureCoverageError(
+            f"{len(bad)} model input(s) missing on more than {max_missing:.0%} of "
+            f"training rows: {names}. Run `python -m src.main run-backfill` to "
+            "fill the history, or drop the feature from FEATURE_COLS."
+        )
+    return report
+
+
 def train_all(history: pd.DataFrame) -> dict[str, TwoStageModel]:
     """
     Train one two-stage model per species.  Returns dict[species → TwoStageModel].
     Only trains if there are enough data points (>= 14 days).
+
+    Refuses (``FeatureCoverageError``) when a model input is missing on most
+    of the rows — see :func:`check_feature_coverage`.
     """
     MODELS_DIR.mkdir(parents=True, exist_ok=True)
     models: dict[str, TwoStageModel] = {}
 
     _print_onset_calibration(history)
+    check_feature_coverage(history)
 
     for species in ALL_SPECIES:
         X, y, raw_values = prepare_training_data(history, species)

@@ -9,6 +9,9 @@ Usage:
     python -m src.main run-train    # Collect + train + forecast (monthly cron)
     python -m src.main backfill N   # Backfill N days of historical data
     python -m src.main backfill-ps  # Backfill from pollenscience.eu (2019+, slow)
+    python -m src.main backfill-weather [START] [END]  # Rewrite weather columns from the archive
+    python -m src.main backfill-ndvi [START]           # Rewrite NDVI columns from MODIS
+    python -m src.main run-backfill # Both of the above against the data release (Actions)
     python -m src.main benchmark    # Walk-forward rollout of the 5-day forecast
     python -m src.main benchmark-onset [species...]  # Season-start accuracy only
     python -m src.main calibrate    # Regenerate the confidence table
@@ -604,7 +607,12 @@ def cmd_run() -> None:
 
 
 def cmd_run_train() -> None:
-    """Run full pipeline with training: collect -> train -> forecast (monthly)."""
+    """Run full pipeline with training: collect -> train -> forecast (monthly).
+
+    A retrain that fails is reported (``::error::`` so it shows on the run) but
+    does not cost the forecast: the models on the release are restored and
+    served for one more cycle, exactly as the 3-hourly run does.
+    """
     if not HISTORY_FILE.exists():
         sync_historical_data(HISTORY_FILE)
     _sync_phenology()
@@ -615,9 +623,91 @@ def cmd_run_train() -> None:
     except Exception as exc:
         print(f"Phenology refresh failed ({exc}); continuing with existing data.")
     history = cmd_collect()
-    cmd_train(history)
+    try:
+        cmd_train(history)
+    except Exception as exc:
+        print(f"::error::Retrain failed, serving the previous models: {exc}")
+        download_models(MODELS_DIR)
+        cmd_forecast(history)
+        raise SystemExit(1)
     upload_models(MODELS_DIR)
     cmd_forecast(history)
+
+
+def _parse_date_args(argv: list[str]) -> tuple[date | None, date | None]:
+    """``[START] [END]`` as ISO dates, both optional."""
+    parsed = [date.fromisoformat(a) for a in argv[:2]]
+    return (parsed[0] if parsed else None, parsed[1] if len(parsed) > 1 else None)
+
+
+def cmd_backfill_weather(start: date | None = None, end: date | None = None) -> pd.DataFrame:
+    """Rewrite every weather column of the history from the ERA5 archive."""
+    from .backfill import refresh_weather
+
+    print("=" * 60)
+    print("BACKFILL WEATHER: rewrite weather columns from the archive")
+    print("=" * 60)
+    history = sync_historical_data(HISTORY_FILE)
+    if history.empty:
+        print("No history to refresh.")
+        return history
+    history = refresh_weather(history, start, end)
+    history.to_csv(HISTORY_FILE, index=False)
+    print(f"Wrote {len(history)} rows -> {HISTORY_FILE}")
+    return history
+
+
+def cmd_backfill_ndvi(start: date | None = None, end: date | None = None) -> pd.DataFrame:
+    """Rewrite the NDVI columns of the history from MODIS composites."""
+    from .backfill import refresh_ndvi
+
+    print("=" * 60)
+    print("BACKFILL NDVI: rewrite NDVI columns from MODIS")
+    print("=" * 60)
+    history = sync_historical_data(HISTORY_FILE)
+    if history.empty:
+        print("No history to refresh.")
+        return history
+    history = refresh_ndvi(history, start, end)
+    history.to_csv(HISTORY_FILE, index=False)
+    print(f"Wrote {len(history)} rows -> {HISTORY_FILE}")
+    return history
+
+
+def cmd_run_backfill() -> None:
+    """Refresh weather and NDVI columns of the release history, then store it.
+
+    Runs in Actions (``mode: backfill``). Either half failing leaves the other
+    half's result in place: the history is written after each step and only
+    uploaded once both have been attempted, so a partial refresh still lands
+    and the failure still shows.
+    """
+    from .trainer import feature_coverage
+
+    failures: list[str] = []
+    for step in (cmd_backfill_weather, cmd_backfill_ndvi):
+        try:
+            step()
+        except Exception as exc:  # noqa: BLE001 — report, continue, fail at the end
+            print(f"::error::{step.__name__} failed: {exc}")
+            failures.append(step.__name__)
+
+    history = pd.read_csv(HISTORY_FILE, parse_dates=["date"])
+    report = feature_coverage(history)
+    print("\nCoverage after backfill (features still missing on any row):")
+    still = report[report["missing"] > 0]
+    if still.empty:
+        print("  none")
+    for _, r in still.iterrows():
+        print(f"  {r['feature']:<26} {r['missing']:>7.1%}")
+
+    if can_upload():
+        upload_csv(HISTORY_FILE, HISTORY_ASSET)
+    else:
+        print("No GITHUB_TOKEN — refreshed history kept locally only")
+
+    if failures:
+        raise SystemExit(f"backfill incomplete: {', '.join(failures)}")
 
 
 def _parse_benchmark_args(argv: list[str]) -> dict[str, Any]:
@@ -666,6 +756,12 @@ def main() -> None:
     elif command == "backfill-ps":
         start_year = int(sys.argv[2]) if len(sys.argv) > 2 else 2019
         cmd_backfill_pollenscience(start_year)
+    elif command == "backfill-weather":
+        cmd_backfill_weather(*_parse_date_args(sys.argv[2:]))
+    elif command == "backfill-ndvi":
+        cmd_backfill_ndvi(*_parse_date_args(sys.argv[2:]))
+    elif command == "run-backfill":
+        cmd_run_backfill()
     elif command == "benchmark":
         cmd_benchmark(**_parse_benchmark_args(sys.argv[2:]))
     elif command == "benchmark-onset":
