@@ -475,7 +475,8 @@ assimilated windows. Measured against the rollout benchmark, both the level and
 the slope were wrong:
 
 - **The level.** On the rows the forecast actually emits (value > 0.5), the
-  level is exactly right **34.8%** of the time. The 77% level accuracy the
+  level is exactly right **33.9%** of the time (34.8% before the history was
+  completed). The 76% level accuracy the
   benchmark reports overall is carried almost entirely by `none` predictions,
   and those are filtered out before a user sees them. The old day-1 figure of
   0.90 overstated reliability by about 2.5×.
