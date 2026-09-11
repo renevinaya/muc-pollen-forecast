@@ -112,41 +112,80 @@ are the year's load and the weather of the day, and the model has no feature
 for the former. The general benchmark hides this because onset weeks are a
 few percent of its rows and it never samples February.
 
-## Phase A — Fill the data behind the features (do first)
+## Phase A — Fill the data behind the features — **DONE**
 
-Cheapest work on the list and the only change that touches seven of the
-eight onsets in the training set. The collector already requests every one of
-these variables from the Open-Meteo ERA5 archive (rows since 2025-03-24 are
-populated by exactly that path), so this is a re-fetch, not new integration.
+Result: the history is complete (run #125, 2026-09-11), and **the general
+benchmark got worse for it**: MAE 7.3 → 7.8, level accuracy 76.9% → 75.6%,
+bias 0.0 → +1.0, on the same six folds. Three attribution arms on those folds
+say why:
 
-- [ ] **A.1 `backfill-weather` command.** Re-fetch the hourly archive for
-  2019-01-01 → present, aggregate to 3 h windows with the existing
-  `_parse_hourly_response`, and overwrite only the weather columns of existing
-  `history.csv` rows (join on `date`; never touch `value`). Do **not** re-run
-  `backfill-ps` for this — it re-downloads eight years of pollen at 5 s per
-  chunk. Include `cape_max` and `direct_radiation_sum` even though they are
-  pruned, so a future un-pruning does not need another pass.
-- [ ] **A.2 NDVI backfill 2019–2023.** MOD13Q1 exists from 2000; `fetch_ndvi`
-  defaults its start to two years back. Fetch from 2019 and rewrite `ndvi` /
-  `ndvi_delta` on the rows that currently hold `0.0`. While there, replace the
-  `0.0` fill for missing NDVI with NaN so XGBoost treats it as missing rather
-  than as "winter".
-- [ ] **A.3 Re-benchmark and re-read the gain report.** General rollout (6
-  folds) must not regress; the onset rollout from B.1 is the number that
-  matters. Then decide per family from the gain report on *complete* data:
-  keep soil only if it now earns something for Poaceae/Urtica onset (its
-  stated purpose); keep NDVI only if its gain survives having values in every
-  year (if it was an era marker, it will collapse).
-- [ ] **A.4 Coverage guard.** Add a test / retrain-time report listing, per
-  feature, the share of training rows that are NaN or a constant fill, and
-  fail the retrain when a feature in `FEATURE_COLS` is missing in more than
-  half of the rows. This is the third time a carried-but-empty column has
-  been found by hand (`days_since_active`, `cams_pollen`, now these).
+| Arm (history variant, 60 features unless noted) | MAE | Level acc. | Bias |
+|---|---|---|---|
+| before backfill (baseline) | 7.3 | 76.9% | 0.0 |
+| complete | 7.8 | 75.6% | +1.0 |
+| complete, old NDVI columns restored | 7.8 | 75.7% | +1.2 |
+| complete, old diurnal/soil columns restored (NaN before 2025-03) | **7.3** | **77.1%** | +0.2 |
+| complete, the eight diurnal/soil features dropped (52 features) | 7.8 | 75.1% | +1.2 |
+
+Restoring the NaN block recovers the baseline exactly; dropping the eight
+features on complete data changes nothing. So the eight features never
+carried the 0.5 MAE — their *absence before March 2025* did. NaN filled to 0
+made "these columns are non-zero" a flag for "2025 or later", and every fold
+lies in that era, so the model could learn a level offset for recent seasons
+that it has no honest feature for. That flag is a crude proxy for interannual
+load, which is Phase C.1; it moves to the front of the queue.
+
+The onset rollout is unchanged by the backfill (MAE 86.4 → 88.5, timing within
+3–5 days at every horizon, the same amplitude gap), as expected: the model's
+onset problem was never a data-coverage problem.
+
+What did change, and is kept:
+
+* Pre-2025 weather now comes from the same archive request the collector makes
+  every day. The old rows disagreed with it by 0.7 °C mean absolute difference
+  in temperature (corr 0.993, no time shift), i.e. they were fetched from a
+  different model years ago; 2026 rows were near-identical. Training and
+  serving now see one source.
+* NDVI is measured back to 2019 (175 composites). Spring 2026 was wrong
+  before: the routine fetch had timed out on the January–June chunk, and the
+  interpolator bridged the hole, so April 2026 read 0.16 where the composites
+  say 0.26.
+* Soil temperature and moisture are complete; dew point and the 3 h slopes and
+  variance are complete; `boundary_layer_height` is still missing for
+  January–June 2024 (the archive returns null there; 7% of rows, below the
+  guard's threshold, and 0-filled by the trainer).
+
+- [x] **A.1 `backfill-weather` / `run-backfill`.** `src/backfill.py`
+  refreshes every weather column in place, yearly archive chunks, pollen
+  never touched. The workflow's `mode: backfill` runs it against the release.
+- [x] **A.2 NDVI backfill 2019–2023.** `backfill-ndvi`; MODIS chunk fetches
+  now retry. The NaN-instead-of-0.0 half of this task is **not done**:
+  `prepare_training_data` fills every NaN with 0 before XGBoost, so the
+  history's fill value never reaches the model. Changing that is a model
+  change (A.5).
+- [x] **A.3 Re-benchmark.** Above. Decision: keep the complete history and
+  the 60 features. Soil earns ~1% of gain each and moves Poaceae/Urtica by
+  ≤0.2 MAE either way; NDVI's share rose from 3.2% to 4.2% with real values
+  and costs nothing. Neither justifies a change on its own; both are
+  re-judged once C.1 exists.
+- [x] **A.4 Coverage guard.** `check_feature_coverage` prints a per-feature
+  table at every retrain and raises when a model input is missing on more
+  than half of the rows (NaN, or 0.0 for NDVI, soil moisture, dew point and
+  boundary layer height). `run-train` restores the released models and still
+  publishes a forecast when the retrain is refused.
+- [ ] **A.5 Let XGBoost see missing values.** Replace the blanket
+  `X.fillna(0)` in `prepare_training_data` (and the matching fills in
+  `src/features.py` / `src/rollout.py`) with NaN passed through for the raw
+  weather and NDVI columns, so a gap like the 2024 boundary-layer hole is
+  "missing" rather than "zero". Benchmark on the six folds; accept if it does
+  not regress.
 
 ## Phase B — Make the season start a first-class target
 
-- [ ] **B.1 Onset rollout benchmark.** Add `benchmark --months 2026-02,2026-04`
-  (or `benchmark-onset --rollout`) so the *shipped* direct forecast is scored
+- [ ] **B.1 Onset rollout benchmark.** `benchmark --months 2026-02,2026-04`
+  exists now (Phase A needed it to reproduce the baseline folds after the
+  history grew). Still to do: the per-species-year timing, ±10-day and
+  false-start report, so the *shipped* direct forecast is scored
   over the months containing each measured onset for Corylus, Alnus and
   Betula, for every season with enough history behind it. Report per
   species-year and horizon: (a) timing error of the first predicted 3-day run
@@ -242,12 +281,12 @@ populated by exactly that path), so this is a re-fetch, not new integration.
 
 ## Suggested order
 
-A.1 → A.2 → B.1 (measure) → A.3 → C.1 → B.2 → B.3 → B.4 → B.6 → B.5 → D.1 →
-D.4 → B.7 → D.2/D.3 → E.x → D.5. A.1–A.3 first because they are a data fix
-with no modelling risk; B.1 before any B/C change so there is a baseline;
-C.1 ahead of the phenology work because the onset rollout says the loss is
-in amplitude, not timing; D.1 early because it is a five-line change that
-makes finished work visible.
+Phase A is done. Next: C.1 → B.1 → B.2 → B.3 → B.4 → B.6 → B.5 → A.5 → D.1 →
+D.4 → B.7 → D.2/D.3 → E.x → D.5. C.1 first because Phase A showed the model
+had been leaning on an accidental "recent years" flag worth 0.5 MAE, and a
+season-load feature is the honest version of it; B.1 before any B change so
+there is a baseline; D.1 early because it is a five-line change that makes
+finished work visible.
 
 ## Done so far (first task list)
 
@@ -259,6 +298,7 @@ Measured over six folds (184 origins, 80,680 predictions), same folds throughout
 | 3.1 extreme gate | 9.8 | 14.0 | +4.0 | +9.7 | −22.9% |
 | 3.5 direct forecast | 7.9 | 7.4 | +0.3 | +0.6 | +35.6% |
 | Phase 2 pruning (73 → 60 features) | 7.6 | 7.2 | −0.2 | +0.4 | +37.3% |
+| Phase A complete history (same model) | 8.2 | 7.7 | +0.9 | +1.5 | +32.5% |
 
 - Phase 1: rollout benchmark per horizon, feature-gain report, train/serve
   parity test, shared row-wise feature assembly (`src/features.py`). Fixed
@@ -270,3 +310,6 @@ Measured over six folds (184 origins, 80,680 predictions), same folds throughout
   better at every horizon.
 - 4.4: confidence calibrated from the benchmark (ECE 0.393 → 0.053), flat
   table because per-species/per-level tables overfit. Not yet published (D.1).
+- Phase A: history backfilled (weather from 2019, NDVI from 2019, soil), a
+  coverage guard at retrain, and the finding that 0.5 MAE of the previous
+  score was an accidental "recent years" flag rather than model skill.

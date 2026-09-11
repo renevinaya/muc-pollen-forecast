@@ -12,7 +12,7 @@ Usage:
     python -m src.main backfill-weather [START] [END]  # Rewrite weather columns from the archive
     python -m src.main backfill-ndvi [START]           # Rewrite NDVI columns from MODIS
     python -m src.main run-backfill # Both of the above against the data release (Actions)
-    python -m src.main benchmark    # Walk-forward rollout of the 5-day forecast
+    python -m src.main benchmark [--folds N | --months YYYY-MM,...]  # Walk-forward rollout of the 5-day forecast
     python -m src.main benchmark-onset [species...]  # Season-start accuracy only
     python -m src.main calibrate    # Regenerate the confidence table
     python -m src.main dwd          # Show DWD pollen forecast for Oberbayern
@@ -356,6 +356,7 @@ def cmd_benchmark(
     folds: int = 6,
     classic: bool = False,
     species: list[str] | None = None,
+    months: list[pd.Period] | None = None,
 ) -> None:
     """Walk-forward backtest of the real autoregressive forecast.
 
@@ -384,10 +385,13 @@ def cmd_benchmark(
     history = pd.read_csv(HISTORY_FILE, parse_dates=["date"])
     unique_days = len(set(pd.to_datetime(history["date"]).dt.date))
     print(f"History: {len(history)} rows, {unique_days} unique days")
-    print(f"Horizon: {horizon} days   Folds: {folds}\n")
+    if months:
+        print(f"Horizon: {horizon} days   Months: {', '.join(str(m) for m in months)}\n")
+    else:
+        print(f"Horizon: {horizon} days   Folds: {folds}\n")
 
     results = rollout_evaluate(
-        history, horizon_days=horizon, n_folds=folds, species=species
+        history, horizon_days=horizon, n_folds=folds, species=species, months=months
     )
     if results.empty:
         print("No rollout results.")
@@ -711,10 +715,13 @@ def cmd_run_backfill() -> None:
 
 
 def _parse_benchmark_args(argv: list[str]) -> dict[str, Any]:
-    """Parse ``benchmark [horizon] [--folds N] [--species A,B] [--classic]``.
+    """Parse ``benchmark [horizon] [--folds N] [--months 2026-02,2026-04] [--species A,B] [--classic]``.
 
     The bare positional stays the horizon in days, which is what the flag was
-    always documented to mean.
+    always documented to mean. ``--months`` names the test months explicitly
+    instead of sampling them, which is how a result is reproduced after the
+    history has grown (the sampled set shifts as months become eligible) and
+    how the season starts are scored (they never fall on a sampled month).
     """
     args: dict[str, Any] = {}
     rest = list(argv)
@@ -726,6 +733,10 @@ def _parse_benchmark_args(argv: list[str]) -> dict[str, Any]:
             args["classic"] = True
         elif flag == "--folds":
             args["folds"] = int(rest.pop(0))
+        elif flag == "--months":
+            args["months"] = [
+                pd.Period(m.strip(), "M") for m in rest.pop(0).split(",") if m.strip()
+            ]
         elif flag == "--horizon":
             args["horizon"] = int(rest.pop(0))
         elif flag == "--species":

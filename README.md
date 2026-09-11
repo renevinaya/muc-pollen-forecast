@@ -238,12 +238,15 @@ python -m src.main benchmark 5 --folds 3
 | `forecast` | Generate 5-day forecast at 3h resolution using trained models |
 | `backfill [days]` | Bulk import historical pollen, weather, and NDVI data (default: 365 days) |
 | `backfill-ps [start_year]` | Bulk import from pollenscience.eu at 3h resolution (default: 2019, 5s rate limit) |
-| `benchmark [days]` | Walk-forward **rollout** of the real autoregressive forecast, scored per forecast day (default: 5). `--folds N`, `--species A,B`, `--classic` |
+| `backfill-weather [start] [end]` | Rewrite every weather column of the existing history from the Open-Meteo archive; pollen values untouched |
+| `backfill-ndvi [start] [end]` | Rewrite the NDVI columns of the existing history from MODIS composites |
+| `run-backfill` | Both of the above against the data release (what `mode: backfill` runs in Actions) |
+| `benchmark [days]` | Walk-forward **rollout** of the real autoregressive forecast, scored per forecast day (default: 5). `--folds N` or `--months 2026-02,2026-04`, `--species A,B`, `--classic` |
 | `benchmark-onset [species...]` | Walk-forward evaluation restricted to the months around each season start (default: Corylus, Alnus, Betula) |
 | `dwd` | Display the current DWD pollen danger index for Oberbayern |
 | `phenology` | Download DWD phenology data and show flowering-onset statistics |
 | `run` | Execute collect → forecast in sequence (every 3 hours) |
-| `run-train` | Execute collect → train → forecast in sequence (monthly retraining) |
+| `run-train` | Execute collect → train → forecast in sequence (monthly retraining); a refused retrain falls back to the released models |
 
 ## Evaluation
 
@@ -280,14 +283,23 @@ origins, 80 680 scored predictions. Persistence is the same baseline throughout
 
 | Horizon | MAE | RMSE | Level acc. | Bias | Persistence MAE | Skill |
 |---------|-----|------|-----------|------|-----------------|-------|
-| day 1 | **7.6** | 49.4 | 77.2% | **−0.2** | 10.4 | **+27.2%** |
-| day 2 | **7.5** | 49.2 | 77.1% | **−0.3** | 10.9 | **+31.4%** |
-| day 3 | **7.2** | 45.5 | 77.0% | **−0.1** | 11.2 | **+35.7%** |
-| day 4 | **7.0** | 43.7 | 76.8% | **+0.1** | 11.8 | **+40.2%** |
-| day 5 | **7.2** | 43.8 | 76.7% | **+0.4** | 11.4 | **+37.3%** |
+| day 1 | **8.2** | 49.1 | 75.9% | **+0.9** | 10.4 | **+21.7%** |
+| day 2 | **8.0** | 49.2 | 75.8% | **+0.7** | 10.9 | **+26.5%** |
+| day 3 | **7.7** | 46.0 | 75.6% | **+0.9** | 11.2 | **+31.2%** |
+| day 4 | **7.5** | 44.3 | 75.5% | **+1.1** | 11.8 | **+36.0%** |
+| day 5 | **7.7** | 44.5 | 75.2% | **+1.5** | 11.4 | **+32.5%** |
 
-The model beats persistence at every horizon by 27–40%, with a bias near zero
-and no decay across the five days.
+The model beats persistence at every horizon by 22–36%, with a small positive
+bias and no decay across the five days.
+
+These numbers are measured on the **complete** history (see *Data coverage*
+below) and are worse than the 7.3 / 76.9% the same model scored before the
+history was backfilled. That earlier score was partly an artefact: eight
+weather columns were NaN before March 2025 and filled to 0, which gave the
+model a "2025 or later" flag, and all six folds lie in that era. Restoring
+the NaN block recovers 7.3 exactly; dropping the eight features on complete
+data stays at 7.8. The flag was a proxy for how heavy recent seasons are, and
+a season-load feature (TASKS.md, C.1) is the honest replacement.
 
 Three fixes got here, each measured on these same folds:
 
@@ -297,6 +309,7 @@ Three fixes got here, each measured on these same folds:
 | 3.1 stage-3 gate | 9.8 | 14.0 | +4.0 | +9.7 | −22.9% |
 | 3.5 direct forecast | 7.9 | 7.4 | +0.3 | +0.6 | +35.6% |
 | Phase 2 prune | **7.6** | **7.2** | **−0.2** | **+0.4** | **+37.3%** |
+| Phase A complete data (same model) | 8.2 | 7.7 | +0.9 | +1.5 | +32.5% |
 
 **3.1** stopped the extreme regressor being consulted about ordinary windows.
 **3.5** removed the feedback loop that let a residual bias compound into the
@@ -326,9 +339,28 @@ live here.
 ### Feature gain
 
 `train` prints the share of XGBoost gain each feature and feature family earns,
-so pruning decisions have evidence behind them. The current split is roughly:
-lag 50%, weather-derived 20%, weather 12%, calendar 10%, with NDVI, intra-day
-and phenology at 2–3% each and `cams_pollen` never split on.
+so pruning decisions have evidence behind them. On the complete history the
+split is: lag 36%, weather-derived 26%, weather 12%, calendar 10%, season 5%,
+NDVI 4%, phenology 4%, intra-day 2%. Gain share counts how often trees could
+split on a feature, not whether the split helped — Phase 2 dropped 13% of
+gain and got a better model, and Phase A's eight diurnal/soil features earn
+2.6% between them while moving the benchmark by nothing.
+
+### Data coverage
+
+`train` also prints, per model input, the share of history rows on which it
+is missing (NaN, or an exact 0.0 for NDVI, soil moisture, dew point and
+boundary-layer height, which never legitimately read zero), and **refuses to
+train** when any input is missing on more than half of the rows. The trainer
+fills NaN with 0 before XGBoost sees it, so without this check an empty
+column silently becomes a column of zeros — which is how ten of the sixty
+features spent five to seven of the eight seasons before September 2026: the
+six diurnal weather features existed from 2025-03-24, soil from 2026-06-17,
+NDVI from 2024-01-01. `run-backfill` rewrites those columns from the archives
+in place; it changes no pollen value and adds or removes no row.
+
+One known gap remains: the archive returns no `boundary_layer_height` for
+January–June 2024 (7% of rows).
 
 ## Deployment
 
@@ -343,7 +375,7 @@ for public repositories.
 |---------|-----------|---------|
 | Forecast | `17 2,5,8,11,14,17,20,23 * * *` (every 3h) | `python -m src.main run` |
 | Retrain | `43 4 1 * *` (1st of the month) | `python -m src.main run-train` |
-| Manual | `workflow_dispatch` with a `mode` input | either |
+| Manual | `workflow_dispatch` with a `mode` input | `forecast`, `train`, or `backfill` (`run-backfill`; publishes nothing) |
 
 The schedules sit at `:17` and `:43` on purpose: GitHub queues scheduled
 workflows and the top of the hour is the most congested slot. Scheduled runs
@@ -424,8 +456,8 @@ differ a lot:
 
 | Field | Meaning | Current value |
 |-------|---------|---------------|
-| `confidence` | P(the emitted level is exactly right) | ~0.35 |
-| `confidence_within_one` | P(the truth is within one level of it) | ~0.88 |
+| `confidence` | P(the emitted level is exactly right) | ~0.34 |
+| `confidence_within_one` | P(the truth is within one level of it) | ~0.87 |
 
 Both come from `src/confidence.json`, generated by
 `python -m src.main calibrate` from a rollout benchmark and committed so the

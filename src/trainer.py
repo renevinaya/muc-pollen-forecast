@@ -828,13 +828,13 @@ def _print_feature_gain(models: dict[str, TwoStageModel], top: int = 15) -> None
 # Raw history columns for which an exact 0.0 is a fill value rather than a
 # measurement: NDVI over Munich never reads 0, a 3 h mean dew point or boundary
 # layer height of exactly 0.0 does not happen, and the weather parser writes
-# 0.0 for soil when the source column is missing. Everything else in the
-# feature list (rain, sunshine, is_day, ndvi_delta on a flat day, the lags) is
-# legitimately zero often.
+# 0.0 for soil moisture when the source column is missing. Everything else in
+# the feature list is legitimately zero at times — rain, sunshine, is_day,
+# ndvi_delta on a flat day, the lags, and soil *temperature*, which the
+# backfilled archive reports as exactly 0.0 °C on a few frozen winter windows.
 ZERO_MEANS_MISSING = frozenset(
     [
         "ndvi",
-        "soil_temperature_mean",
         "soil_moisture_mean",
         "boundary_layer_height",
         "dew_point_mean",
