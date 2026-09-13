@@ -157,7 +157,12 @@ constants:
 - **Onset** is the first of three consecutive days at or above the species'
   low/moderate boundary, inside its core season window. The window requirement
   is what keeps long-range transport out — a February birch cloud over Munich
-  is not Munich's birches flowering.
+  is not Munich's birches flowering. A run whose accumulated forcing is under
+  half the median at the other years' onsets is skipped for the year's next
+  run: the trees have never flowered with half the warmth, so it is transport
+  (the 2025 birch "onset" on 4 March, six days of Italian birch then a week of
+  zeros) or a calendar artefact (hazel already running on 1 January after a
+  warm December). On the real history that moves exactly those two onsets.
 - **The GDD threshold** is the median accumulated GDD at those onsets, in the
   same units the `gdd` feature uses. The hand-set constants it replaces crossed
   15–23 days *after* the observed onset, so the burst features opened their gate
@@ -168,6 +173,16 @@ constants:
   tells the model the season is running early or late as soon as the weather
   confirms it — and because it only looks backwards, training and forecasting
   compute it identically.
+- **The forcing rule behind that crossing is chosen per species.** One rule
+  (forcing from 1 January at base 0 °C) used to project every species; it fit
+  hazel and was worse than the calendar for alder and birch, because January
+  warmth counts fully towards a tree that does not respond to it until March.
+  At calibration time the rule is now picked from a grid of start dates
+  (1 Jan – 1 Mar) and bases (0 / 3 / 5 °C) by leave-one-out over the seasons
+  before the year being projected, and switched off — climatology only — when
+  no rule beats the calendar. Current picks: hazel 1 Jan / 3 °C (3.4 d LOO),
+  alder 15 Jan / 0 °C (6.5 d), birch 1 Mar / 5 °C (6.5 d), ash and poplar
+  1 Mar / 0 °C, oak and nettle climatology. The retrain log prints them.
 
 Every estimate for year *Y* is calibrated only on seasons before *Y*, so a
 backtest never sees its own answer. `tests/test_onset.py` pins both properties
@@ -284,13 +299,13 @@ origins, 80 680 scored predictions. Persistence is the same baseline throughout
 
 | Horizon | MAE | RMSE | Level acc. | Bias | Persistence MAE | Skill |
 |---------|-----|------|-----------|------|-----------------|-------|
-| day 1 | **7.4** | 47.4 | 75.6% | **−0.2** | 10.4 | **+29.4%** |
-| day 2 | **7.3** | 47.2 | 75.4% | **−0.4** | 10.9 | **+33.4%** |
-| day 3 | **6.9** | 44.4 | 75.2% | **−0.3** | 11.2 | **+38.3%** |
-| day 4 | **6.7** | 42.6 | 75.0% | **−0.1** | 11.8 | **+42.9%** |
-| day 5 | **6.8** | 42.2 | 74.7% | **+0.1** | 11.4 | **+40.7%** |
+| day 1 | **7.3** | 47.4 | 75.6% | **−0.5** | 10.4 | **+30.3%** |
+| day 2 | **7.1** | 47.3 | 75.3% | **−0.7** | 10.9 | **+34.6%** |
+| day 3 | **6.8** | 44.5 | 75.3% | **−0.5** | 11.2 | **+39.3%** |
+| day 4 | **6.6** | 42.8 | 74.9% | **−0.4** | 11.8 | **+43.7%** |
+| day 5 | **6.7** | 42.6 | 75.0% | **−0.2** | 11.4 | **+41.4%** |
 
-The model beats persistence at every horizon by 29–43%, with a bias near
+The model beats persistence at every horizon by 30–44%, with a bias near
 zero and no decay across the five days.
 
 These numbers are measured on the **complete** history (see *Data coverage*
@@ -303,7 +318,8 @@ features on complete data stays at 7.8. The flag was a proxy for how heavy
 recent seasons are; the three season-load features are the honest
 replacement and take the model to 7.0 — better than the artefact — though
 they leave the level accuracy where it was and the season-start amplitude
-untouched (TASKS.md, B.6).
+untouched (TASKS.md, B.6). The per-species onset rules and the transport-aware
+onset detector (B.2/B.3) take it to 6.9, mostly through hazel.
 
 Three fixes got here, each measured on these same folds:
 
@@ -314,7 +330,8 @@ Three fixes got here, each measured on these same folds:
 | 3.5 direct forecast | 7.9 | 7.4 | +0.3 | +0.6 | +35.6% |
 | Phase 2 prune | **7.6** | **7.2** | **−0.2** | **+0.4** | **+37.3%** |
 | Phase A complete data (same model) | 8.2 | 7.7 | +0.9 | +1.5 | +32.5% |
-| C.1 season load | **7.4** | **6.8** | **−0.2** | **+0.1** | **+40.7%** |
+| C.1 season load | 7.4 | 6.8 | −0.2 | +0.1 | +40.7% |
+| B.2 + B.3 onset calibration | **7.3** | **6.7** | **−0.5** | **−0.2** | **+41.4%** |
 
 **3.1** stopped the extreme regressor being consulted about ordinary windows.
 **3.5** removed the feedback loop that let a residual bias compound into the
@@ -322,7 +339,7 @@ horizon. **Phase 2** cut 73 features to 60 — and the smaller model is better a
 every horizon, not merely equal, so those features were adding variance rather
 than signal.
 
-Day-5 MAE has gone 17.1 → 6.8 and day-5 bias +13.2 → +0.1.
+Day-5 MAE has gone 17.1 → 6.7 and day-5 bias +13.2 → −0.2.
 
 > **On fold counts.** An earlier version of this section reported three folds
 > (Sep, Jan, May) and concluded that the model beat persistence from day 3 on
@@ -461,8 +478,8 @@ differ a lot:
 
 | Field | Meaning | Current value |
 |-------|---------|---------------|
-| `confidence` | P(the emitted level is exactly right) | ~0.34 |
-| `confidence_within_one` | P(the truth is within one level of it) | ~0.88 |
+| `confidence` | P(the emitted level is exactly right) | ~0.35 |
+| `confidence_within_one` | P(the truth is within one level of it) | ~0.89 |
 
 Both come from `src/confidence.json`, generated by
 `python -m src.main calibrate` from a rollout benchmark and committed so the
@@ -480,7 +497,7 @@ assimilated windows. Measured against the rollout benchmark, both the level and
 the slope were wrong:
 
 - **The level.** On the rows the forecast actually emits (value > 0.5), the
-  level is exactly right **34.4%** of the time (re-measured after C.1). The 76% level accuracy the
+  level is exactly right **34.9%** of the time (re-measured after B.3). The 76% level accuracy the
   benchmark reports overall is carried almost entirely by `none` predictions,
   and those are filtered out before a user sees them. The old day-1 figure of
   0.90 overstated reliability by about 2.5×.

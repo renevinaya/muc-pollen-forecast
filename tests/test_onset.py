@@ -215,3 +215,29 @@ def test_projection_switches_off_for_a_climatology_species():
     estimates = onset_doy_by_day(history, SPECIES)
     year = estimates[pd.DatetimeIndex(estimates.index).year == 2024]
     assert year.nunique() == 1 and float(year.iloc[0]) == 40.0
+
+
+def test_a_run_with_implausibly_little_forcing_is_not_the_onset():
+    """Six days of transported birch in early March is not Munich's birches.
+
+    With a constant temperature the accumulated forcing is proportional to the
+    day of year, so an early episode at DOY 20 carries a fifth of the forcing
+    the other years flowered with. The year's next run is the onset instead.
+    """
+    history = build_history({2019: 90, 2020: 90, 2021: 90, 2022: 90}, species="Betula")
+    episode = history["date"].between("2022-01-20", "2022-01-25")
+    history.loc[episode, "value"] = float(SPECIES_THRESHOLDS["Betula"][0] * 3)
+
+    assert observed_onsets(history, "Betula") == {2019: 90, 2020: 90, 2021: 90, 2022: 90}
+
+
+def test_a_genuinely_early_year_is_kept():
+    """Early because it was warm is early: forcing at onset is still typical."""
+    history = build_history({2019: 90, 2020: 90, 2021: 90, 2022: 60}, species="Betula")
+    # DOY 60 carries two thirds of the forcing of DOY 90 — well above the cut.
+    assert observed_onsets(history, "Betula")[2022] == 60
+
+
+def test_a_year_with_only_implausible_runs_drops_out():
+    history = build_history({2019: 90, 2020: 90, 2021: 90, 2022: 20}, species="Betula")
+    assert 2022 not in observed_onsets(history, "Betula")

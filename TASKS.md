@@ -194,8 +194,8 @@ What did change, and is kept:
   The existing `benchmark-onset` scores one-window-ahead with measured lags,
   which is not the product. The numbers in the box above are the first run
   of this benchmark and are the baseline every B task is judged against.
-- [ ] **B.2 Robust onset detection for calibration.** **Tried, not adopted**
-  (implementation on branch `claude/forecast-app-review-xwisqv`). Measured on
+- [x] **B.2 Robust onset detection for calibration.** **Adopted with B.3**
+  (on its own it was a wash — see below). Measured on
   the eight seasons, none of the definitions in the task improves all three
   species: "no return to zero within 7 days" fixes the 2025 birch episode
   (4 March → 3 April) but moves the 2022 alder onset from mid-February to
@@ -219,19 +219,34 @@ What did change, and is kept:
   Corylus 2026 (61 → 53) and worse for Corylus 2024 (11 → 14) and Betula
   2026 (392 → 405). Two onsets out of sixteen calibration points move the
   medians the features are built on by a day or two, and the forecast is
-  insensitive to that. Revisit together with B.3, whose per-species rules
-  are where the calibration error is; the detector change is ready to merge
-  if it earns its keep there.
-- [ ] **B.3 Species-specific forcing rules.** Give `src/onset.py` a per-species
-  (start date, base temperature) pair instead of one global rule, chosen by
-  leave-one-out on the history at calibration time — walk-forward, so year
-  *Y* uses a rule and threshold fitted on years before *Y*. Starting points
-  from the LOO table: Corylus 1 Jan / 3 °C, Alnus 15 Jan / 3 °C, Betula
-  1 Mar / 5 °C. Add the rule to `_print_onset_calibration` so the retrain
-  log shows which rule each species is running. **A species whose projection
-  does not beat its own climatology in LOO must fall back to climatology** —
-  that is the current state for birch, and the fallback is better than what
-  ships.
+  insensitive to that. With B.3's per-species rules calibrated on the
+  corrected onsets it does earn its keep: general MAE 7.0 → 6.9 and Corylus
+  in-season MAE 23.1 → 21.4 against B.3 alone (Betula 14.9 → 15.3, within
+  noise), so it shipped together with B.3.
+- [x] **B.3 Species-specific forcing rules.** **Done.** `select_forcing_rule`
+  picks a (start date, base) pair per species from a 5 × 3 grid by
+  leave-one-out over the seasons before the year being projected, keeps the
+  old rule below four prior seasons, and switches the projection off when the
+  climatology wins. Picks on the full history: Corylus 1 Jan / 3 °C (LOO
+  3.4 d), Alnus 15 Jan / 0 °C (6.5 d), Betula 1 Mar / 5 °C (6.5 d), Fraxinus
+  and Populus 1 Mar / 0 °C, Salix 15 Feb / 0 °C, Poaceae 1 Mar / 3 °C,
+  Quercus and Urtica climatology. The retrain log prints rule and LOO error.
+
+  Same six folds and onset months, C.1 → B.3 alone → B.3 + B.2 (shipped):
+
+  | | General MAE / RMSE / level / bias | Onset MAE Alnus / Betula / Corylus | Onset level acc. |
+  |---|---|---|---|
+  | C.1 | 7.0 / 44.8 / 75.2% / −0.2 | 112.0 / 438.1 / 74.6 | 41.8% |
+  | B.3 | 7.0 / 45.0 / 75.2% / −0.3 | 110.2 / 436.3 / 73.9 | 41.9% |
+  | **B.3 + B.2** | **6.9** / 45.0 / 75.2% / −0.4 | 110.2 / 439.0 / **72.8** | **42.3%** |
+
+  Small, consistent, and in the right place: the Corylus 2024 false start
+  three weeks early is gone at every horizon, and the Alnus 2026 and Betula
+  2026 ±10-day windows improve (33.5 → 28.2, 392 → 387–396). The amplitude
+  ratios in heavy years are unchanged (B.6). The `onset_anomaly` and
+  `gdd_above_threshold` features still use the `gdd` column (1 Jan, base 5)
+  against a threshold in those units; making them read the selected rule's
+  forcing is the natural follow-up and is folded into B.4.
 - [ ] **B.4 Onset-phase features that survive B.3.** After B.3, re-read gain
   for `days_since_typical_onset`, `onset_anomaly`, `gdd_above_threshold`,
   `cold_to_warm_flip`, `consecutive_warm_hrs` per species. Expect the first
@@ -323,11 +338,12 @@ What did change, and is kept:
 
 ## Suggested order
 
-Phases A and C are done. Next: B.1 → B.2 → B.3 → B.4 → B.6 → B.5 → A.5 →
-D.1 → D.4 → B.7 → D.2/D.3 → E.x → D.5. B.1 before any B change so there is
-a baseline; B.6 (ramp amplitude) is where the onset loss actually sits now
-that C.1 has shown season load does not reach it; D.1 early because it is a
-five-line change that makes finished work visible.
+Phases A and C are done, and B.2 and B.3 with them. Next: B.1 (make the
+onset scoring a CLI report) → B.4 → B.6 → B.5 → A.5 → D.1 → D.4 → B.7 →
+D.2/D.3 → E.x → D.5. B.6 (ramp amplitude) is where the onset loss actually
+sits: timing is within days at every horizon, amplitude is off 3–10× in
+heavy years, and neither season load nor onset calibration reaches it; D.1
+early because it is a five-line change that makes finished work visible.
 
 ## Done so far (first task list)
 
@@ -341,6 +357,7 @@ Measured over six folds (184 origins, 80,680 predictions), same folds throughout
 | Phase 2 pruning (73 → 60 features) | 7.6 | 7.2 | −0.2 | +0.4 | +37.3% |
 | Phase A complete history (same model) | 8.2 | 7.7 | +0.9 | +1.5 | +32.5% |
 | C.1 season load (63 features) | 7.4 | 6.8 | −0.2 | +0.1 | +40.7% |
+| B.2 + B.3 onset calibration | 7.3 | 6.7 | −0.5 | −0.2 | +41.4% |
 
 - Phase 1: rollout benchmark per horizon, feature-gain report, train/serve
   parity test, shared row-wise feature assembly (`src/features.py`). Fixed
@@ -357,3 +374,5 @@ Measured over six folds (184 origins, 80,680 predictions), same folds throughout
   score was an accidental "recent years" flag rather than model skill.
 - C.1: three interannual season-load features; MAE 7.8 → 7.0 on complete
   data, the first model to beat the pre-backfill score honestly.
+- B.2 + B.3: transport-aware onset detection and per-species forcing rules;
+  MAE 7.0 → 6.9, onset-month MAE better for all three tree species.
