@@ -42,7 +42,9 @@ FIXTURE_CANNOT_TRIGGER = {"cold_to_warm_flip"}
 
 @pytest.fixture(scope="module")
 def history() -> pd.DataFrame:
-    return build_history(days=430, seed=5, species_list=[SPECIES])
+    # Three completed seasons: the interannual load features are 0 by design
+    # until a species has a previous season *and* a baseline before that.
+    return build_history(days=1100, seed=5, species_list=[SPECIES])
 
 
 def test_derivation_inputs_are_carried() -> None:

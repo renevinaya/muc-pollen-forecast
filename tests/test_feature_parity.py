@@ -20,6 +20,7 @@ from src.features import LagState, build_context, build_feature_row, ndvi_from_h
 from src.trainer import (
     _add_intraday_features,
     _add_lag_features,
+    _add_load_features,
     _add_ndvi_features,
     _add_phenology_features,
     _add_season_feature,
@@ -137,6 +138,7 @@ def trainer_features(
     df = _add_intraday_features(df)
     df = _add_season_feature(df, species)
     df = _add_phenology_features(df, species)
+    df = _add_load_features(df, species)
     df = _add_lag_features(df, lead=lead)
     return df.set_index("date")
 

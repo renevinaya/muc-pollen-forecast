@@ -36,6 +36,7 @@ from .types import (
     LAG_FEATURES,
     NDVI_FEATURES,
     PHENOLOGY_FEATURES,
+    LOAD_FEATURES,
     SEASON_FEATURE,
     WEATHER_DERIVED_FEATURES,
     LEAD_FEATURES,
@@ -263,6 +264,27 @@ def _add_phenology_features(
     return df
 
 
+def _add_load_features(
+    df: pd.DataFrame, species: str, totals: dict[int, float] | None = None
+) -> pd.DataFrame:
+    """Add the interannual load features (see :mod:`src.season_load`).
+
+    *totals* lets a caller supply the completed-season totals from the real
+    history when *df* is a weather-only frame; by default they come from the
+    measurements in *df* itself, which for a species frame is the history.
+    """
+    from .season_load import load_features_for_years, season_totals, season_year
+
+    df = df.copy()
+    if totals is None:
+        totals = season_totals(df, species)
+    years = season_year(species, pd.to_datetime(df["date"]))
+    per_year = load_features_for_years(totals, np.unique(years))
+    for name in LOAD_FEATURES:
+        df[name] = [per_year[int(y)][name] for y in years]
+    return df
+
+
 def _add_ndvi_features(df: pd.DataFrame) -> pd.DataFrame:
     """Add NDVI features from cached satellite data."""
     df = df.copy()
@@ -482,6 +504,7 @@ def prepare_training_data(
     species_df = _add_intraday_features(species_df)
     species_df = _add_season_feature(species_df, species)
     species_df = _add_phenology_features(species_df, species)
+    species_df = _add_load_features(species_df, species)
 
     # Everything above is independent of the lead, so it is built once and only
     # the lag block is rebuilt per lead.
@@ -746,6 +769,7 @@ FEATURE_FAMILIES: dict[str, list[str]] = {
     "weather_derived": WEATHER_DERIVED_FEATURES,
     "ndvi": NDVI_FEATURES,
     "phenology": PHENOLOGY_FEATURES,
+    "load": LOAD_FEATURES,
     "cams": CAMS_FEATURES,
     "intraday": INTRADAY_FEATURES,
     "lag": LAG_FEATURES,

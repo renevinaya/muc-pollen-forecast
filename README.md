@@ -69,7 +69,7 @@ Each species gets a **three-stage pipeline** with species-specific hyperparamete
 
 **Real-time observation assimilation**: when the pipeline runs every 3 hours, forecast windows that already have real pollen measurements use the observed values instead of model predictions. This breaks the autoregressive error cascade and grounds lag features for subsequent windows in actual data.
 
-## Features (60 total)
+## Features (63 total)
 
 | Category | Count | Features |
 |----------|-------|----------|
@@ -80,6 +80,7 @@ Each species gets a **three-stage pipeline** with species-specific hyperparamete
 | Weather-derived | 20 | GDD + species GDD threshold, 3/7-day rolling temp/sunshine/rain, temp deltas (1d/3d), cold-to-warm flip, consecutive warm hours, dry streak, temp×sunshine, dry+warm, warming trend, wind×dry+warm, wind direction sin/cos, transport south |
 | NDVI | 2 | NDVI, NDVI delta (green-up rate) |
 | Phenology | 2 | days since flowering onset (measured from history, per year — see below), onset anomaly (GDD-driven early/late signal against a walk-forward threshold) |
+| Season load | 3 | last season's total vs. the seasons before it, the last two seasons vs. the seasons before them, last season vs. the one before — all log ratios per species, 0 when unknown; constant within a season year and computed only from seasons that ended before it (`src/season_load.py`) |
 | Intra-day | 3 | temp vs. daily max (ratio), precipitation in prior window (binary), temperature rate of change |
 | Lead | 1 | `lead_windows` — 3h windows between the last measurement and this one |
 | Lag | 13 | pollen at t-1/t-2/t-3/t-8(24h)/t-16(48h)/t-24(72h)/t-56(7d), 24h + 7d rolling mean, 24h + 7d rolling max, morning average (today's earlier windows), days since active (all log-space) |
@@ -283,23 +284,26 @@ origins, 80 680 scored predictions. Persistence is the same baseline throughout
 
 | Horizon | MAE | RMSE | Level acc. | Bias | Persistence MAE | Skill |
 |---------|-----|------|-----------|------|-----------------|-------|
-| day 1 | **8.2** | 49.1 | 75.9% | **+0.9** | 10.4 | **+21.7%** |
-| day 2 | **8.0** | 49.2 | 75.8% | **+0.7** | 10.9 | **+26.5%** |
-| day 3 | **7.7** | 46.0 | 75.6% | **+0.9** | 11.2 | **+31.2%** |
-| day 4 | **7.5** | 44.3 | 75.5% | **+1.1** | 11.8 | **+36.0%** |
-| day 5 | **7.7** | 44.5 | 75.2% | **+1.5** | 11.4 | **+32.5%** |
+| day 1 | **7.4** | 47.4 | 75.6% | **−0.2** | 10.4 | **+29.4%** |
+| day 2 | **7.3** | 47.2 | 75.4% | **−0.4** | 10.9 | **+33.4%** |
+| day 3 | **6.9** | 44.4 | 75.2% | **−0.3** | 11.2 | **+38.3%** |
+| day 4 | **6.7** | 42.6 | 75.0% | **−0.1** | 11.8 | **+42.9%** |
+| day 5 | **6.8** | 42.2 | 74.7% | **+0.1** | 11.4 | **+40.7%** |
 
-The model beats persistence at every horizon by 22–36%, with a small positive
-bias and no decay across the five days.
+The model beats persistence at every horizon by 29–43%, with a bias near
+zero and no decay across the five days.
 
 These numbers are measured on the **complete** history (see *Data coverage*
-below) and are worse than the 7.3 / 76.9% the same model scored before the
-history was backfilled. That earlier score was partly an artefact: eight
-weather columns were NaN before March 2025 and filled to 0, which gave the
-model a "2025 or later" flag, and all six folds lie in that era. Restoring
-the NaN block recovers 7.3 exactly; dropping the eight features on complete
-data stays at 7.8. The flag was a proxy for how heavy recent seasons are, and
-a season-load feature (TASKS.md, C.1) is the honest replacement.
+below). Before the backfill the model scored 7.3 / 76.9%; on the complete
+history the same model scored 7.8 / 75.6%. That earlier score was partly an
+artefact: eight weather columns were NaN before March 2025 and filled to 0,
+which gave the model a "2025 or later" flag, and all six folds lie in that
+era. Restoring the NaN block recovers 7.3 exactly; dropping the eight
+features on complete data stays at 7.8. The flag was a proxy for how heavy
+recent seasons are; the three season-load features are the honest
+replacement and take the model to 7.0 — better than the artefact — though
+they leave the level accuracy where it was and the season-start amplitude
+untouched (TASKS.md, B.6).
 
 Three fixes got here, each measured on these same folds:
 
@@ -310,6 +314,7 @@ Three fixes got here, each measured on these same folds:
 | 3.5 direct forecast | 7.9 | 7.4 | +0.3 | +0.6 | +35.6% |
 | Phase 2 prune | **7.6** | **7.2** | **−0.2** | **+0.4** | **+37.3%** |
 | Phase A complete data (same model) | 8.2 | 7.7 | +0.9 | +1.5 | +32.5% |
+| C.1 season load | **7.4** | **6.8** | **−0.2** | **+0.1** | **+40.7%** |
 
 **3.1** stopped the extreme regressor being consulted about ordinary windows.
 **3.5** removed the feedback loop that let a residual bias compound into the
@@ -317,7 +322,7 @@ horizon. **Phase 2** cut 73 features to 60 — and the smaller model is better a
 every horizon, not merely equal, so those features were adding variance rather
 than signal.
 
-Day-5 MAE has gone 17.1 → 7.2 and day-5 bias +13.2 → +0.4.
+Day-5 MAE has gone 17.1 → 6.8 and day-5 bias +13.2 → +0.1.
 
 > **On fold counts.** An earlier version of this section reported three folds
 > (Sep, Jan, May) and concluded that the model beat persistence from day 3 on
@@ -340,8 +345,8 @@ live here.
 
 `train` prints the share of XGBoost gain each feature and feature family earns,
 so pruning decisions have evidence behind them. On the complete history the
-split is: lag 36%, weather-derived 26%, weather 12%, calendar 10%, season 5%,
-NDVI 4%, phenology 4%, intra-day 2%. Gain share counts how often trees could
+split is: lag 36%, weather-derived 24%, weather 12%, calendar 10%, season 5%,
+season load 4%, NDVI 4%, phenology 4%, intra-day 2%. Gain share counts how often trees could
 split on a feature, not whether the split helped — Phase 2 dropped 13% of
 gain and got a better model, and Phase A's eight diurnal/soil features earn
 2.6% between them while moving the benchmark by nothing.
@@ -457,7 +462,7 @@ differ a lot:
 | Field | Meaning | Current value |
 |-------|---------|---------------|
 | `confidence` | P(the emitted level is exactly right) | ~0.34 |
-| `confidence_within_one` | P(the truth is within one level of it) | ~0.87 |
+| `confidence_within_one` | P(the truth is within one level of it) | ~0.88 |
 
 Both come from `src/confidence.json`, generated by
 `python -m src.main calibrate` from a rollout benchmark and committed so the
@@ -475,8 +480,7 @@ assimilated windows. Measured against the rollout benchmark, both the level and
 the slope were wrong:
 
 - **The level.** On the rows the forecast actually emits (value > 0.5), the
-  level is exactly right **33.9%** of the time (34.8% before the history was
-  completed). The 76% level accuracy the
+  level is exactly right **34.4%** of the time (re-measured after C.1). The 76% level accuracy the
   benchmark reports overall is carried almost entirely by `none` predictions,
   and those are filtered out before a user sees them. The old day-1 figure of
   0.90 overstated reliability by about 2.5×.

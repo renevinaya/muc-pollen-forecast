@@ -35,8 +35,10 @@ from .types import (
     WEATHER_DERIVED_FEATURES,
     NDVI_FEATURES,
     INTRADAY_FEATURES,
+    LOAD_FEATURES,
     is_season_active,
 )
+from .season_load import load_features_for_years, season_totals, season_year
 from .onset import (
     gdd_threshold_by_year,
     gdd_threshold_for_year,
@@ -178,6 +180,8 @@ class FeatureContext:
     onset_by_species: dict[str, pd.Series]
     gdd_thresholds: dict[str, dict[int, float]]
     onset_fallback: dict[str, float]
+    # Completed-season totals per species, for the interannual load features.
+    season_totals: dict[str, dict[int, float]] = field(default_factory=dict)
 
 
 def combined_weather(history: pd.DataFrame, weather: pd.DataFrame) -> pd.DataFrame:
@@ -254,6 +258,7 @@ def build_context(
     onset_by_species = {sp: onset_doy_by_day(history, sp) for sp in species_list}
     gdd_thresholds = {sp: gdd_threshold_by_year(history, sp) for sp in species_list}
     onset_fallback = {sp: _static_onset_doy(sp) for sp in species_list}
+    totals = {sp: season_totals(history, sp) for sp in species_list}
 
     def derive(sp: str) -> tuple[str, pd.DataFrame]:
         frame = _add_weather_derived_features(
@@ -279,6 +284,7 @@ def build_context(
         onset_by_species=onset_by_species,
         gdd_thresholds=gdd_thresholds,
         onset_fallback=onset_fallback,
+        season_totals=totals,
     )
 
 
@@ -343,6 +349,11 @@ def static_features(ctx: FeatureContext, species: str, dt: pd.Timestamp) -> dict
     else:
         features["days_since_typical_onset"] = 0.0
         features["onset_anomaly"] = 0.0
+
+    # Interannual load: which kind of year this is, from the seasons before it.
+    year = int(season_year(species, pd.DatetimeIndex([dt]))[0])
+    load = load_features_for_years(ctx.season_totals.get(species, {}), [year])[year]
+    features.update({name: float(load[name]) for name in LOAD_FEATURES})
 
     features["cams_pollen"] = cams_value(ctx.cams, dt, species)
     features.update(_row_from(ctx.intraday, dt, INTRADAY_FEATURES))

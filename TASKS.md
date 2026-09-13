@@ -242,15 +242,39 @@ What did change, and is kept:
   themselves are **not** supported by the data at eight seasons; revisit
   when there are twelve.
 
-## Phase C — Season load (was 5.1)
+## Phase C — Season load (was 5.1) — **DONE**
 
-- [ ] **C.1 Prior-season features.** Per species: last season's total, the
-  two-season mean, and last season's total as a ratio of the multi-year
-  mean. Computed at the season boundary so they are constant within a season
-  and causal. Alternation is measurable (Betula lag-1 corr −0.41, Alnus
-  +0.54), and the onset-week amplitude — 20 to 811 for birch — is the largest
-  unexplained variance in the onset window. Accept on B.1 ±10-day MAE and on
-  the general benchmark's Betula/Alnus/Corylus rows.
+- [x] **C.1 Prior-season features.** `src/season_load.py`: three features
+  per species, all log ratios against the species' own history so that 0 is
+  "average or unknown" — last season vs. the seasons before it, the last two
+  seasons vs. the seasons before them, last season vs. the one before.
+  Constant within a season year (boundary = the month after the shoulder
+  month), read only from seasons that ended before the row, same two
+  functions in the trainer and the forecaster context. 63 features.
+
+  Same six folds, complete history:
+
+  | | MAE | RMSE | Level acc. | Bias | Skill d1 / d5 |
+  |---|---|---|---|---|---|
+  | before backfill (60, era flag) | 7.3 | 46.4 | 76.9% | 0.0 | +27% / +37% |
+  | complete history (60) | 7.8 | 46.7 | 75.6% | +1.0 | +22% / +33% |
+  | **+ season load (63)** | **7.0** | **44.8** | 75.2% | **−0.2** | **+29% / +41%** |
+
+  Better than both the honest baseline and the artefact it replaced, on MAE,
+  RMSE, bias and skill; level accuracy is flat. Per species, the gain is in
+  the mid-season: Fraxinus day-1 MAE 42.5 → 23.0, Quercus 34.9 → 26.6,
+  Populus 65.5 → 54.4; Betula, Corylus and Poaceae move by less than 1.5.
+  The family earns 4.3% of gain, `load_trend` most (2.0%).
+
+  **What it did not do: fix the onset ramp.** The onset rollout is unchanged
+  (MAE 88.5 → 89.9, timing within 2–5 days at every horizon, the same
+  amplitude ratios of 0.1–0.3 in heavy years), and Alnus 2026 is now
+  *over*-predicted 3.4× in its first five days. That is what alternation
+  looks like at eight seasons: 2025 was the lightest birch year on record and
+  2026 the heaviest, so "last season" pointed the wrong way, and Alnus had
+  three heavy years in a row before a moderate start. The premise that
+  season load was the largest missing signal for *onset amplitude* was
+  wrong; it is a mid-season signal. The ramp is B.6.
 
 ## Phase D — Honesty of the output
 
@@ -281,12 +305,11 @@ What did change, and is kept:
 
 ## Suggested order
 
-Phase A is done. Next: C.1 → B.1 → B.2 → B.3 → B.4 → B.6 → B.5 → A.5 → D.1 →
-D.4 → B.7 → D.2/D.3 → E.x → D.5. C.1 first because Phase A showed the model
-had been leaning on an accidental "recent years" flag worth 0.5 MAE, and a
-season-load feature is the honest version of it; B.1 before any B change so
-there is a baseline; D.1 early because it is a five-line change that makes
-finished work visible.
+Phases A and C are done. Next: B.1 → B.2 → B.3 → B.4 → B.6 → B.5 → A.5 →
+D.1 → D.4 → B.7 → D.2/D.3 → E.x → D.5. B.1 before any B change so there is
+a baseline; B.6 (ramp amplitude) is where the onset loss actually sits now
+that C.1 has shown season load does not reach it; D.1 early because it is a
+five-line change that makes finished work visible.
 
 ## Done so far (first task list)
 
@@ -299,6 +322,7 @@ Measured over six folds (184 origins, 80,680 predictions), same folds throughout
 | 3.5 direct forecast | 7.9 | 7.4 | +0.3 | +0.6 | +35.6% |
 | Phase 2 pruning (73 → 60 features) | 7.6 | 7.2 | −0.2 | +0.4 | +37.3% |
 | Phase A complete history (same model) | 8.2 | 7.7 | +0.9 | +1.5 | +32.5% |
+| C.1 season load (63 features) | 7.4 | 6.8 | −0.2 | +0.1 | +40.7% |
 
 - Phase 1: rollout benchmark per horizon, feature-gain report, train/serve
   parity test, shared row-wise feature assembly (`src/features.py`). Fixed
@@ -313,3 +337,5 @@ Measured over six folds (184 origins, 80,680 predictions), same folds throughout
 - Phase A: history backfilled (weather from 2019, NDVI from 2019, soil), a
   coverage guard at retrain, and the finding that 0.5 MAE of the previous
   score was an accidental "recent years" flag rather than model skill.
+- C.1: three interannual season-load features; MAE 7.8 → 7.0 on complete
+  data, the first model to beat the pre-backfill score honestly.

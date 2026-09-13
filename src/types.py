@@ -151,6 +151,15 @@ PHENOLOGY_FEATURES = [
     "onset_anomaly",             # thermal readiness vs species GDD threshold (early/late year)
 ]
 
+# Interannual season load (src/season_load.py): how heavy the previous
+# seasons were, as log ratios against the species' own history, so 0 is
+# "average or unknown". The only features that cross a season boundary.
+LOAD_FEATURES = [
+    "load_prev_anom",   # last season vs the seasons before it
+    "load_2y_anom",     # last two seasons vs the seasons before them
+    "load_trend",       # last season vs the one before (alternation)
+]
+
 # CAMS features (optional — from the Copernicus European pollen forecast).
 # When the CAMS integration is not activated (no ADS key / deps), this column
 # is simply 0 everywhere and the model ignores it. See src/cams.py.
@@ -188,6 +197,7 @@ FEATURE_COLS = (
     + WEATHER_DERIVED_FEATURES
     + NDVI_FEATURES
     + PHENOLOGY_FEATURES
+    + LOAD_FEATURES
     + CAMS_FEATURES
     + INTRADAY_FEATURES
     + LAG_FEATURES
