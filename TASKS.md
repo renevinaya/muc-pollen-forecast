@@ -194,16 +194,34 @@ What did change, and is kept:
   The existing `benchmark-onset` scores one-window-ahead with measured lags,
   which is not the product. The numbers in the box above are the first run
   of this benchmark and are the baseline every B task is judged against.
-- [ ] **B.2 Robust onset detection for calibration.** `observed_onsets` is
-  only ever applied to completed past seasons, so it does not need to be
-  causal. Replace "first 3-day run ≥ low" with a definition that ignores a
-  transport episode: either require the run to be followed by no return to
-  zero within the next 7 days, or use "first day at which 5% of the season's
-  total has accumulated". Under the 5% definition birch climatology alone is
-  5.2 d LOO and the 2025 outlier moves from 4 March to 10 March — still an
-  outlier, still a transport season, so B.5 matters too. Accept when the
-  per-species LOO table above improves for all three species and the
-  calibrated thresholds stop moving by >10% when a single year is dropped.
+- [ ] **B.2 Robust onset detection for calibration.** **Tried, not adopted**
+  (implementation on branch `claude/forecast-app-review-xwisqv`). Measured on
+  the eight seasons, none of the definitions in the task improves all three
+  species: "no return to zero within 7 days" fixes the 2025 birch episode
+  (4 March → 3 April) but moves the 2022 alder onset from mid-February to
+  April, because a light alder year *is* gappy; the 2.5% / 5%-of-season-sum
+  rules do not catch the 2025 episode at all, because it was 4.6% of a tiny
+  season, and they cost hazel 2 days of LOO accuracy. What actually marks a
+  transported episode is thermal implausibility, so the branch rejects a
+  run whose accumulated forcing is under half the median at the other years'
+  onsets and takes the year's next run. That moves exactly two onsets —
+  Betula 2025 (63 → 93) and Corylus 2023 (1 → 11, a calendar-reset artefact
+  after a warm December) — and improves the LOO table for both species
+  (Betula projection 18.9 → 14.8 d, climatology 9.0 → 5.2 d; Corylus 4.2 →
+  4.0 d) with Alnus untouched. Betula's base-5 threshold still moves 22%
+  when one year is dropped: that is the accumulation rule (B.3), not the
+  detector.
+
+  **But the model does not care.** Same six folds: MAE 7.0 / RMSE 44.8 /
+  level 75.2% / bias −0.2 before and after, to the decimal; Corylus in-season
+  MAE 23.0 → 22.3 and Betula day-5 18.4 → 20.0. The onset rollout: Betula
+  438 → 443, Corylus 74.6 → 74.0, Alnus identical; ±10-day windows better for
+  Corylus 2026 (61 → 53) and worse for Corylus 2024 (11 → 14) and Betula
+  2026 (392 → 405). Two onsets out of sixteen calibration points move the
+  medians the features are built on by a day or two, and the forecast is
+  insensitive to that. Revisit together with B.3, whose per-species rules
+  are where the calibration error is; the detector change is ready to merge
+  if it earns its keep there.
 - [ ] **B.3 Species-specific forcing rules.** Give `src/onset.py` a per-species
   (start date, base temperature) pair instead of one global rule, chosen by
   leave-one-out on the history at calibration time — walk-forward, so year

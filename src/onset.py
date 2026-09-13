@@ -119,14 +119,19 @@ def _daily_pollen(history: pd.DataFrame, species: str) -> pd.Series:
     return sp.groupby(days)["value"].mean().sort_index()
 
 
-def observed_onsets(history: pd.DataFrame, species: str) -> dict[int, int]:
-    """Measured season start per year: ``{year: day_of_year}``.
+# A candidate onset whose accumulated forcing is below this fraction of the
+# median forcing at the other years' onsets is not the local trees flowering:
+# they have never flowered with half the warmth. It is transported pollen (the
+# 2025 birch "onset" on 4 March, six days of Italian birch followed by a week
+# of zeros, 24-30 days off in every projection tried) or a calendar-reset
+# artefact (hazel already running on 1 January after a warm December). The
+# next run in that year is taken instead.
+ONSET_MIN_FORCING_FRACTION = 0.5
 
-    A year qualifies when the species reaches its low/moderate boundary on
-    ``ONSET_RUN_DAYS`` consecutive days inside its core season window. The
-    window requirement is what keeps long-range transport out — a February
-    birch cloud over Munich is not Munich's birches flowering.
-    """
+
+def _candidate_runs(history: pd.DataFrame, species: str) -> dict[int, list[int]]:
+    """Start day-of-year of every ``ONSET_RUN_DAYS`` run at or above the low
+    threshold inside the core season, per year, each run counted once."""
     daily = _daily_pollen(history, species)
     if daily.empty:
         return {}
@@ -139,16 +144,71 @@ def observed_onsets(history: pd.DataFrame, species: str) -> dict[int, int]:
     )
     frame = frame[[is_season_active(species, m) for m in frame["month"]]]
 
-    onsets: dict[int, int] = {}
+    runs: dict[int, list[int]] = {}
     for year, grp in frame.groupby("year"):
         grp = grp.sort_values("doy")
         above = (grp["value"] >= threshold).to_numpy()
         doys = grp["doy"].to_numpy()
-        for i in range(len(above) - ONSET_RUN_DAYS + 1):
+        starts: list[int] = []
+        i = 0
+        while i <= len(above) - ONSET_RUN_DAYS:
             if above[i : i + ONSET_RUN_DAYS].all():
-                onsets[int(year)] = int(doys[i])
-                break
-    return onsets
+                starts.append(int(doys[i]))
+                i += ONSET_RUN_DAYS
+                while i < len(above) and above[i]:
+                    i += 1
+            else:
+                i += 1
+        runs[int(year)] = starts
+    return runs
+
+
+def observed_onsets(history: pd.DataFrame, species: str) -> dict[int, int]:
+    """Measured season start per year: ``{year: day_of_year}``.
+
+    A year's onset is its first run of ``ONSET_RUN_DAYS`` consecutive days at
+    or above the low/moderate boundary inside the core season window — a run
+    rather than a single day so that one transported cloud does not open the
+    season, and the window requirement is what keeps a February birch cloud
+    over Munich from counting as Munich's birches.
+
+    A run is skipped when the forcing accumulated by then (from 1 January at
+    :data:`ONSET_GDD_BASE`) is under :data:`ONSET_MIN_FORCING_FRACTION` of the
+    median at the other years' onsets, and the year's next run is used; a year
+    with no later run drops out. Only used on completed seasons, and the
+    comparison is against whatever other years the caller's history holds, so
+    a walk-forward caller only ever compares against the past.
+    """
+    runs = _candidate_runs(history, species)
+    chosen = {year: starts[0] for year, starts in runs.items() if starts}
+    if len(chosen) < 3:
+        return chosen
+
+    gdd = cumulative_gdd(daily_temperature(history), ONSET_GDD_BASE)
+
+    def forcing_at(year: int, doy: int) -> float:
+        day = pd.Timestamp(year=year, month=1, day=1) + pd.Timedelta(days=doy - 1)
+        return float(gdd.loc[day]) if day in gdd.index else float("nan")
+
+    # Rejecting one run can move the median; a few passes settle it.
+    for _ in range(3):
+        changed = False
+        for year in sorted(chosen):
+            others = [forcing_at(y, d) for y, d in chosen.items() if y != year]
+            others = [v for v in others if v == v]
+            if len(others) < 2:
+                continue
+            mine = forcing_at(year, chosen[year])
+            if mine == mine and mine < ONSET_MIN_FORCING_FRACTION * float(np.median(others)):
+                later = [d for d in runs[year] if d > chosen[year]]
+                if later:
+                    chosen[year] = later[0]
+                else:
+                    del chosen[year]
+                changed = True
+        if not changed:
+            break
+    return chosen
 
 
 def _gdd_at_onsets(history: pd.DataFrame, species: str, base: float) -> dict[int, float]:
