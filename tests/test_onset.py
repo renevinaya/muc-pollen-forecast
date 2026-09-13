@@ -174,3 +174,44 @@ def test_trainer_and_forecaster_resolve_the_same_onset():
         if row["days_since_typical_onset"] <= -60:
             continue
         assert trainer_onset == pytest.approx(forecaster_onset)
+
+
+def test_rule_selection_needs_enough_seasons_to_choose_on():
+    """Three prior seasons is a coin toss: keep the rule that always ran."""
+    from src.onset import DEFAULT_FORCING_RULE, select_forcing_rule
+
+    history = build_history({2019: 40, 2020: 42, 2021: 44, 2022: 46})
+    rule, threshold, _ = select_forcing_rule(history, SPECIES, before_year=2022)
+    assert rule == DEFAULT_FORCING_RULE
+    assert threshold is not None
+
+
+def test_rule_selection_falls_back_to_climatology_when_nothing_beats_it():
+    """Constant temperature makes every rule a calendar in disguise, except
+    the calendar is exact and the rules round to a day — so nothing beats it."""
+    from src.onset import select_forcing_rule
+
+    history = build_history({2019: 40, 2020: 40, 2021: 40, 2022: 40, 2023: 40, 2024: 40})
+    rule, threshold, loo = select_forcing_rule(history, SPECIES, before_year=2024)
+    assert rule is None and threshold is None
+    assert loo == 0.0
+
+
+def test_rule_selection_is_walk_forward():
+    """Year Y's rule and threshold must not move when year Y's onset moves."""
+    from src.onset import select_forcing_rule
+
+    base = {2019: 40, 2020: 45, 2021: 38, 2022: 47, 2023: 41, 2024: 44}
+    shifted = {**base, 2024: 120}
+    before = select_forcing_rule(build_history(base), SPECIES, before_year=2024)
+    after = select_forcing_rule(build_history(shifted), SPECIES, before_year=2024)
+    assert before[0] == after[0]
+    assert before[1] == after[1]
+
+
+def test_projection_switches_off_for_a_climatology_species():
+    """With the calendar winning, the per-day estimate is flat all year."""
+    history = build_history({2019: 40, 2020: 40, 2021: 40, 2022: 40, 2023: 40, 2024: 40})
+    estimates = onset_doy_by_day(history, SPECIES)
+    year = estimates[pd.DatetimeIndex(estimates.index).year == 2024]
+    assert year.nunique() == 1 and float(year.iloc[0]) == 40.0

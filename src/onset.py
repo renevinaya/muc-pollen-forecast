@@ -62,6 +62,27 @@ ONSET_RUN_DAYS = 3
 # usable prior seasons we keep the static constants.
 MIN_CALIBRATION_YEARS = 2
 
+# --- Forcing rules for the onset projection ---------------------------------
+#
+# One rule — forcing from 1 January at base 0 °C — used to project every
+# species' onset. It was chosen because it fit hazel (4.6 d leave-one-out),
+# and it does not fit the others: for alder it is no better than the calendar
+# (12.8 d vs 11.6 d climatology) and for birch it is twice as bad (20.8 d vs
+# 9.0 d), because January warmth counts fully towards a tree that does not
+# respond to it until March. So the rule is now chosen per species, at
+# calibration time, by leave-one-out over the seasons before the year being
+# projected: the (start date, base) pair with the smallest LOO error wins, and
+# if none beats the climatology, the climatology is used on its own.
+
+FORCING_STARTS: tuple[tuple[int, int], ...] = ((1, 1), (1, 15), (2, 1), (2, 15), (3, 1))
+FORCING_BASES: tuple[float, ...] = (0.0, 3.0, 5.0)
+ForcingRule = tuple[tuple[int, int], float]
+
+# What ran before there was a choice, and what still runs when there are too
+# few seasons to choose on: leave-one-out over three seasons is a coin toss.
+DEFAULT_FORCING_RULE: ForcingRule = ((1, 1), ONSET_GDD_BASE)
+MIN_RULE_SELECTION_YEARS = 4
+
 
 def _fingerprint(history: pd.DataFrame) -> tuple:
     """Cheap identity for the cache below.
@@ -216,14 +237,124 @@ def _static_onset_doy(species: str) -> float:
     )
 
 
+def forcing_series(daily_temp: pd.Series, rule: ForcingRule) -> pd.Series:
+    """Forcing accumulated per year from the rule's start date at its base.
+
+    Zero before the start date within each year, so a crossing can never be
+    found before the rule says accumulation begins.
+    """
+    (month, day), base = rule
+    idx = pd.DatetimeIndex(daily_temp.index)
+    contrib = (daily_temp - base).clip(lower=0)
+    started = (idx.month > month) | ((idx.month == month) & (idx.day >= day))
+    contrib = contrib.where(started, 0.0)
+    return contrib.groupby(idx.year).cumsum()
+
+
+def _crossing_doy(year_forcing: pd.Series, threshold: float) -> float | None:
+    crossed = (year_forcing >= threshold).to_numpy()
+    if not crossed.any():
+        return None
+    return float(pd.Timestamp(year_forcing.index[int(np.argmax(crossed))]).dayofyear)
+
+
+def _forcing_at(forcing: pd.Series, onsets: dict[int, int]) -> dict[int, float]:
+    out: dict[int, float] = {}
+    for year, doy in onsets.items():
+        day = pd.Timestamp(year=year, month=1, day=1) + pd.Timedelta(days=doy - 1)
+        if day in forcing.index:
+            out[year] = float(forcing.loc[day])
+    return out
+
+
+def _rule_loo_error(forcing: pd.Series, onsets: dict[int, int]) -> float:
+    """Mean absolute leave-one-out projection error of one rule, in days.
+
+    Each year is projected from the median forcing-at-onset of the *other*
+    years; a year the rule never crosses counts as a full-season miss.
+    """
+    at = _forcing_at(forcing, onsets)
+    years = pd.DatetimeIndex(forcing.index).year
+    errors: list[float] = []
+    for year, doy in onsets.items():
+        others = [v for y, v in at.items() if y != year]
+        if len(others) < 2:
+            continue
+        crossing = _crossing_doy(forcing[years == year], float(np.median(others)))
+        errors.append(abs(crossing - doy) if crossing is not None else 120.0)
+    return float(np.mean(errors)) if errors else float("inf")
+
+
+def _climatology_loo_error(onsets: dict[int, int]) -> float:
+    errors = [
+        abs(float(np.median([v for y, v in onsets.items() if y != year])) - doy)
+        for year, doy in onsets.items()
+        if len(onsets) > 1
+    ]
+    return float(np.mean(errors)) if errors else float("inf")
+
+
+def select_forcing_rule(
+    history: pd.DataFrame, species: str, before_year: int | None = None
+) -> tuple[ForcingRule | None, float | None, float]:
+    """The projection rule for *species*, calibrated on seasons before *before_year*.
+
+    Returns ``(rule, threshold, loo_error)``. ``rule`` is None when the
+    climatology beats every rule on leave-one-out — the projection is then
+    switched off for that species and year. With fewer than
+    :data:`MIN_RULE_SELECTION_YEARS` prior seasons the default rule is used,
+    exactly as before there was a choice; with fewer than
+    :data:`MIN_CALIBRATION_YEARS` there is no threshold either.
+    """
+    onsets = {
+        y: d for y, d in observed_onsets(history, species).items()
+        if before_year is None or y < before_year
+    }
+    daily_temp = daily_temperature(history)
+    if daily_temp.empty or len(onsets) < MIN_CALIBRATION_YEARS:
+        return DEFAULT_FORCING_RULE, None, float("inf")
+
+    if len(onsets) < MIN_RULE_SELECTION_YEARS:
+        forcing = forcing_series(daily_temp, DEFAULT_FORCING_RULE)
+        at = _forcing_at(forcing, onsets)
+        threshold = float(np.median(list(at.values()))) if len(at) >= MIN_CALIBRATION_YEARS else None
+        return DEFAULT_FORCING_RULE, threshold, _rule_loo_error(forcing, onsets)
+
+    best_rule: ForcingRule | None = None
+    best_error = _climatology_loo_error(onsets)
+    best_forcing: pd.Series | None = None
+    for start in FORCING_STARTS:
+        for base in FORCING_BASES:
+            rule: ForcingRule = (start, base)
+            forcing = forcing_series(daily_temp, rule)
+            error = _rule_loo_error(forcing, onsets)
+            if error < best_error:
+                best_rule, best_error, best_forcing = rule, error, forcing
+
+    if best_rule is None or best_forcing is None:
+        return None, None, best_error
+    threshold = float(np.median(list(_forcing_at(best_forcing, onsets).values())))
+    return best_rule, threshold, best_error
+
+
+def describe_forcing_rule(rule: ForcingRule | None) -> str:
+    if rule is None:
+        return "climatology"
+    (month, day), base = rule
+    return f"from {month:02d}-{day:02d} base {base:g}"
+
+
 def onset_doy_by_day(history: pd.DataFrame, species: str) -> pd.Series:
     """Causal onset estimate for every day in *history*, indexed by day.
 
     For each day the answer is the best estimate available *on that day*:
 
-      * prior-year climatology, until this year's GDD reaches the threshold
-        calibrated on prior years;
-      * the actual crossing day-of-year from then on.
+      * prior-year climatology, until this year's forcing — accumulated under
+        the rule chosen for this species on the seasons before this year —
+        reaches the threshold calibrated on those same seasons;
+      * the actual crossing day-of-year from then on;
+      * the climatology throughout, for a species-year whose rule selection
+        found nothing better than the calendar.
 
     The switch is what carries the new information — it tells the model the
     season is running early or late as soon as the warmth confirms it, and it
@@ -233,11 +364,8 @@ def onset_doy_by_day(history: pd.DataFrame, species: str) -> pd.Series:
     if daily_temp.empty:
         return pd.Series(dtype=float)
 
-    gdd_onset = cumulative_gdd(daily_temp, ONSET_GDD_BASE)
-    onsets_at_base = _gdd_at_onsets(history, species, ONSET_GDD_BASE)
     onsets = {y: float(d) for y, d in observed_onsets(history, species).items()}
-
-    idx = pd.DatetimeIndex(gdd_onset.index)
+    idx = pd.DatetimeIndex(daily_temp.index)
     estimate = pd.Series(np.nan, index=idx, dtype=float)
 
     for year in sorted(set(idx.year)):
@@ -245,15 +373,14 @@ def onset_doy_by_day(history: pd.DataFrame, species: str) -> pd.Series:
         climatology = _median_before(onsets, year)
         if climatology is None:
             climatology = _static_onset_doy(species)
-
-        threshold = _median_before(onsets_at_base, year)
         year_est = np.full(int(mask.sum()), climatology, dtype=float)
 
-        if threshold is not None:
-            year_gdd = gdd_onset[mask]
-            crossed = (year_gdd >= threshold).to_numpy()
+        rule, threshold, _ = select_forcing_rule(history, species, before_year=year)
+        if rule is not None and threshold is not None:
+            year_forcing = forcing_series(daily_temp, rule)[mask]
+            crossed = (year_forcing >= threshold).to_numpy()
             if crossed.any():
-                crossing_day = pd.Timestamp(year_gdd.index[int(np.argmax(crossed))])
+                crossing_day = pd.Timestamp(year_forcing.index[int(np.argmax(crossed))])
                 # Only from the crossing onwards — before it, we did not know.
                 year_est[crossed] = float(crossing_day.dayofyear)
 

@@ -748,15 +748,21 @@ def _print_onset_calibration(history: pd.DataFrame) -> None:
     Both numbers drift as seasons accumulate, and both silently change what the
     phenology features mean, so the retrain log is the right place to see them.
     """
+    from .onset import describe_forcing_rule, select_forcing_rule
+
     print("\n  Onset calibration (measured from history):")
-    print(f"    {'Species':<12} {'onset DOY':>10} {'seasons':>8} {'GDD thr':>9}")
-    print(f"    {'-'*12} {'-'*10} {'-'*8} {'-'*9}")
+    print(f"    {'Species':<12} {'onset DOY':>10} {'seasons':>8} {'GDD thr':>9}"
+          f"   {'projection rule':<22} {'LOO':>6}")
+    print(f"    {'-'*12} {'-'*10} {'-'*8} {'-'*9}   {'-'*22} {'-'*6}")
     for species in ALL_SPECIES:
         seasons = len(observed_onsets(history, species))
         onset = typical_onset_doy(species, history)
         threshold = calibrated_gdd_threshold(history, species)
+        rule, _, loo = select_forcing_rule(history, species)
+        loo_text = f"{loo:5.1f}d" if loo != float("inf") else "     -"
         measured = "" if seasons else "  (baseline)"
-        print(f"    {species:<12} {onset:>10.0f} {seasons:>8} {threshold:>9.1f}{measured}")
+        print(f"    {species:<12} {onset:>10.0f} {seasons:>8} {threshold:>9.1f}"
+              f"   {describe_forcing_rule(rule):<22} {loo_text}{measured}")
     print()
 
 
