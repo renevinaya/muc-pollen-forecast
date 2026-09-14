@@ -13,7 +13,7 @@ Usage:
     python -m src.main backfill-ndvi [START]           # Rewrite NDVI columns from MODIS
     python -m src.main run-backfill # Both of the above against the data release (Actions)
     python -m src.main benchmark [--folds N | --months YYYY-MM,...]  # Walk-forward rollout of the 5-day forecast
-    python -m src.main benchmark-onset [species...]  # Season-start accuracy only
+    python -m src.main benchmark-onset [--species A,B] [--years N] [--classic]  # The shipped forecast around the season starts
     python -m src.main calibrate    # Regenerate the confidence table
     python -m src.main dwd          # Show DWD pollen forecast for Oberbayern
     python -m src.main phenology    # Download DWD phenology data for Munich
@@ -50,6 +50,7 @@ from .evaluate import (
     compare_with_dwd,
 )
 from .rollout import rollout_evaluate, print_rollout_report
+from .onset_report import WINDOW_DAYS
 from .types import ALL_SPECIES, FORECAST_DAYS
 from .clock import local_now, local_today
 
@@ -429,15 +430,49 @@ def cmd_benchmark(
     print(f"\nDetailed results saved to {DATA_DIR / 'benchmark_results.csv'}")
 
 
-def cmd_benchmark_onset(species: list[str] | None = None, years: int = 3) -> None:
-    """Evaluate only the season starts, where the phenology features matter.
+def _parse_onset_args(argv: list[str]) -> dict[str, Any]:
+    """Parse ``benchmark-onset [--species A,B] [--years N] [--classic]``.
 
-    The full benchmark samples months evenly across the history, which almost
-    never lands contiguously on a season start — so the aggregate it reports is
-    dominated by mid-season windows where the lag features carry the forecast.
-    This restricts training to the months around each measured onset, which
-    makes it cheap enough to run every one of them.
+    Bare words are species names, for compatibility with the old form.
     """
+    args: dict[str, Any] = {}
+    rest = list(argv)
+    bare: list[str] = []
+    while rest:
+        flag = rest.pop(0)
+        if flag == "--classic":
+            args["classic"] = True
+        elif flag == "--years":
+            args["years"] = int(rest.pop(0))
+        elif flag == "--species":
+            args["species"] = [s.strip() for s in rest.pop(0).split(",") if s.strip()]
+        elif flag.startswith("-"):
+            raise SystemExit(f"Unknown benchmark-onset option: {flag}")
+        else:
+            bare.append(flag)
+    if bare:
+        args["species"] = bare
+    return args
+
+
+def cmd_benchmark_onset(
+    species: list[str] | None = None, years: int = 3, classic: bool = False
+) -> None:
+    """Score the shipped forecast around the season starts.
+
+    The full benchmark samples months evenly across the history and almost
+    never lands on a season start, so its aggregate says nothing about when a
+    season begins or how hard. This runs the same direct rollout over the
+    months containing each measured onset of the last *years* seasons and
+    reports timing, amount and false starts per species-year and horizon
+    (:mod:`src.onset_report`).
+
+    *classic* runs the older one-window-ahead evaluation with measured lag
+    features instead — a diagnostic for the phenology features, not the
+    product.
+    """
+    from .onset_report import ONSET_SPECIES, print_onset_rollout_report
+
     print("=" * 60)
     print("BENCHMARK: Season-Start Accuracy")
     print("=" * 60)
@@ -445,7 +480,7 @@ def cmd_benchmark_onset(species: list[str] | None = None, years: int = 3) -> Non
         print("No history file found. Run 'collect' or 'backfill' first.")
         return
 
-    targets = species or ["Corylus", "Alnus", "Betula"]
+    targets = species or list(ONSET_SPECIES)
     unknown = [s for s in targets if s not in ALL_SPECIES]
     if unknown:
         print(f"Unknown species: {', '.join(unknown)}")
@@ -453,24 +488,36 @@ def cmd_benchmark_onset(species: list[str] | None = None, years: int = 3) -> Non
         return
 
     history = pd.read_csv(HISTORY_FILE, parse_dates=["date"])
-    months = onset_focus_months(history, targets, years=years)
+    months = onset_focus_months(history, targets, window_days=WINDOW_DAYS, years=years)
     print(f"History: {len(history)} rows")
     print(f"Species: {', '.join(targets)}")
-    print(f"Evaluating {len(months)} month(s) covering the last {years} season(s) "
-          f"per species\n")
+    print(f"Months: {', '.join(str(m) for m in months)} "
+          f"(±{WINDOW_DAYS} d around each onset of the last {years} season(s))\n")
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
 
-    results = temporal_split_evaluate(history, species=targets, months=months)
-    if results.empty:
-        print("No evaluation results.")
+    if classic:
+        results = temporal_split_evaluate(history, species=targets, months=months)
+        if results.empty:
+            print("No evaluation results.")
+            return
+        print_evaluation_report(results)
+        print_onset_window_report(results, history)
+        results_path = DATA_DIR / "benchmark_onset_results.csv"
+        results.to_csv(results_path, index=False)
+        print(f"\nDetailed results saved to {results_path}")
         return
 
-    print_evaluation_report(results)
-    print_onset_window_report(results, history)
-
-    results_path = DATA_DIR / "benchmark_onset_results.csv"
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    results = rollout_evaluate(
+        history, horizon_days=FORECAST_DAYS, species=targets, months=months
+    )
+    if results.empty:
+        print("No rollout results.")
+        return
+    print_rollout_report(results, history)
+    print_onset_rollout_report(results, history, targets, years)
+    results_path = DATA_DIR / "benchmark_onset_rollout.csv"
     results.to_csv(results_path, index=False)
-    print(f"\nDetailed results saved to {results_path}")
+    print(f"\nDetailed rollout results saved to {results_path}")
 
 
 def cmd_calibrate(rebuild: bool = False) -> None:
@@ -776,7 +823,7 @@ def main() -> None:
     elif command == "benchmark":
         cmd_benchmark(**_parse_benchmark_args(sys.argv[2:]))
     elif command == "benchmark-onset":
-        cmd_benchmark_onset(sys.argv[2:] or None)
+        cmd_benchmark_onset(**_parse_onset_args(sys.argv[2:]))
     elif command == "calibrate":
         cmd_calibrate(rebuild="--rebuild" in sys.argv[2:])
     elif command == "dwd":

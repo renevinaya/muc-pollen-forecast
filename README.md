@@ -258,7 +258,7 @@ python -m src.main benchmark 5 --folds 3
 | `backfill-ndvi [start] [end]` | Rewrite the NDVI columns of the existing history from MODIS composites |
 | `run-backfill` | Both of the above against the data release (what `mode: backfill` runs in Actions) |
 | `benchmark [days]` | Walk-forward **rollout** of the real autoregressive forecast, scored per forecast day (default: 5). `--folds N` or `--months 2026-02,2026-04`, `--species A,B`, `--classic` |
-| `benchmark-onset [species...]` | Walk-forward evaluation restricted to the months around each season start (default: Corylus, Alnus, Betula) |
+| `benchmark-onset` | The shipped rollout over the months containing each measured season start of the last three seasons (default: Corylus, Alnus, Betula): timing, amount and false starts per species-year and horizon. `--species A,B`, `--years N`, `--classic` (old one-window-ahead diagnostic) |
 | `dwd` | Display the current DWD pollen danger index for Oberbayern |
 | `phenology` | Download DWD phenology data and show flowering-onset statistics |
 | `run` | Execute collect → forecast in sequence (every 3 hours) |
@@ -347,6 +347,20 @@ Day-5 MAE has gone 17.1 → 6.7 and day-5 bias +13.2 → −0.2.
 > — those three months are quiet ones. Adding Nov, Mar and Jul reversed both.
 > Six folds is the default for this reason; prefer more, not fewer, when a
 > result is going to be acted on.
+
+### `benchmark-onset` — the season starts
+
+The six sampled folds bracket the February hazel/alder start without covering
+it, so the general benchmark cannot say when a season begins or how hard.
+`benchmark-onset` runs the same direct rollout over the months containing
+each measured onset of the last three seasons and reports, per species-year
+and horizon, the timing of the first predicted 3-day run at or above the low
+level, MAE and bias in the ±10-day window next to the MAE of predicting zero,
+false starts, and the predicted/actual ratio by days since onset. The
+current picture (`src/onset_report.py`): timing within 1–7 days at every
+horizon for all three species, and amplitude a tenth to a third of what
+arrives in heavy years for the first two weeks — the loss is in the amount,
+not the date. TASKS.md tracks the numbers per change.
 
 ### `benchmark --classic` — one window ahead (diagnostic only)
 

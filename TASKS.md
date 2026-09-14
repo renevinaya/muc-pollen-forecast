@@ -182,18 +182,31 @@ What did change, and is kept:
 
 ## Phase B — Make the season start a first-class target
 
-- [ ] **B.1 Onset rollout benchmark.** `benchmark --months 2026-02,2026-04`
-  exists now (Phase A needed it to reproduce the baseline folds after the
-  history grew). Still to do: the per-species-year timing, ±10-day and
-  false-start report, so the *shipped* direct forecast is scored
-  over the months containing each measured onset for Corylus, Alnus and
-  Betula, for every season with enough history behind it. Report per
-  species-year and horizon: (a) timing error of the first predicted 3-day run
-  at or above the low threshold, (b) MAE and bias in the ±10-day window,
-  (c) false starts (predicted runs more than 10 days before the real one).
-  The existing `benchmark-onset` scores one-window-ahead with measured lags,
-  which is not the product. The numbers in the box above are the first run
-  of this benchmark and are the baseline every B task is judged against.
+- [x] **B.1 Onset rollout benchmark.** **Done.** `benchmark-onset` now runs
+  the shipped direct rollout over the months containing each measured onset
+  of the last three seasons (eleven months for hazel, alder and birch) and
+  reports, per species-year and horizon: the timing of the first predicted
+  3-day run at or above the low level, MAE and bias in the ±10-day window
+  next to the MAE of predicting zero, false starts, and the predicted/actual
+  ratio by days since onset (`src/onset_report.py`; `--classic` keeps the
+  old one-window-ahead diagnostic). `benchmark --months` names folds
+  explicitly. This is the baseline every B/C change is judged against; the
+  first run, on the B.3 model (331 origins, 39,701 predictions):
+
+  | | d1 | d3 | d5 |
+  |---|---|---|---|
+  | Timing, mean abs. error (days) — Corylus / Alnus / Betula | 1.3 / 7.0 / 7.0 | 2.0 / 6.0 / 11.3 | 4.3 / 6.3 / 7.0 |
+  | In-season MAE — Alnus / Betula / Corylus | 112.3 / 332.6 / 67.3 | 111.2 / 329.1 / 67.5 | 109.7 / 319.7 / 67.2 |
+  | Overall MAE / level acc. / bias | 69.1 / 53.3% / −41.4 | 70.5 / 52.3% / −44.4 | 71.2 / 51.1% / −46.5 |
+  | Skill vs persistence | +5.0% | +24.9% | +29.9% |
+
+  Predicted/actual ratio in days 5–9 after onset, day-3 horizon: Betula 2024
+  0.09, Betula 2026 0.17, Alnus 2025 0.29, Corylus 2026 0.39; Alnus 2026
+  2.24 and Betula 2025 2.48 the other way. Mean 0.83 across the nine
+  species-years, made of under-prediction in heavy years and over-prediction
+  in light ones — the ramp problem, B.6. False starts: 43 run-days, all
+  Betula, most of them the model reproducing the March 2025 transport
+  episode that the B.2 detector no longer counts as the onset.
 - [x] **B.2 Robust onset detection for calibration.** **Adopted with B.3**
   (on its own it was a wash — see below). Measured on
   the eight seasons, none of the definitions in the task improves all three
