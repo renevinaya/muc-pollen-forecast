@@ -290,15 +290,33 @@ What did change, and is kept:
   can see it coming. The pollenscience.eu client already queries two Munich
   codes; add one or two upwind stations lagged 3–24 h. Accept on B.1 false
   starts and ±10-day MAE.
-- [ ] **B.6 Ramp amplitude at onset.** With the lag block near zero, the
-  extreme stage's gate (`P(value > threshold)`) and the quantile regressor
-  both learn from rows where big counts were preceded by big counts. Test
-  (a) a sample weight that up-weights the first 14 days after each measured
-  onset, (b) an explicit `days_since_onset_projected` × `season_load`
-  interaction once C.1 exists, and (c) whether the extreme stage should be
-  allowed to fire on phenology alone. Accept on the amplitude table above:
-  the 0–4 d and 5–9 d ratios for heavy years must move toward 1 without the
-  light-year ratio (Corylus 2024, 1.3) getting worse.
+- [x] **B.6 Ramp amplitude at onset.** **Done — option (a); the premise only
+  half held.** Rows in the first 14 days after each year's *measured* onset
+  weigh four times more in the stage-2 regressor and the extreme gate
+  (`RAMP_DAYS`, `RAMP_BOOST` in `src/trainer.py`; label information at
+  training time, no feature changes). Against B.4:
+
+  | | General MAE / RMSE / level / bias | Onset timing d1 / d3 / d5 (C/A/B) | Ramp ratio days 5–9, heavy years (B24 / B26 / A25 / C26) |
+  |---|---|---|---|
+  | B.4 | 7.1 / 44.2 / 75.6% / +0.1 | 1.3-7.0-7.0 / 0.7-6.7-7.0 / 4.0-3.7-7.3 | 0.10 / 0.17 / 0.28 / 0.54 |
+  | **B.6** | **7.0 / 44.0 / 75.7% / +0.1** | 1.3-6.0-7.3 / 1.7-3.3-6.7 / 4.0-3.7-6.7 | 0.07 / 0.18 / 0.42 / 0.40 |
+
+  The general benchmark is the best of the series on all four numbers
+  (Alnus 65 → 63, Populus 62 → 56, Poaceae 22 → 20; Quercus 26 → 30 and
+  Fraxinus 21 → 23 the other way), alder's onset timing improves at every
+  horizon and the Alnus 2026 over-prediction is gone (±10-day MAE 34.5 →
+  7.2, ratio 2.5 → 0.65). **But the heavy-year ramp is where it was**:
+  Betula 2024 and 2026 still get 7–18% of what arrives in days 5–9, and
+  false starts rise 33 → 48 run-days. Weighting the ramp rows makes the
+  model fit them better *on average*, and the average of a 25,000-grain
+  year and a 3,000-grain year is neither. The model cannot know at onset
+  which it is in: season load (C.1) points the wrong way as often as not at
+  eight seasons, and nothing else in the feature set is upstream of the
+  count. Options (b) and (c) from the task were not tried — they change how
+  the same information is combined, not what is known — and are not
+  expected to reach it either. What would: a measured signal that precedes
+  the local season, i.e. upwind stations (B.5), or the DWD forecast level
+  for the first days, which already blends in for today/tomorrow.
 - [ ] **B.7 December continuity (was part of 5.3).** `gdd` and the forcing
   accumulation reset on 1 Jan, so a hazel season that starts in a warm
   December (2023 onset = 1 Jan, i.e. already running) is invisible to the
@@ -370,12 +388,13 @@ What did change, and is kept:
 
 ## Suggested order
 
-Phases A and C are done, and B.2 and B.3 with them. Next: B.1 (make the
-onset scoring a CLI report) → B.4 → B.6 → B.5 → A.5 → D.1 → D.4 → B.7 →
-D.2/D.3 → E.x → D.5. B.6 (ramp amplitude) is where the onset loss actually
-sits: timing is within days at every horizon, amplitude is off 3–10× in
-heavy years, and neither season load nor onset calibration reaches it; D.1
-early because it is a five-line change that makes finished work visible.
+Phases A and C are done, and B.1–B.4 and B.6 with them. Next: B.5 → A.5 →
+D.1 → D.4 → B.7 → D.2/D.3 → E.x → D.5. B.5 (upwind stations) is now the
+only item on the list with a claim on the heavy-year ramp: every change so
+far has improved timing and the mid-season and left the first two weeks of
+a heavy season at a tenth to a third of the truth, because nothing the model
+reads precedes the local count. D.1 early because it is a five-line change
+that makes finished work visible.
 
 ## Done so far (first task list)
 
@@ -391,6 +410,7 @@ Measured over six folds (184 origins, 80,680 predictions), same folds throughout
 | C.1 season load (63 features) | 7.4 | 6.8 | −0.2 | +0.1 | +40.7% |
 | B.2 + B.3 onset calibration | 7.3 | 6.7 | −0.5 | −0.2 | +41.4% |
 | B.4 rule-based readiness (62 features) | 7.5 | 6.9 | +0.1 | +0.3 | +39.9% |
+| B.6 onset-ramp weighting | 7.3 | 6.8 | +0.1 | +0.5 | +40.3% |
 
 - Phase 1: rollout benchmark per horizon, feature-gain report, train/serve
   parity test, shared row-wise feature assembly (`src/features.py`). Fixed
@@ -409,3 +429,8 @@ Measured over six folds (184 origins, 80,680 predictions), same folds throughout
   data, the first model to beat the pre-backfill score honestly.
 - B.2 + B.3: transport-aware onset detection and per-species forcing rules;
   MAE 7.0 → 6.9, onset-month MAE better for all three tree species.
+- B.1: `benchmark-onset` scores the shipped rollout around the season starts.
+- B.4: readiness features follow the per-species rule; `cold_to_warm_flip`
+  dropped (62 features). Timing better, MAE 6.9 → 7.1, level 75.2 → 75.6%.
+- B.6: onset-ramp weighting; MAE 7.0, RMSE 44.0, level 75.7% — best general
+  numbers so far; heavy-year ramp amplitude unchanged.

@@ -299,11 +299,11 @@ origins, 80 680 scored predictions. Persistence is the same baseline throughout
 
 | Horizon | MAE | RMSE | Level acc. | Bias | Persistence MAE | Skill |
 |---------|-----|------|-----------|------|-----------------|-------|
-| day 1 | **7.5** | 46.7 | 75.9% | **+0.1** | 10.4 | **+28.3%** |
-| day 2 | **7.3** | 46.3 | 75.6% | **−0.1** | 10.9 | **+33.0%** |
-| day 3 | **7.0** | 43.8 | 75.6% | **−0.0** | 11.2 | **+37.5%** |
-| day 4 | **6.8** | 42.1 | 75.4% | **+0.1** | 11.8 | **+42.4%** |
-| day 5 | **6.9** | 41.7 | 75.3% | **+0.3** | 11.4 | **+39.9%** |
+| day 1 | **7.3** | 46.6 | 76.1% | **+0.1** | 10.4 | **+29.6%** |
+| day 2 | **7.2** | 46.3 | 75.9% | **−0.1** | 10.9 | **+33.9%** |
+| day 3 | **6.9** | 43.3 | 75.8% | **+0.1** | 11.2 | **+38.4%** |
+| day 4 | **6.7** | 41.7 | 75.5% | **+0.2** | 11.8 | **+43.2%** |
+| day 5 | **6.8** | 41.9 | 75.3% | **+0.5** | 11.4 | **+40.3%** |
 
 The model beats persistence at every horizon by 28–42%, with a bias near
 zero and no decay across the five days.
@@ -332,7 +332,8 @@ Three fixes got here, each measured on these same folds:
 | Phase A complete data (same model) | 8.2 | 7.7 | +0.9 | +1.5 | +32.5% |
 | C.1 season load | 7.4 | 6.8 | −0.2 | +0.1 | +40.7% |
 | B.2 + B.3 onset calibration | 7.3 | 6.7 | −0.5 | −0.2 | +41.4% |
-| B.4 rule-based readiness | **7.5** | **6.9** | **+0.1** | **+0.3** | **+39.9%** |
+| B.4 rule-based readiness | 7.5 | 6.9 | +0.1 | +0.3 | +39.9% |
+| B.6 onset-ramp weighting | **7.3** | **6.8** | **+0.1** | **+0.5** | **+40.3%** |
 
 **3.1** stopped the extreme regressor being consulted about ordinary windows.
 **3.5** removed the feedback loop that let a residual bias compound into the
@@ -340,7 +341,7 @@ horizon. **Phase 2** cut 73 features to 60 — and the smaller model is better a
 every horizon, not merely equal, so those features were adding variance rather
 than signal.
 
-Day-5 MAE has gone 17.1 → 6.9 and day-5 bias +13.2 → +0.3.
+Day-5 MAE has gone 17.1 → 6.8 and day-5 bias +13.2 → +0.5.
 
 > **On fold counts.** An earlier version of this section reported three folds
 > (Sep, Jan, May) and concluded that the model beat persistence from day 3 on
@@ -361,7 +362,11 @@ false starts, and the predicted/actual ratio by days since onset. The
 current picture (`src/onset_report.py`): timing within 1–7 days at every
 horizon for all three species, and amplitude a tenth to a third of what
 arrives in heavy years for the first two weeks — the loss is in the amount,
-not the date. TASKS.md tracks the numbers per change.
+not the date. Weighting the two weeks after each measured onset four times
+in training (B.6) improved the general benchmark and alder's timing and did
+not move the heavy-year ramp: nothing the model reads precedes the local
+count, so it cannot tell a 25,000-grain year from a 3,000-grain one on day
+one. TASKS.md tracks the numbers per change.
 
 ### `benchmark --classic` — one window ahead (diagnostic only)
 

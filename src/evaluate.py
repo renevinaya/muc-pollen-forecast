@@ -94,11 +94,15 @@ def temporal_split_evaluate(
               f"{pd.Timestamp(test_dates[-1]).strftime('%Y-%m-%d')})")
 
         for species_name in evaluated_species:
-            x_train, y_train, raw_train = prepare_training_data(train_data, species_name)
+            x_train, y_train, raw_train, ramp = prepare_training_data(
+                train_data, species_name, with_ramp=True
+            )
             if len(x_train) < 14:
                 continue
 
-            model = train_species_model(x_train, y_train, raw_values=raw_train, species=species_name)
+            model = train_species_model(
+                x_train, y_train, raw_values=raw_train, species=species_name, ramp=ramp
+            )
             if model is None:
                 continue
 

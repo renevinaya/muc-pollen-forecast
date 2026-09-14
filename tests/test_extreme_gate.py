@@ -197,3 +197,30 @@ def test_load_models_checks_legacy_models_by_feature_count(trained, tmp_path, mo
     joblib.dump(model, tmp_path / f"{SPECIES}.joblib")
     # This model really was fitted on the current set, so shape agrees.
     assert SPECIES in trainer.load_models()
+
+
+def test_ramp_flag_marks_the_fortnight_after_each_measured_onset():
+    """Only the rows in RAMP_DAYS after the year's own onset are flagged."""
+    import numpy as np
+    import pandas as pd
+
+    from src.onset import observed_onsets
+    from src.trainer import RAMP_DAYS, onset_ramp_flag, prepare_training_data
+
+    history = build_history()
+    onsets = observed_onsets(history, SPECIES)
+    assert onsets, "fixture must contain a measurable season"
+
+    flag = onset_ramp_flag(history, SPECIES, history["date"])
+    days = pd.to_datetime(history["date"]).dt.normalize()
+    for year, doy in onsets.items():
+        onset = pd.Timestamp(year=year, month=1, day=1) + pd.Timedelta(days=doy - 1)
+        rel = (days - onset).dt.days
+        inside = (rel >= 0) & (rel <= RAMP_DAYS) & (days.dt.year == year)
+        assert flag[inside.to_numpy()].all()
+        assert not flag[((rel < 0) & (days.dt.year == year)).to_numpy()].any()
+    assert 0 < flag.mean() < 0.2
+
+    x, _, _, ramp = prepare_training_data(history, SPECIES, with_ramp=True)
+    assert len(ramp) == len(x)
+    assert set(np.unique(ramp)) <= {0.0, 1.0}

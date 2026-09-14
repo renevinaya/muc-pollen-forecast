@@ -224,10 +224,12 @@ def rollout_evaluate(
         )
 
         for name in evaluated:
-            x_train, y_train, raw_train = prepare_training_data(past, name)
+            x_train, y_train, raw_train, ramp = prepare_training_data(past, name, with_ramp=True)
             if len(x_train) < 14:
                 continue
-            model = train_species_model(x_train, y_train, raw_values=raw_train, species=name)
+            model = train_species_model(
+                x_train, y_train, raw_values=raw_train, species=name, ramp=ramp
+            )
             if model is None:
                 continue
 

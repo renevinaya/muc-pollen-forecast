@@ -451,12 +451,42 @@ def _add_weather_derived_features(df: pd.DataFrame, species: str = "") -> pd.Dat
 TRAINING_LEADS = (1, 4, 8, 16, 24, 32, 40)
 
 
+# --- Onset ramp weighting (B.6) ------------------------------------------------
+#
+# In a heavy year the forecast predicts a tenth to a third of what arrives for
+# the first two weeks after onset, and only converges once the lag block has
+# filled with big numbers. Those rows are rare — two weeks a year against a
+# 7-day lag window that is zero by definition — so the quantile regressor
+# treats them as the tail they are and predicts low. This weights them up.
+#
+# The weight comes from the training year's *measured* onset, which is label
+# information, not a feature: nothing the forecaster reads changes, only how
+# much a training row counts.
+RAMP_DAYS = 14
+RAMP_BOOST = 3.0
+
+
+def onset_ramp_flag(history: pd.DataFrame, species: str, dates: pd.Series) -> np.ndarray:
+    """1.0 for rows within RAMP_DAYS after the year's measured onset, else 0.0."""
+    days = pd.to_datetime(dates).dt.normalize()
+    flag = np.zeros(len(dates), dtype=float)
+    for year, doy in observed_onsets(history, species).items():
+        onset = pd.Timestamp(year=year, month=1, day=1) + pd.Timedelta(days=doy - 1)
+        rel = (days - onset).dt.days.to_numpy()
+        flag[(rel >= 0) & (rel <= RAMP_DAYS)] = 1.0
+    return flag
+
+
 def prepare_training_data(
-    history: pd.DataFrame, species: str, leads: tuple[int, ...] = TRAINING_LEADS
-) -> tuple[pd.DataFrame, pd.Series, pd.Series]:
+    history: pd.DataFrame,
+    species: str,
+    leads: tuple[int, ...] = TRAINING_LEADS,
+    with_ramp: bool = False,
+) -> tuple[pd.DataFrame, pd.Series, pd.Series] | tuple[pd.DataFrame, pd.Series, pd.Series, np.ndarray]:
     """
     Prepare feature matrix X, target y (log-transformed), and raw_values
-    (original scale) for a single species.
+    (original scale) for a single species. With *with_ramp*, also the
+    onset-ramp flag per row (see :func:`onset_ramp_flag`).
 
     One copy of the history per entry in *leads*: the same target windows, each
     time with the lag block anchored that many windows further back. This is
@@ -492,7 +522,8 @@ def prepare_training_data(
             per_lead.append(frame)
 
     if not per_lead:
-        return pd.DataFrame(), pd.Series(dtype=float), pd.Series(dtype=float)
+        empty = (pd.DataFrame(), pd.Series(dtype=float), pd.Series(dtype=float))
+        return (*empty, np.zeros(0)) if with_ramp else empty
 
     combined = pd.concat(per_lead, ignore_index=True)
 
@@ -503,6 +534,8 @@ def prepare_training_data(
     # Fill any remaining NaN in features with 0
     X = X.fillna(0)
 
+    if with_ramp:
+        return X, y, raw_values, onset_ramp_flag(species_df, species, combined["date"])
     return X, y, raw_values
 
 
@@ -588,6 +621,7 @@ def train_species_model(
     y: pd.Series,
     raw_values: pd.Series | None = None,
     species: str = "",
+    ramp: np.ndarray | None = None,
 ) -> TwoStageModel | None:
     """
     Train a multi-stage model for one species.
@@ -601,7 +635,10 @@ def train_species_model(
     - Stronger sample weighting for extreme events (#1)
     - Species-specific hyperparameters (#5)
     - Raised quantile target (#4)
+    - Rows in the first RAMP_DAYS after the year's measured onset weigh
+      (1 + RAMP_BOOST) times more in the regressor and the extreme gate (B.6)
     """
+    ramp_weight = 1.0 + RAMP_BOOST * ramp if ramp is not None else None
     hp = _SPECIES_HYPERPARAMS.get(species, _DEFAULT_HYPERPARAMS)
 
     # --- Stage 1: binary classifier ---
@@ -652,6 +689,8 @@ def train_species_model(
         w += (rv > 100) * 8.0
         w += (rv > 500) * 20.0
         w += (rv > 1000) * 40.0
+        if ramp_weight is not None:
+            w = w * ramp_weight
         sample_weight = w
 
     regressor.fit(X, y, sample_weight=sample_weight)
@@ -705,7 +744,7 @@ def train_species_model(
                 verbosity=0,
                 eval_metric="logloss",
             )
-            extreme_classifier.fit(X, extreme_mask.astype(int))
+            extreme_classifier.fit(X, extreme_mask.astype(int), sample_weight=ramp_weight)
 
     return TwoStageModel(
         classifier=classifier,
@@ -936,12 +975,12 @@ def train_all(history: pd.DataFrame) -> dict[str, TwoStageModel]:
     check_feature_coverage(history)
 
     for species in ALL_SPECIES:
-        X, y, raw_values = prepare_training_data(history, species)
+        X, y, raw_values, ramp = prepare_training_data(history, species, with_ramp=True)
         if len(X) < 14:
             print(f"  {species}: skipped (only {len(X)} training samples, need >= 14)")
             continue
 
-        model = train_species_model(X, y, raw_values=raw_values, species=species)
+        model = train_species_model(X, y, raw_values=raw_values, species=species, ramp=ramp)
         if model is None:
             continue
 
