@@ -260,11 +260,30 @@ What did change, and is kept:
   `gdd_above_threshold` features still use the `gdd` column (1 Jan, base 5)
   against a threshold in those units; making them read the selected rule's
   forcing is the natural follow-up and is folded into B.4.
-- [ ] **B.4 Onset-phase features that survive B.3.** After B.3, re-read gain
-  for `days_since_typical_onset`, `onset_anomaly`, `gdd_above_threshold`,
-  `cold_to_warm_flip`, `consecutive_warm_hrs` per species. Expect the first
-  two to rise for alder and birch. Drop any of the five that stays below 0.5%
-  for every tree species — `cold_to_warm_flip` is at 0.0–0.1% today.
+- [x] **B.4 Onset-phase features that survive B.3.** **Done.** Per-species
+  gain on the B.3 models: `days_since_typical_onset` up to 6.1% (Alnus),
+  `gdd_above_threshold` up to 2.3% (Corylus), `onset_anomaly` up to 1.2%,
+  `consecutive_warm_hrs` up to 2.3% (Salix), `cold_to_warm_flip` at most
+  0.05% for any tree species — dropped. `onset_anomaly` and
+  `gdd_above_threshold` now read the species' selected forcing rule against
+  that rule's walk-forward threshold (`readiness_by_day` in `src/onset.py`,
+  accumulated over the combined measured-plus-forecast temperature so it
+  keeps climbing through the forecast days) instead of the base-5 `gdd`
+  column against a threshold in those units. 62 features.
+
+  Against B.3 on the same folds and the same eleven onset months:
+
+  | | General MAE / RMSE / level / bias | Onset timing d1 / d3 / d5 (mean abs. days, C/A/B) | Onset in-season MAE A / B / C |
+  |---|---|---|---|
+  | B.3 | 6.9 / 45.0 / 75.2% / −0.4 | 1.3-7.0-7.0 / 2.0-6.0-11.3 / 4.3-6.3-7.0 | 112.3 / 332.6 / 67.3 |
+  | **B.4** | 7.1 / **44.2** / **75.6%** / **+0.1** | 1.3-7.0-7.0 / **0.7-6.7-7.0** / **4.0-3.7-7.3** | 114.7 / 332.8 / **66.2** |
+
+  Timing improves at days 3–5 for every species (Betula's −18-day run at day
+  3 is gone), false starts fall 43 → 33 run-days, the Corylus ±10-day windows
+  improve (2026: 42.5 → 30.9), RMSE, level accuracy and bias improve on the
+  general folds — and general MAE slips 0.2, mostly Populus (54 → 62) and
+  Alnus (63 → 65). Adopted for the onset gains and the coherent feature set;
+  the MAE cost is real and is noted. Amplitude ratios unchanged (B.6).
 - [ ] **B.5 Upwind stations (was 5.2).** Pre-onset birch pollen is transport:
   in 2026 Munich measured 15–24 grains/m³ on 27 Feb – 5 Mar, five weeks before
   local onset; the 2025 "onset" was the same thing. Nothing in the feature set
@@ -371,6 +390,7 @@ Measured over six folds (184 origins, 80,680 predictions), same folds throughout
 | Phase A complete history (same model) | 8.2 | 7.7 | +0.9 | +1.5 | +32.5% |
 | C.1 season load (63 features) | 7.4 | 6.8 | −0.2 | +0.1 | +40.7% |
 | B.2 + B.3 onset calibration | 7.3 | 6.7 | −0.5 | −0.2 | +41.4% |
+| B.4 rule-based readiness (62 features) | 7.5 | 6.9 | +0.1 | +0.3 | +39.9% |
 
 - Phase 1: rollout benchmark per horizon, feature-gain report, train/serve
   parity test, shared row-wise feature assembly (`src/features.py`). Fixed

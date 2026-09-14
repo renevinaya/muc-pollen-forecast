@@ -105,8 +105,10 @@ WEATHER_DERIVED_FEATURES = [
     "temp_x_sunshine",      # Interaction: warm & sunny = peak dispersal
     "dry_warm",             # Interaction: warm + low humidity
     # --- Burst potential features (#2) ---
-    "gdd_above_threshold",  # max(0, gdd - species GDD threshold)
-    "cold_to_warm_flip",    # rapid warming from cold → warm while GDD ready
+    # gdd_above_threshold moved to PHENOLOGY_FEATURES (it now reads the
+    # species' selected forcing rule, not the base-5 gdd column) and
+    # cold_to_warm_flip was dropped: it earned at most 0.05% of gain for any
+    # tree species once the forcing was calibrated per species.
     "consecutive_warm_hrs", # consecutive 3h windows with temp > activation
     # --- Explosion likelihood features (#6) ---
     "dry_streak",           # consecutive windows with precip ≈ 0
@@ -147,8 +149,9 @@ NDVI_FEATURES = [
 
 # Phenology features (from DWD multi-year flowering onset data)
 PHENOLOGY_FEATURES = [
-    "days_since_typical_onset",  # days since mean flowering onset for this species
-    "onset_anomaly",             # thermal readiness vs species GDD threshold (early/late year)
+    "days_since_typical_onset",  # days since this year's causal onset estimate
+    "onset_anomaly",             # (forcing − threshold) / threshold under the species' rule
+    "gdd_above_threshold",       # max(0, forcing − threshold) under the species' rule
 ]
 
 # Interannual season load (src/season_load.py): how heavy the previous

@@ -69,7 +69,7 @@ Each species gets a **three-stage pipeline** with species-specific hyperparamete
 
 **Real-time observation assimilation**: when the pipeline runs every 3 hours, forecast windows that already have real pollen measurements use the observed values instead of model predictions. This breaks the autoregressive error cascade and grounds lag features for subsequent windows in actual data.
 
-## Features (63 total)
+## Features (62 total)
 
 | Category | Count | Features |
 |----------|-------|----------|
@@ -77,9 +77,9 @@ Each species gets a **three-stage pipeline** with species-specific hyperparamete
 | Calendar | 2 | day-of-year sin/cos encoding |
 | Time-of-day | 3 | hour of day (0/3/6/.../21), sin/cos hour encoding |
 | Season | 1 | binary `season_active` per species |
-| Weather-derived | 20 | GDD + species GDD threshold, 3/7-day rolling temp/sunshine/rain, temp deltas (1d/3d), cold-to-warm flip, consecutive warm hours, dry streak, temp×sunshine, dry+warm, warming trend, wind×dry+warm, wind direction sin/cos, transport south |
+| Weather-derived | 18 | GDD, 3/7-day rolling temp/sunshine/rain, temp deltas (1d/3d), consecutive warm hours, dry streak, temp×sunshine, dry+warm, warming trend, wind×dry+warm, wind direction sin/cos, transport south |
 | NDVI | 2 | NDVI, NDVI delta (green-up rate) |
-| Phenology | 2 | days since flowering onset (measured from history, per year — see below), onset anomaly (GDD-driven early/late signal against a walk-forward threshold) |
+| Phenology | 3 | days since flowering onset (measured from history, per year — see below), onset anomaly and forcing above threshold (thermal readiness under the species' selected forcing rule, against that rule's walk-forward threshold) |
 | Season load | 3 | last season's total vs. the seasons before it, the last two seasons vs. the seasons before them, last season vs. the one before — all log ratios per species, 0 when unknown; constant within a season year and computed only from seasons that ended before it (`src/season_load.py`) |
 | Intra-day | 3 | temp vs. daily max (ratio), precipitation in prior window (binary), temperature rate of change |
 | Lead | 1 | `lead_windows` — 3h windows between the last measurement and this one |
@@ -148,9 +148,9 @@ varies (0–980 windows).
 
 ### Season onset
 
-Four features are parameterised by when the season is expected to start:
-`days_since_typical_onset`, `onset_anomaly`, `gdd_above_threshold` and
-`cold_to_warm_flip`. Together they carry 2–7% of model gain, so what feeds them
+Three features are parameterised by when the season is expected to start:
+`days_since_typical_onset`, `onset_anomaly` and `gdd_above_threshold`.
+Together they carry 3–9% of model gain per species, so what feeds them
 matters. `src/onset.py` derives it from the accumulated history rather than from
 constants:
 
@@ -299,13 +299,13 @@ origins, 80 680 scored predictions. Persistence is the same baseline throughout
 
 | Horizon | MAE | RMSE | Level acc. | Bias | Persistence MAE | Skill |
 |---------|-----|------|-----------|------|-----------------|-------|
-| day 1 | **7.3** | 47.4 | 75.6% | **−0.5** | 10.4 | **+30.3%** |
-| day 2 | **7.1** | 47.3 | 75.3% | **−0.7** | 10.9 | **+34.6%** |
-| day 3 | **6.8** | 44.5 | 75.3% | **−0.5** | 11.2 | **+39.3%** |
-| day 4 | **6.6** | 42.8 | 74.9% | **−0.4** | 11.8 | **+43.7%** |
-| day 5 | **6.7** | 42.6 | 75.0% | **−0.2** | 11.4 | **+41.4%** |
+| day 1 | **7.5** | 46.7 | 75.9% | **+0.1** | 10.4 | **+28.3%** |
+| day 2 | **7.3** | 46.3 | 75.6% | **−0.1** | 10.9 | **+33.0%** |
+| day 3 | **7.0** | 43.8 | 75.6% | **−0.0** | 11.2 | **+37.5%** |
+| day 4 | **6.8** | 42.1 | 75.4% | **+0.1** | 11.8 | **+42.4%** |
+| day 5 | **6.9** | 41.7 | 75.3% | **+0.3** | 11.4 | **+39.9%** |
 
-The model beats persistence at every horizon by 30–44%, with a bias near
+The model beats persistence at every horizon by 28–42%, with a bias near
 zero and no decay across the five days.
 
 These numbers are measured on the **complete** history (see *Data coverage*
@@ -331,7 +331,8 @@ Three fixes got here, each measured on these same folds:
 | Phase 2 prune | **7.6** | **7.2** | **−0.2** | **+0.4** | **+37.3%** |
 | Phase A complete data (same model) | 8.2 | 7.7 | +0.9 | +1.5 | +32.5% |
 | C.1 season load | 7.4 | 6.8 | −0.2 | +0.1 | +40.7% |
-| B.2 + B.3 onset calibration | **7.3** | **6.7** | **−0.5** | **−0.2** | **+41.4%** |
+| B.2 + B.3 onset calibration | 7.3 | 6.7 | −0.5 | −0.2 | +41.4% |
+| B.4 rule-based readiness | **7.5** | **6.9** | **+0.1** | **+0.3** | **+39.9%** |
 
 **3.1** stopped the extreme regressor being consulted about ordinary windows.
 **3.5** removed the feedback loop that let a residual bias compound into the
@@ -339,7 +340,7 @@ horizon. **Phase 2** cut 73 features to 60 — and the smaller model is better a
 every horizon, not merely equal, so those features were adding variance rather
 than signal.
 
-Day-5 MAE has gone 17.1 → 6.7 and day-5 bias +13.2 → −0.2.
+Day-5 MAE has gone 17.1 → 6.9 and day-5 bias +13.2 → +0.3.
 
 > **On fold counts.** An earlier version of this section reported three folds
 > (Sep, Jan, May) and concluded that the model beat persistence from day 3 on

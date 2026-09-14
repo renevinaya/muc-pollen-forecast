@@ -241,3 +241,29 @@ def test_a_genuinely_early_year_is_kept():
 def test_a_year_with_only_implausible_runs_drops_out():
     history = build_history({2019: 90, 2020: 90, 2021: 90, 2022: 20}, species="Betula")
     assert 2022 not in observed_onsets(history, "Betula")
+
+
+def test_readiness_keeps_accumulating_past_the_history():
+    """The forecaster hands in the combined temperature; forcing must climb
+    through the forecast days instead of stopping at the last measurement."""
+    from src.onset import daily_temperature, readiness_by_day
+
+    history = build_history({2019: 40, 2020: 42, 2021: 44, 2022: 46, 2023: 41})
+    measured = daily_temperature(history)
+    extended = pd.concat(
+        [measured, pd.Series(8.0, index=pd.date_range("2024-01-01", "2024-01-20", freq="D"))]
+    )
+    table = readiness_by_day(history, SPECIES, daily_temp=extended)
+    jan = table.loc["2024-01-01":"2024-01-20", "forcing"].to_numpy()
+    assert np.all(np.diff(jan) > 0)
+    assert np.isfinite(table.loc["2024-01-10", "threshold"])
+
+
+def test_readiness_threshold_is_walk_forward():
+    from src.onset import readiness_by_day
+
+    base = {2019: 40, 2020: 45, 2021: 38, 2022: 47, 2023: 41, 2024: 44}
+    shifted = {**base, 2024: 120}
+    before = readiness_by_day(build_history(base), SPECIES).loc["2024-03-01", "threshold"]
+    after = readiness_by_day(build_history(shifted), SPECIES).loc["2024-03-01", "threshold"]
+    assert before == pytest.approx(after)

@@ -32,12 +32,10 @@ DERIVATION_INPUTS = [
 ]
 
 
-# Rare-event flags the synthetic fixture never happens to produce. This is a
-# limit of the fixture, not of the feature: on the real history
-# cold_to_warm_flip fires on 2.1% of rows, and no feature in FEATURE_COLS is
-# constant there. Anything added here needs that check run against real data
-# first, otherwise the exemption hides exactly what the test is for.
-FIXTURE_CANNOT_TRIGGER = {"cold_to_warm_flip"}
+# Features the synthetic fixture cannot make vary. Empty on purpose: an
+# exemption here hides exactly what the test is for, so anything added needs
+# the constant-feature check run against the real history first.
+FIXTURE_CANNOT_TRIGGER: set[str] = set()
 
 
 @pytest.fixture(scope="module")

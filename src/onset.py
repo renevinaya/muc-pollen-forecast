@@ -36,6 +36,8 @@ Two GDD accumulations appear here, deliberately:
 
 from __future__ import annotations
 
+from collections.abc import Iterable
+
 import numpy as np
 import pandas as pd
 
@@ -402,6 +404,65 @@ def describe_forcing_rule(rule: ForcingRule | None) -> str:
         return "climatology"
     (month, day), base = rule
     return f"from {month:02d}-{day:02d} base {base:g}"
+
+
+def rules_by_year(
+    history: pd.DataFrame, species: str, years: "Iterable[int]"
+) -> dict[int, tuple[ForcingRule, float | None]]:
+    """The projection rule and threshold in force for each year, walk-forward.
+
+    A year whose selection found nothing better than the climatology gets the
+    default rule with its own threshold, so the readiness features still carry
+    thermal time against a calibrated mark for that species-year; only the
+    onset *estimate* is left at the climatology in that case.
+    """
+    out: dict[int, tuple[ForcingRule, float | None]] = {}
+    daily_temp = daily_temperature(history)
+    for year in years:
+        rule, threshold, _ = select_forcing_rule(history, species, before_year=int(year))
+        if rule is None:
+            rule = DEFAULT_FORCING_RULE
+            onsets = {
+                y: d for y, d in observed_onsets(history, species).items() if y < int(year)
+            }
+            at = _forcing_at(forcing_series(daily_temp, rule), onsets) if not daily_temp.empty else {}
+            threshold = float(np.median(list(at.values()))) if len(at) >= MIN_CALIBRATION_YEARS else None
+        out[int(year)] = (rule, threshold)
+    return out
+
+
+def readiness_by_day(
+    history: pd.DataFrame, species: str, daily_temp: pd.Series | None = None
+) -> pd.DataFrame:
+    """Forcing under the year's rule and that rule's threshold, per day.
+
+    *history* is what the rules and thresholds are calibrated on; *daily_temp*
+    is where the forcing is accumulated, and may run past the history — the
+    forecaster passes the combined measured-plus-forecast temperature so the
+    readiness keeps climbing through the forecast days, exactly as the ``gdd``
+    column does. Columns ``forcing`` and ``threshold`` (NaN before there is
+    anything to calibrate on), indexed by day.
+    """
+    if daily_temp is None:
+        daily_temp = daily_temperature(history)
+    if daily_temp.empty:
+        return pd.DataFrame(columns=["forcing", "threshold"])
+
+    idx = pd.DatetimeIndex(daily_temp.index)
+    years = sorted(set(idx.year))
+    rules = rules_by_year(history, species, years)
+    forcing = pd.Series(np.nan, index=idx, dtype=float)
+    threshold = pd.Series(np.nan, index=idx, dtype=float)
+    cache: dict[ForcingRule, pd.Series] = {}
+    for year in years:
+        rule, thr = rules[year]
+        if rule not in cache:
+            cache[rule] = forcing_series(daily_temp, rule)
+        mask = idx.year == year
+        forcing[mask] = cache[rule][mask].to_numpy()
+        if thr is not None:
+            threshold[mask] = thr
+    return pd.DataFrame({"forcing": forcing, "threshold": threshold})
 
 
 def onset_doy_by_day(history: pd.DataFrame, species: str) -> pd.Series:

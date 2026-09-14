@@ -40,10 +40,9 @@ from .types import (
 )
 from .season_load import load_features_for_years, season_totals, season_year
 from .onset import (
-    gdd_threshold_by_year,
-    gdd_threshold_for_year,
     onset_doy_by_day,
     onset_doy_lookup,
+    readiness_by_day,
     _static_onset_doy,
 )
 from .cams import cams_value
@@ -178,7 +177,9 @@ class FeatureContext:
     intraday: pd.DataFrame
     cams: pd.DataFrame
     onset_by_species: dict[str, pd.Series]
-    gdd_thresholds: dict[str, dict[int, float]]
+    # Forcing under each species' rule and the rule's threshold, per day,
+    # accumulated over the combined measured-plus-forecast temperature.
+    readiness_by_species: dict[str, pd.DataFrame]
     onset_fallback: dict[str, float]
     # Completed-season totals per species, for the interannual load features.
     season_totals: dict[str, dict[int, float]] = field(default_factory=dict)
@@ -256,14 +257,23 @@ def build_context(
     # Onset estimates and GDD thresholds come from the real measurements: the
     # weather-only frame above carries a dummy species and cannot derive them.
     onset_by_species = {sp: onset_doy_by_day(history, sp) for sp in species_list}
-    gdd_thresholds = {sp: gdd_threshold_by_year(history, sp) for sp in species_list}
     onset_fallback = {sp: _static_onset_doy(sp) for sp in species_list}
+    # Readiness must keep accumulating through the forecast days, so the
+    # temperature it is built on is the combined frame's, not the history's.
+    combined_daily_temp = (
+        combined["temperature_mean"]
+        .groupby(pd.DatetimeIndex(combined.index).normalize())
+        .mean()
+        .dropna()
+        .sort_index()
+    )
+    readiness_by_species = {
+        sp: readiness_by_day(history, sp, daily_temp=combined_daily_temp) for sp in species_list
+    }
     totals = {sp: season_totals(history, sp) for sp in species_list}
 
     def derive(sp: str) -> tuple[str, pd.DataFrame]:
-        frame = _add_weather_derived_features(
-            base.copy(), sp, gdd_thresholds=gdd_thresholds[sp]
-        )
+        frame = _add_weather_derived_features(base.copy(), sp)
         return sp, frame.set_index("date")
 
     if parallel and len(species_list) > 1:
@@ -282,7 +292,7 @@ def build_context(
         intraday=intraday_features(combined),
         cams=cams if cams is not None else pd.DataFrame(),
         onset_by_species=onset_by_species,
-        gdd_thresholds=gdd_thresholds,
+        readiness_by_species=readiness_by_species,
         onset_fallback=onset_fallback,
         season_totals=totals,
     )
@@ -334,21 +344,20 @@ def static_features(ctx: FeatureContext, species: str, dt: pd.Timestamp) -> dict
         ctx.onset_by_species[species], dt, ctx.onset_fallback[species]
     )
     if onset_doy == onset_doy:  # not NaN
-        from .trainer import onset_anomaly_from_gdd
+        from .trainer import readiness_features
 
         features["days_since_typical_onset"] = float(
             max(-60.0, dt.day_of_year - onset_doy)
         )
-        features["onset_anomaly"] = float(
-            onset_anomaly_from_gdd(
-                features.get("gdd", 0.0),
-                species,
-                gdd_threshold_for_year(ctx.gdd_thresholds[species], dt.year, species),
-            )
+        anomaly, above = readiness_features(
+            ctx.readiness_by_species[species], pd.DatetimeIndex([dt.normalize()])
         )
+        features["onset_anomaly"] = float(anomaly[0])
+        features["gdd_above_threshold"] = float(above[0])
     else:
         features["days_since_typical_onset"] = 0.0
         features["onset_anomaly"] = 0.0
+        features["gdd_above_threshold"] = 0.0
 
     # Interannual load: which kind of year this is, from the seasons before it.
     year = int(season_year(species, pd.DatetimeIndex([dt]))[0])
