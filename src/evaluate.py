@@ -16,7 +16,7 @@ from .types import (
     ALL_SPECIES,
     FEATURE_COLS,
     LAG_FEATURES,
-    value_to_level,
+    daily_levels,
     is_season_active,
     season_gate_active,
     SPECIES_THRESHOLDS,
@@ -156,11 +156,14 @@ def temporal_split_evaluate(
                     "fold": fold_num,
                     "error": float(preds[i]) - y_test.iloc[i],
                     "abs_error": abs(float(preds[i]) - y_test.iloc[i]),
-                    "level_actual": value_to_level(y_test.iloc[i], species_name).value,
-                    "level_predicted": value_to_level(float(preds[i]), species_name).value,
                 })
 
     df = pd.DataFrame(results)
+    if df.empty:
+        return df
+    # Daily-mean levels, as the rollout and the forecaster assign them.
+    df["level_actual"] = daily_levels(df, "actual")
+    df["level_predicted"] = daily_levels(df, "predicted")
     return df
 
 

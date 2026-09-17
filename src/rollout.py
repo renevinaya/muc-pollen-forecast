@@ -45,6 +45,7 @@ from .types import (
     UPWIND_FEATURES,
     WEATHER_COLUMNS,
     WINDOWS_PER_DAY,
+    daily_levels,
     season_gate_active,
     value_to_level,
 )
@@ -287,11 +288,16 @@ def rollout_evaluate(
                         "fold": fold_num,
                         "error": predicted - actual,
                         "abs_error": abs(predicted - actual),
-                        "level_actual": value_to_level(actual, name).value,
-                        "level_predicted": value_to_level(predicted, name).value,
                     })
 
-    return pd.DataFrame(results)
+    frame = pd.DataFrame(results)
+    if frame.empty:
+        return frame
+    # Levels are a property of the day: the thresholds are daily means, so
+    # each forecast's own daily mean is what gets levelled, on both sides.
+    frame["level_actual"] = daily_levels(frame, "actual", by=("origin",))
+    frame["level_predicted"] = daily_levels(frame, "predicted", by=("origin",))
+    return frame
 
 
 # --- Reporting --------------------------------------------------------------

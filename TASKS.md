@@ -439,10 +439,37 @@ What did change, and is kept:
   than N windows, cap confidence and say so in the output.
 - [ ] **D.3 Degradation flags (was 4.3).** Emit a per-run list of feature
   groups that were defaulted (NDVI, DWD, weather forecast fallback).
-- [ ] **D.4 Level-threshold semantics (was 4.5).** Daily-mean DWD/ePIN
-  thresholds are applied to 3 h values, overstating midday peaks. Either
-  calibrate 3 h thresholds or compute levels on a daily aggregate. This also
-  changes what "onset" means to a user, so do it before tuning B further.
+- [x] **D.4 Level-threshold semantics (was 4.5).** **Done — levels are
+  daily-mean levels.** The DWD/ePIN thresholds are defined on daily means;
+  the app applied them to 3 h values. Now a window's level is the level of
+  its calendar day's mean (`daily_levels` in `src/types.py`), in the
+  forecaster, the rollout benchmark and the classic one alike; the values
+  keep their 3 h shape, and the DWD blend nudges the day's mean and spreads
+  it over the day's predicted windows. The model and its predictions are
+  unchanged, so the benchmark is a re-scoring of the B.5 rollout under both
+  definitions:
+
+  | | exact level | within one | over-predicted | under-predicted |
+  |---|---|---|---|---|
+  | 3 h values (before) | 76.3% | 96.2% | 16.4% | 7.3% |
+  | daily means (D.4) | 72.8% | 99.5% | 10.1% | 17.1% |
+
+  Under the old definition 15% of the pollen-bearing windows in the history
+  read a level above their own day's, and 78% of all windows were `none`
+  (every night window); under the daily one `none` is 55% and `low` 31%,
+  because the night windows of a pollen day are part of that day. That is
+  why exact accuracy falls while within-one rises: the easy `none` rows
+  became `low` rows the model must get within ±10 grains of daily mean, and
+  it misses low on 17% of them. The onset benchmark is unaffected (its
+  timing and amount scores were already on daily means). Confidence
+  recalibrated on the same rollout under the new definition: on the rows the
+  forecast emits (value > 0.5, n = 22,358) the published level is exactly
+  right 65% of the time and within one level 99% (was 36% / 89%) — a level
+  that belongs to the day is easier to get right than one that belongs to
+  a window, and it is the one the user now sees. Persistence's level
+  accuracy under the daily definition is 66.6% against the model's 73.5%
+  at day 1, where the 3-hour definition had persistence *ahead* (78.7% vs
+  76.8%) because predicting `none` at night was free.
 - [ ] **D.5 Discriminative confidence (was 4.6).** Quantile-ensemble spread or
   conformal intervals over the rollout residuals. Schema change.
 
@@ -460,13 +487,9 @@ What did change, and is kept:
 ## Suggested order
 
 Phases A and C are done, and B.1–B.6 with them; A.5 and B.8 were tried and
-parked. D.1 is done. Next: D.4 → B.7 → D.2/D.3 → E.x → D.5. Nothing left on
+parked. D.1 and D.4 are done. Next: B.7 → D.2/D.3 → E.x → D.5. Nothing left on
 the list claims the heavy-year ramp; that now needs a data source that sees
-a season before Munich does (B.8, last paragraph). B.8 (upwind season load) is now the only
-item on the list with a claim on the heavy-year ramp: B.5 showed the upwind
-stations carry the information and that a last-day or last-week maximum
-does not deliver it. D.1 early because it is a five-line change that makes
-finished work visible.
+a season before Munich does (B.8, last paragraph).
 
 ## Done so far (first task list)
 

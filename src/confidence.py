@@ -23,7 +23,8 @@ readings and they differ a lot:
 
 * ``confidence`` — P(the emitted level is exactly right).
 * ``confidence_within_one`` — P(the truth is within one level of it), which is
-  closer to "would a reader have behaved correctly". That runs around 89%.
+  closer to "would a reader have behaved correctly". That runs around 99% on
+  daily-mean levels (D.4; it was 89% on the 3-hour levels before it).
 
 The table is **flat**: one rate for everything, plus a small per-horizon
 offset. That is not the obvious design — the plan called for per-species,

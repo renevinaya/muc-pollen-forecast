@@ -59,21 +59,39 @@ def _level_band_midpoint(species: str, level_num: int) -> float:
     return (mod_max + high_max) / 2.0
 
 
-def _blend_with_dwd(value: float, species: str, dwd_num: float) -> float:
-    """Nudge a model value one level toward the DWD categorical forecast.
+def blend_day_with_dwd(day_mean: float, species: str, dwd_num: float) -> float | None:
+    """The daily mean to aim for after nudging one level toward DWD's index.
 
-    Conservative: moves at most one level step (never fabricates pollen far
-    outside the model's range) and blends 50% (never fully overrides the model,
-    so a nonzero prediction is never zeroed). Used only for DWD-covered dates.
+    Levels are daily means (see :func:`src.types.value_to_level`), so the
+    comparison with DWD's daily index is made on the day's mean, not on a
+    single window. Conservative: moves at most one level step (never
+    fabricates pollen far outside the model's range) and blends 50% (never
+    fully overrides the model). Returns None when the day already sits at
+    DWD's level.
     """
-    our_num = _LEVEL_TO_NUM[value_to_level(value, species).value]
+    our_num = _LEVEL_TO_NUM[value_to_level(day_mean, species).value]
     target_round = int(round(dwd_num))
     if target_round == our_num:
-        return value
+        return None
     step = 1 if target_round > our_num else -1
     target_num = max(0, min(3, our_num + step))
     target_value = _level_band_midpoint(species, target_num)
-    return max(0.0, value * 0.5 + target_value * 0.5)
+    return max(0.0, day_mean * 0.5 + target_value * 0.5)
+
+
+def apply_day_blend(values: dict[pd.Timestamp, float], target_mean: float) -> dict[pd.Timestamp, float]:
+    """Scale a day's predicted windows so their mean moves to *target_mean*.
+
+    Keeps the diurnal shape; a day the model has at zero gets the target
+    flat across its windows, since there is no shape to keep.
+    """
+    if not values:
+        return values
+    current = float(np.mean(list(values.values())))
+    if current <= 0:
+        return {dt: target_mean for dt in values}
+    factor = target_mean / current
+    return {dt: v * factor for dt, v in values.items()}
 
 
 def _no_model_prediction(lag: LagState) -> float:
@@ -202,6 +220,57 @@ def generate_forecast(
     if n_obs_windows > 0:
         print(f"Real-time assimilation: {n_obs_windows} observed windows will use actual data")
 
+    # Pass 1: one value per (window, species) — the observation where there
+    # is one, the model otherwise, the season gate last.
+    values: dict[tuple[pd.Timestamp, str], float] = {}
+    for dt in windows:
+        for species in ALL_SPECIES:
+            if (dt, species) in observed:
+                prediction = observed[(dt, species)]
+            else:
+                lead = max(1, int((dt - origins[species]) / WINDOW) + 1)
+                if species in models:
+                    pred_log = predict_window(
+                        models[species], ctx, species, dt, lags[species], lead
+                    )
+                    prediction = float(inv_log_transform(np.array([pred_log]))[0])
+                else:
+                    prediction = _no_model_prediction(lags[species])
+            # Force to zero only outside the *widened* season window (core ±
+            # shoulder), so early-onset events are no longer structurally zeroed.
+            if not season_gate_active(species, dt.month):
+                prediction = 0.0
+            values[(dt, species)] = prediction
+
+    # Pass 2: the DWD blend, on the days DWD covers. Levels are daily means,
+    # so the day's mean is what is set against DWD's index, and the nudge is
+    # spread over the day's *predicted* windows; observations stay as they
+    # are and gated days are left at zero.
+    by_day: dict[tuple[object, str], list[pd.Timestamp]] = {}
+    for dt in windows:
+        for species in ALL_SPECIES:
+            by_day.setdefault((dt.date(), species), []).append(dt)
+    for (day, species), dts in by_day.items():
+        dwd_num = dwd_levels.get((day, species))
+        if dwd_num is None or not season_gate_active(species, dts[0].month):
+            continue
+        predicted = {dt: values[(dt, species)] for dt in dts if (dt, species) not in observed}
+        if not predicted:
+            continue
+        day_mean = float(np.mean([values[(dt, species)] for dt in dts]))
+        target = blend_day_with_dwd(day_mean, species, dwd_num)
+        if target is None:
+            continue
+        for dt, v in apply_day_blend(predicted, target).items():
+            values[(dt, species)] = v
+
+    # Pass 3: the level of a window is the level of its day's mean.
+    day_mean_of: dict[tuple[object, str], float] = {
+        key: float(np.mean([values[(dt, species)] for dt in dts]))
+        for (key, dts) in by_day.items()
+        for species in [key[1]]
+    }
+
     window_results: list[tuple[str, WindowForecast]] = []
     prev_date_str: str | None = None
     day_idx = -1
@@ -218,33 +287,9 @@ def generate_forecast(
         for species in ALL_SPECIES:
             has_model = species in models
             has_observation = (dt, species) in observed
+            prediction = values[(dt, species)]
 
-            if has_observation:
-                prediction = observed[(dt, species)]
-            else:
-                lead = max(1, int((dt - origins[species]) / WINDOW) + 1)
-                if has_model:
-                    pred_log = predict_window(
-                        models[species], ctx, species, dt, lags[species], lead
-                    )
-                    prediction = float(inv_log_transform(np.array([pred_log]))[0])
-                else:
-                    prediction = _no_model_prediction(lags[species])
-
-            # DWD inference-time blend, for the dates DWD covers. Skips real
-            # observations (keep actual data) and runs before the season gate,
-            # so the gate has the final say.
-            if not has_observation:
-                dwd_num = dwd_levels.get((dt.date(), species))
-                if dwd_num is not None:
-                    prediction = _blend_with_dwd(prediction, species, dwd_num)
-
-            # Force to zero only outside the *widened* season window (core ±
-            # shoulder), so early-onset events are no longer structurally zeroed.
-            if not season_gate_active(species, dt.month):
-                prediction = 0.0
-
-            level = value_to_level(prediction, species).value
+            level = value_to_level(day_mean_of[(dt.date(), species)], species).value
             exact, within_one = confidence_for(
                 calibration,
                 species,

@@ -367,7 +367,12 @@ _DEFAULT_THRESHOLDS = (10, 50, 200)
 def value_to_level(value: float, species: str | None = None) -> PollenLevel:
     """Convert a numeric pollen value to a categorical level.
 
-    When *species* is given, use DWD species-specific thresholds.
+    When *species* is given, use DWD species-specific thresholds. Those
+    thresholds are defined on **daily means**, so *value* must be one: pass a
+    calendar day's mean, not a single 3h window (see :func:`daily_levels`).
+    A midday window runs at two to three times its day's mean, and 15% of
+    the pollen-bearing windows in the history read a level higher than
+    their day when the thresholds are applied to them directly.
     """
     if value <= 0:
         return PollenLevel.NONE
@@ -381,6 +386,26 @@ def value_to_level(value: float, species: str | None = None) -> PollenLevel:
     if value <= high_max:
         return PollenLevel.HIGH
     return PollenLevel.VERY_HIGH
+
+
+def daily_levels(
+    frame: "Any", value: str, species: str = "species", by: tuple[str, ...] = ()
+) -> "Any":
+    """The level of each row's calendar day, from the day's mean of *value*.
+
+    *frame* needs a ``date`` column; *by* names further columns a day is
+    grouped by (the rollout groups by forecast origin as well, so each
+    forecast's own daily mean is what gets levelled). Returns a Series
+    aligned with *frame*.
+    """
+    import pandas as pd
+
+    day = pd.to_datetime(frame["date"]).dt.normalize()
+    means = frame.groupby([day, frame[species], *[frame[c] for c in by]])[value].transform("mean")
+    return pd.Series(
+        [value_to_level(float(v), str(sp)).value for v, sp in zip(means, frame[species])],
+        index=frame.index,
+    )
 
 
 @dataclass
