@@ -359,12 +359,31 @@ What did change, and is kept:
   expected to reach it either. What would: a measured signal that precedes
   the local season, i.e. upwind stations (B.5), or the DWD forecast level
   for the first days, which already blends in for today/tomorrow.
-- [ ] **B.8 Upwind season load.** B.5's follow-up: a cumulative feature —
-  the upwind stations' season-to-date total (log, since 1 Jan or since the
-  species' upwind onset) and its ratio to the same total in Munich — so the
-  model can read on day 5 of a season whether the region is having a heavy
-  one. Accept on the B.1 ramp ratios for Betula 2024/2026, which every
-  change so far has left at 0.06–0.18.
+- [ ] **B.8 Upwind season load.** **Tried — not adopted** (parked on
+  `claude/forecast-app-review-xwisqv`, commit `598fdd2`). Four features on
+  top of the B.5 block, anchored at the origin: the log1p sum of the upwind
+  readings since the season-year start, that sum against the median of the
+  earlier season years at the same 3h slot of the same season day (0 while
+  there is no earlier year), Munich's own season-to-date sum, and the
+  difference between the two. 69 features. Same six folds, B.5 → B.8: MAE
+  6.79 → 7.07, RMSE 43.6 → 44.0, bias −0.34 → +0.28, level accuracy
+  unchanged; all of it March 2026, where the region's heavy-year signal is
+  read before the local season starts (Quercus in-season MAE 24 → 34,
+  Fraxinus 24 → 29, Populus 70 → 74, Betula 11 → 14). Onset benchmark:
+  hazel and alder timing a day better at most horizons, but false starts
+  46 → 60 run-days (Betula 2024 19 days early at d1–d3), Betula 2025's
+  ±10-day MAE 93 → 115, and **the heavy-year ramp where it was**: Betula
+  2024 / 2026 at 0.08 / 0.17 of the truth in days 5–9 (B.5: 0.06 / 0.18).
+
+  Why it cannot work as posed: the four stations share Munich's phenology,
+  so on day 5 of Munich's season the region's season is also five days
+  old and its season-to-date sum is as small and as timing-dominated as
+  Munich's own; the 16 000-grain Viechtach peaks that mark 2024 and 2026
+  arrive two weeks in, when the local lag block already knows. A season's
+  amount is visible early only from somewhere that flowers earlier — a
+  station 300+ km south-west, or a physics forecast (CAMS, off by default,
+  see README) that carries the emission inventory. Both are new data
+  sources, not features; neither is on this list yet.
 - [ ] **B.7 December continuity (was part of 5.3).** `gdd` and the forcing
   accumulation reset on 1 Jan, so a hazel season that starts in a warm
   December (2023 onset = 1 Jan, i.e. already running) is invisible to the
@@ -440,8 +459,10 @@ What did change, and is kept:
 
 ## Suggested order
 
-Phases A and C are done, and B.1–B.6 with them; A.5 was tried and parked.
-D.1 is done. Next: B.8 → D.4 → B.7 → D.2/D.3 → E.x → D.5. B.8 (upwind season load) is now the only
+Phases A and C are done, and B.1–B.6 with them; A.5 and B.8 were tried and
+parked. D.1 is done. Next: D.4 → B.7 → D.2/D.3 → E.x → D.5. Nothing left on
+the list claims the heavy-year ramp; that now needs a data source that sees
+a season before Munich does (B.8, last paragraph). B.8 (upwind season load) is now the only
 item on the list with a claim on the heavy-year ramp: B.5 showed the upwind
 stations carry the information and that a last-day or last-week maximum
 does not deliver it. D.1 early because it is a five-line change that makes
