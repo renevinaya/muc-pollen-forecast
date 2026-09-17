@@ -27,7 +27,7 @@ from src.trainer import (
     _add_upwind_features,
     _add_weather_derived_features,
 )
-from src.upwind import upwind_series
+from src.upwind import upwind_tables
 from src.types import ALL_SPECIES, FEATURE_COLS, WEATHER_COLUMNS
 
 WINDOW = pd.Timedelta(hours=3)
@@ -142,7 +142,7 @@ def trainer_features(
     df = _add_phenology_features(df, species)
     df = _add_load_features(df, species)
     df = _add_lag_features(df, lead=lead)
-    df = _add_upwind_features(df, upwind_series(upwind, species), lead=lead)
+    df = _add_upwind_features(df, species, upwind_tables(upwind, species), lead=lead)
     return df.set_index("date")
 
 

@@ -48,7 +48,8 @@ from .types import (
     SPECIES_ACTIVATION_TEMP,
     _DEFAULT_ACTIVATION_TEMP,
 )
-from .upwind import upwind_block, upwind_series, with_lead_feature
+from .season_load import season_year
+from .upwind import UpwindTables, local_season_sum, upwind_block, upwind_tables, with_local_features
 from .onset import (
     climatological_onset_doy,
     observed_onsets,
@@ -479,7 +480,9 @@ def onset_ramp_flag(history: pd.DataFrame, species: str, dates: pd.Series) -> np
     return flag
 
 
-def _add_upwind_features(df: pd.DataFrame, series: pd.Series, lead: int = 1) -> pd.DataFrame:
+def _add_upwind_features(
+    df: pd.DataFrame, species: str, tables: UpwindTables, lead: int = 1
+) -> pd.DataFrame:
     """Upwind-station block anchored *lead* windows back, like the lag block.
 
     Built on the time grid (:func:`src.upwind.upwind_block`), so it is
@@ -487,8 +490,11 @@ def _add_upwind_features(df: pd.DataFrame, series: pd.Series, lead: int = 1) -> 
     lead feature is the difference against ``pollen_max_8``.
     """
     df = df.copy()
-    block = upwind_block(series, df["date"], lead=lead)
-    block = with_lead_feature(block, df["pollen_max_8"].to_numpy(dtype=float))
+    block = upwind_block(tables, df["date"], lead=lead)
+    season = local_season_sum(
+        df["value"].to_numpy(dtype=float), season_year(species, df["date"]), lead
+    )
+    block = with_local_features(block, df["pollen_max_8"].to_numpy(dtype=float), season)
     for col in UPWIND_FEATURES:
         df[col] = block[col].to_numpy()
     return df
@@ -541,14 +547,14 @@ def prepare_training_data(
     species_df = _add_season_feature(species_df, species)
     species_df = _add_phenology_features(species_df, species)
     species_df = _add_load_features(species_df, species)
-    upwind_by_window = upwind_series(upwind, species)
+    tables = upwind_tables(upwind, species)
 
     # Everything above is independent of the lead, so it is built once and only
     # the lag block is rebuilt per lead.
     per_lead: list[pd.DataFrame] = []
     for lead in leads:
         frame = _add_lag_features(species_df, lead=lead)
-        frame = _add_upwind_features(frame, upwind_by_window, lead=lead)
+        frame = _add_upwind_features(frame, species, tables, lead=lead)
         frame = frame.dropna(subset=LAG_FEATURES)
         if not frame.empty:
             per_lead.append(frame)

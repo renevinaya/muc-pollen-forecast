@@ -189,6 +189,11 @@ UPWIND_FEATURES = [
     "upwind_max_8",     # 24h max over upwind stations (log1p)
     "upwind_max_56",    # 7-day max over upwind stations (log1p)
     "upwind_lead_8",    # upwind_max_8 - pollen_max_8: upwind ahead of Munich
+    # Season load (B.8): how much of a season the region has had so far.
+    "upwind_season_sum",   # log1p of the upwind sum since the season-year start
+    "upwind_season_anom",  # upwind_season_sum minus the previous years' at the same day
+    "pollen_season_sum",   # log1p of Munich's own sum since the season-year start
+    "upwind_season_lead",  # upwind_season_sum - pollen_season_sum
 ]
 
 # How far ahead of the last measurement a prediction is being made, in 3h

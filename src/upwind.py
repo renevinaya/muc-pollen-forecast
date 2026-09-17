@@ -21,11 +21,14 @@ station outage shifts nothing.
 from __future__ import annotations
 
 import time
+from dataclasses import dataclass
 from datetime import date, timedelta
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
+
+from .season_load import boundary_month, season_year
 
 
 DATA_DIR = Path(__file__).parent.parent / "data"
@@ -139,6 +142,29 @@ def sync_upwind(path: Path = UPWIND_FILE) -> pd.DataFrame:
 
 # --- Features ---------------------------------------------------------------
 
+MAX_COLUMNS = ["upwind_max_8", "upwind_max_56"]
+SEASON_COLUMNS = ["upwind_season_sum", "upwind_season_anom"]
+
+
+@dataclass
+class UpwindTables:
+    """One species' upwind readings as lookup tables on the 3h grid.
+
+    ``series`` is log1p of the highest reading at any station per window, NaN
+    where nobody reported. ``season`` holds the season-load pair per window:
+    the log1p sum of the readings since the season-year start, and that sum
+    against the median of the earlier season years at the same day of the
+    season (0 while there is no earlier year). Both are as of the window's
+    end, so the value at window ``t`` is what is known one window later.
+    """
+
+    series: pd.Series
+    season: pd.DataFrame
+
+    @property
+    def empty(self) -> bool:
+        return self.series.empty
+
 
 def upwind_series(upwind: pd.DataFrame | None, species: str) -> pd.Series:
     """log1p of the highest upwind reading per 3h window, on a full time grid.
@@ -156,50 +182,147 @@ def upwind_series(upwind: pd.DataFrame | None, species: str) -> pd.Series:
     return np.log1p(per_window.reindex(grid).astype(float))
 
 
-def upwind_block(series: pd.Series, dates: pd.Series | pd.DatetimeIndex, lead: int) -> pd.DataFrame:
+def _season_start(species: str, years: np.ndarray) -> pd.DatetimeIndex:
+    """First day of each season year: the boundary month of the year before."""
+    month = boundary_month(species)
+    start_year = years if month == 1 else years - 1
+    return pd.to_datetime(
+        {"year": start_year, "month": np.full(len(years), month), "day": np.ones(len(years), dtype=int)}
+    )
+
+
+def season_frame(series: pd.Series, species: str) -> pd.DataFrame:
+    """The season-load pair per window of *series* (see :class:`UpwindTables`)."""
+    if series.empty:
+        return pd.DataFrame(columns=SEASON_COLUMNS, dtype=float)
+    index = pd.DatetimeIndex(series.index)
+    linear = np.expm1(series).fillna(0.0)  # an unreported window adds nothing
+    years = season_year(species, index)
+    cum = linear.groupby(years).cumsum()
+    season_sum = np.log1p(cum)
+
+    # Reference: the median cumulative sum of the earlier season years at the
+    # same 3h slot of the same day of the season.
+    day = (index.normalize() - pd.DatetimeIndex(_season_start(species, years))).days
+    slot = day.to_numpy() * 8 + index.hour.to_numpy() // 3
+    per_slot = pd.DataFrame({"year": years, "slot": slot, "cum": cum.to_numpy()})
+    table = per_slot.groupby(["slot", "year"])["cum"].max().unstack("year").sort_index()
+    reference = pd.DataFrame(index=table.index, columns=table.columns, dtype=float)
+    for i, year in enumerate(table.columns):
+        if i:
+            reference[year] = table.iloc[:, :i].median(axis=1)
+    ref_at = reference.stack(future_stack=True)
+    keys = pd.MultiIndex.from_arrays([slot, years])
+    ref_values = ref_at.reindex(keys).to_numpy(dtype=float)
+    anomaly = np.where(np.isnan(ref_values), 0.0, season_sum.to_numpy() - np.log1p(ref_values))
+    return pd.DataFrame(
+        {"upwind_season_sum": season_sum.to_numpy(), "upwind_season_anom": anomaly}, index=index
+    )
+
+
+_TABLES_CACHE: dict[tuple[int, int, str], UpwindTables] = {}
+
+
+def upwind_tables(upwind: pd.DataFrame | None, species: str) -> UpwindTables:
+    """The lookup tables for *species*, cached per upwind frame.
+
+    The rollout seeds one lag state per origin and the tables cover eight
+    years, so they are built once per (frame, species) and reused.
+    """
+    if upwind is None or upwind.empty:
+        return UpwindTables(pd.Series(dtype=float), pd.DataFrame(columns=SEASON_COLUMNS, dtype=float))
+    key = (id(upwind), len(upwind), species)
+    tables = _TABLES_CACHE.get(key)
+    if tables is None:
+        if len(_TABLES_CACHE) > 64:
+            _TABLES_CACHE.clear()
+        series = upwind_series(upwind, species)
+        tables = UpwindTables(series, season_frame(series, species))
+        _TABLES_CACHE[key] = tables
+    return tables
+
+
+def upwind_block(tables: UpwindTables, dates: pd.Series | pd.DatetimeIndex, lead: int) -> pd.DataFrame:
     """The upwind features for *dates*, anchored *lead* windows before each.
 
-    Mirrors the local lag block: at ``lead=1`` the features describe the 24 h
-    and 7 d ending one window before the target; at ``lead=L`` the same spans
-    ending L windows before it.
+    Mirrors the local lag block: at ``lead=1`` the features describe the state
+    one window before the target; at ``lead=L`` the state L windows before it.
     """
     index = pd.DatetimeIndex(pd.to_datetime(dates))
-    columns = ["upwind_max_8", "upwind_max_56"]
-    if series.empty or len(index) == 0:
+    columns = MAX_COLUMNS + SEASON_COLUMNS
+    if tables.empty or len(index) == 0:
         return pd.DataFrame(np.nan, index=index, columns=columns)
+    series = tables.series
     # Carry the grid past the last reading so a target after the station's
-    # last report still sees the 7 days before its origin, as serving would.
+    # last report still sees the state before its origin, as serving would.
     grid = pd.date_range(series.index.min(), max(series.index.max(), index.max()), freq=WINDOW)
     on_grid = series.reindex(grid)
     short = on_grid.rolling(SHORT_WINDOWS, min_periods=1).max().shift(lead)
     long = on_grid.rolling(LONG_WINDOWS, min_periods=1).max().shift(lead)
+    season = tables.season.reindex(grid).ffill().shift(lead)
     return pd.DataFrame(
-        {"upwind_max_8": short.reindex(index).to_numpy(),
-         "upwind_max_56": long.reindex(index).to_numpy()},
+        {
+            "upwind_max_8": short.reindex(index).to_numpy(),
+            "upwind_max_56": long.reindex(index).to_numpy(),
+            "upwind_season_sum": season["upwind_season_sum"].reindex(index).to_numpy(),
+            "upwind_season_anom": season["upwind_season_anom"].reindex(index).to_numpy(),
+        },
         index=index,
     )
 
 
-def with_lead_feature(block: pd.DataFrame, local_max_8: pd.Series | np.ndarray | float) -> pd.DataFrame:
-    """Add ``upwind_lead_8``: how far the upwind 24 h maximum sits above Munich's."""
+def upwind_state(tables: UpwindTables, origin: pd.Timestamp) -> dict[str, float]:
+    """The upwind features as of *origin*, from readings strictly before it."""
+    nan = float("nan")
+    if tables.empty:
+        return {c: nan for c in MAX_COLUMNS + SEASON_COLUMNS}
+    origin = pd.Timestamp(origin)
+    last = origin - WINDOW
+    series = tables.series
+    short = series.loc[origin - SHORT_WINDOWS * WINDOW : last]
+    long = series.loc[origin - LONG_WINDOWS * WINDOW : last]
+    if last < series.index.min():
+        season = {c: nan for c in SEASON_COLUMNS}
+    else:
+        row = tables.season.reindex([last], method="ffill").iloc[0]
+        season = {c: float(row[c]) for c in SEASON_COLUMNS}
+    return {
+        "upwind_max_8": float(short.max()) if short.notna().any() else nan,
+        "upwind_max_56": float(long.max()) if long.notna().any() else nan,
+        **season,
+    }
+
+
+def with_local_features(
+    block: pd.DataFrame,
+    local_max_8: pd.Series | np.ndarray | float,
+    local_season_sum: pd.Series | np.ndarray | float,
+) -> pd.DataFrame:
+    """Add the features that set the upwind block against Munich's own.
+
+    ``upwind_lead_8`` is how far the upwind 24 h maximum sits above Munich's;
+    ``pollen_season_sum`` is Munich's own season-to-date sum (log1p) and
+    ``upwind_season_lead`` how far the region's is above it.
+    """
     block = block.copy()
     block["upwind_lead_8"] = block["upwind_max_8"] - np.asarray(local_max_8, dtype=float)
+    block["pollen_season_sum"] = np.asarray(local_season_sum, dtype=float)
+    block["upwind_season_lead"] = block["upwind_season_sum"] - block["pollen_season_sum"]
     return block
 
 
-def upwind_state(upwind: pd.DataFrame | None, species: str, origin: pd.Timestamp) -> dict[str, float]:
-    """The upwind features as of *origin*, from readings strictly before it."""
-    if upwind is None or upwind.empty:
-        return {"upwind_max_8": float("nan"), "upwind_max_56": float("nan")}
-    origin = pd.Timestamp(origin)
-    sp = upwind[(upwind["species"] == species)]
-    dates = pd.to_datetime(sp["date"])
-    recent = sp[(dates < origin) & (dates >= origin - LONG_WINDOWS * WINDOW)]
-    if recent.empty:
-        return {"upwind_max_8": float("nan"), "upwind_max_56": float("nan")}
-    rdates = pd.to_datetime(recent["date"])
-    short = recent[rdates >= origin - SHORT_WINDOWS * WINDOW]
-    return {
-        "upwind_max_8": float(np.log1p(short["value"].max())) if not short.empty else float("nan"),
-        "upwind_max_56": float(np.log1p(recent["value"].max())),
-    }
+def local_season_sum(values: np.ndarray, years: np.ndarray, lead: int) -> np.ndarray:
+    """log1p of the sum of *values* over the origin's season year, as of the origin.
+
+    Row-based like the lag block: the origin of row *i* is row ``i - lead + 1``
+    and the sum runs over the rows before it that share its season year, so it
+    restarts at 0 on the first window of a season year.
+    """
+    v = pd.Series(np.asarray(values, dtype=float))
+    y = pd.Series(np.asarray(years, dtype=float))
+    cum = v.groupby(y.to_numpy()).cumsum().shift(lead).to_numpy()
+    origin_year = y.shift(lead - 1).to_numpy()
+    last_year = y.shift(lead).to_numpy()
+    out = np.where(origin_year == last_year, cum, 0.0)
+    out[np.isnan(last_year)] = np.nan  # no row before the origin at all, like the lags
+    return np.log1p(out)

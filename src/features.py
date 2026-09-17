@@ -38,7 +38,7 @@ from .types import (
     LOAD_FEATURES,
     is_season_active,
 )
-from .upwind import upwind_state
+from .upwind import upwind_state, upwind_tables
 from .season_load import load_features_for_years, season_totals, season_year
 from .onset import (
     onset_doy_by_day,
@@ -89,6 +89,8 @@ class LagState:
     day: pd.Timestamp | None = None
     # The upwind stations as of the origin (src/upwind.py); NaN without data.
     upwind: dict[str, float] = field(default_factory=dict)
+    # log1p of this species' measured sum over the origin's season year.
+    season_sum: float = 0.0
 
     @classmethod
     def from_history(
@@ -103,7 +105,7 @@ class LagState:
         *upwind* is the long-format upwind-station frame; its readings before
         the origin become the upwind block.
         """
-        upwind_now = upwind_state(upwind, species, pd.Timestamp(origin))
+        upwind_now = upwind_state(upwind_tables(upwind, species), pd.Timestamp(origin))
         if history.empty:
             return cls(log_vals=[0.0] * LAG_WINDOW, upwind=upwind_now)
 
@@ -122,13 +124,23 @@ class LagState:
         active = np.flatnonzero(values > 0)
         dsa = float(len(values) - 1 - active[-1]) if active.size else NEVER_ACTIVE
 
+        # Season-to-date sum: the rows before the origin in its season year.
+        years = season_year(species, sp["date"])
+        this_year = season_year(species, pd.DatetimeIndex([pd.Timestamp(origin)]))[0]
+        season_sum = float(np.log1p(values[years == this_year].sum()))
+
         # Earlier windows of the origin's own calendar day are already measured.
         day = pd.Timestamp(origin).normalize()
         same_day = sp[pd.to_datetime(sp["date"]).dt.normalize() == day]
         morning = list(np.log1p(same_day["value"].to_numpy(dtype=float)))
 
         return cls(
-            log_vals=log_vals, morning=morning, days_since_active=dsa, day=day, upwind=upwind_now
+            log_vals=log_vals,
+            morning=morning,
+            days_since_active=dsa,
+            day=day,
+            upwind=upwind_now,
+            season_sum=season_sum,
         )
 
     def lag_features(self) -> dict[str, float]:
@@ -158,12 +170,18 @@ class LagState:
         }
 
     def upwind_features(self, local_max_8: float) -> dict[str, float]:
-        """The upwind block as of the origin, with the lead over Munich."""
-        short = float(self.upwind.get("upwind_max_8", float("nan")))
+        """The upwind block as of the origin, set against Munich's own."""
+        nan = float("nan")
+        short = float(self.upwind.get("upwind_max_8", nan))
+        season = float(self.upwind.get("upwind_season_sum", nan))
         return {
             "upwind_max_8": short,
-            "upwind_max_56": float(self.upwind.get("upwind_max_56", float("nan"))),
+            "upwind_max_56": float(self.upwind.get("upwind_max_56", nan)),
             "upwind_lead_8": short - local_max_8,
+            "upwind_season_sum": season,
+            "upwind_season_anom": float(self.upwind.get("upwind_season_anom", nan)),
+            "pollen_season_sum": float(self.season_sum),
+            "upwind_season_lead": season - float(self.season_sum),
         }
 
 
