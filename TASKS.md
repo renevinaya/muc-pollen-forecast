@@ -409,9 +409,13 @@ What did change, and is kept:
 
 ## Phase D — Honesty of the output
 
-- [ ] **D.1 Publish confidence.** Add `confidence` and `confidence_within_one`
-  to `to_web_dict()`. This changes the schema the Vue frontend reads, so it
-  wants the frontend in the loop — but until it is done 4.4 has no effect.
+- [x] **D.1 Publish confidence.** **Done.** Every point in the published
+  `forecast.json` (the `to_web_dict()` measurement format) now carries
+  `level`, `confidence` and `confidence_within_one` beside `value`. Additive
+  — a frontend that ignores the keys keeps working — so the Vue app can pick
+  them up whenever it likes; until it does, the numbers are at least there.
+  The README's output section now documents the file that is actually
+  published (it described `to_dict()`, which nothing publishes).
 - [ ] **D.2 Staleness guard (was 4.2).** If the last observation is older
   than N windows, cap confidence and say so in the output.
 - [ ] **D.3 Degradation flags (was 4.3).** Emit a per-run list of feature
@@ -437,7 +441,7 @@ What did change, and is kept:
 ## Suggested order
 
 Phases A and C are done, and B.1–B.6 with them; A.5 was tried and parked.
-Next: D.1 → B.8 → D.4 → B.7 → D.2/D.3 → E.x → D.5. B.8 (upwind season load) is now the only
+D.1 is done. Next: B.8 → D.4 → B.7 → D.2/D.3 → E.x → D.5. B.8 (upwind season load) is now the only
 item on the list with a claim on the heavy-year ramp: B.5 showed the upwind
 stations carry the information and that a last-day or last-week maximum
 does not deliver it. D.1 early because it is a five-line change that makes

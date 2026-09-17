@@ -596,28 +596,28 @@ distribution rather than a point estimate — not a bigger lookup table.
 
 ## Output Format
 
-The forecast JSON (consumed by the Vue frontend) uses 3-hour windows:
+`data/forecast.json` — the file GitHub Pages serves and the Vue frontend
+reads — is species-centric, in the shape of the LGL Bayern measurement API
+so the frontend can treat forecast points like measured ones. Each point
+carries the emitted level and the calibrated confidence pair beside the
+value:
 
 ```json
 {
-  "generated": "2026-03-04T05:00:00.000Z",
+  "generated": "2026-03-04T05:00:00Z",
   "location": "DEMUNC",
-  "forecast": [
+  "measurements": [
     {
-      "date": "2026-03-04",
-      "windows": [
+      "polle": "Alnus",
+      "location": "DEMUNC",
+      "data": [
         {
-          "from": "06:00",
-          "to": "09:00",
-          "species": [
-            {
-              "name": "Alnus",
-              "level": "moderate",
-              "value": 35.2,
-              "confidence": 0.358,
-              "confidence_within_one": 0.888
-            }
-          ]
+          "from": 1772600400,
+          "to": 1772611200,
+          "value": 35.2,
+          "level": "moderate",
+          "confidence": 0.358,
+          "confidence_within_one": 0.888
         }
       ]
     }
@@ -625,4 +625,9 @@ The forecast JSON (consumed by the Vue frontend) uses 3-hour windows:
 }
 ```
 
-A secondary `to_web_dict()` format is also available, restructured as species-centric measurements with Unix timestamps matching the LGL Bayern API format.
+`from`/`to` are Unix seconds bounding the 3-hour window. `confidence` is
+P(the level is exactly right) and `confidence_within_one` P(the truth is
+within one level of it), from the calibration table above; a frontend that
+ignores the two extra keys keeps working. `ForecastOutput.to_dict()` is the
+window-centric form of the same forecast (date → window → species), used
+for logging and tests.

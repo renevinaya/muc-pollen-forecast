@@ -459,7 +459,10 @@ class ForecastOutput:
 
         Restructures from window-centric (date→window→species) to
         species-centric (species→windows) with unix timestamps in seconds,
-        matching the format returned by the ePIN LGL Bayern API.
+        matching the format returned by the ePIN LGL Bayern API. Each point
+        additionally carries the emitted level and the calibrated confidence
+        pair from :class:`SpeciesForecast`, which the measurement format has
+        no slot for; the frontend reads them alongside ``value``.
         """
         from datetime import datetime, timedelta
         from .clock import LOCAL_TZ
@@ -491,6 +494,9 @@ class ForecastOutput:
                         "from": from_unix,
                         "to": to_unix,
                         "value": round(sp.value, 1),
+                        "level": sp.level,
+                        "confidence": round(sp.confidence, 3),
+                        "confidence_within_one": round(sp.confidence_within_one, 3),
                     })
 
         measurements = [
