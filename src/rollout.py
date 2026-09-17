@@ -42,6 +42,7 @@ from .types import (
     FEATURE_COLS,
     FORECAST_DAYS,
     LAG_FEATURES,
+    UPWIND_FEATURES,
     WEATHER_COLUMNS,
     WINDOWS_PER_DAY,
     season_gate_active,
@@ -53,7 +54,7 @@ from .features import (
     ndvi_from_history,
     static_feature_frame,
 )
-from .trainer import prepare_training_data, train_species_model
+from .trainer import finalize_features, prepare_training_data, train_species_model
 
 WINDOW = pd.Timedelta(hours=3)
 
@@ -171,6 +172,7 @@ def rollout_evaluate(
     species: list[str] | None = None,
     months: list[pd.Period] | None = None,
     origin_hour: int = 0,
+    upwind: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """Walk-forward backtest of the real autoregressive forecast.
 
@@ -224,7 +226,9 @@ def rollout_evaluate(
         )
 
         for name in evaluated:
-            x_train, y_train, raw_train, ramp = prepare_training_data(past, name, with_ramp=True)
+            x_train, y_train, raw_train, ramp = prepare_training_data(
+                past, name, with_ramp=True, upwind=upwind
+            )
             if len(x_train) < 14:
                 continue
             model = train_species_model(
@@ -242,9 +246,9 @@ def rollout_evaluate(
                 .to_dict()
             )
 
-            states = [LagState.from_history(history, name, o) for o in origins]
+            states = [LagState.from_history(history, name, o, upwind=upwind) for o in origins]
             lag_blocks = pd.DataFrame(
-                [st.lag_features() for st in states], columns=LAG_FEATURES
+                [st.lag_features() for st in states], columns=LAG_FEATURES + UPWIND_FEATURES
             )
 
             for step in range(horizon_windows):
@@ -259,7 +263,7 @@ def rollout_evaluate(
                 # given step for every origin: step 0 is the first unforecast
                 # window, which is lead 1.
                 lags["lead_windows"] = float(step + 1)
-                x_step = pd.concat([frame, lags], axis=1)[FEATURE_COLS].fillna(0)
+                x_step = finalize_features(pd.concat([frame, lags], axis=1)[FEATURE_COLS])
                 preds_log = np.maximum(0.0, model.predict(x_step))
 
                 horizon_day = step // WINDOWS_PER_DAY + 1

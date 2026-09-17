@@ -24,10 +24,13 @@ from .types import (
 )
 from .onset import ONSET_RUN_DAYS, observed_onsets
 from .rollout import eligible_months
+from .upwind import upwind_series
 from .trainer import (
     prepare_training_data,
     train_species_model,
     _add_lag_features,
+    _add_upwind_features,
+    finalize_features,
     _add_season_feature,
     _add_weather_derived_features,
     _add_ndvi_features,
@@ -43,6 +46,7 @@ def temporal_split_evaluate(
     n_folds: int = 3,
     species: list[str] | None = None,
     months: list[pd.Period] | None = None,
+    upwind: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """
     Monthly forward-chaining cross-validation.
@@ -95,7 +99,7 @@ def temporal_split_evaluate(
 
         for species_name in evaluated_species:
             x_train, y_train, raw_train, ramp = prepare_training_data(
-                train_data, species_name, with_ramp=True
+                train_data, species_name, with_ramp=True, upwind=upwind
             )
             if len(x_train) < 14:
                 continue
@@ -120,6 +124,7 @@ def temporal_split_evaluate(
             species_all = _add_ndvi_features(species_all)
             species_all = _add_intraday_features(species_all)
             species_all = _add_lag_features(species_all)
+            species_all = _add_upwind_features(species_all, upwind_series(upwind, species_name))
             species_all = _add_season_feature(species_all, species_name)
             species_all = _add_phenology_features(species_all, species_name)
 
@@ -130,7 +135,7 @@ def temporal_split_evaluate(
             if species_eval.empty:
                 continue
 
-            x_test = species_eval[FEATURE_COLS].fillna(0)
+            x_test = finalize_features(species_eval[FEATURE_COLS])
             y_test = species_eval["value"]
             preds_log = model.predict(x_test)
             preds = inv_log_transform(np.maximum(0, preds_log))

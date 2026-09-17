@@ -37,6 +37,7 @@ from .types import (
     NDVI_FEATURES,
     PHENOLOGY_FEATURES,
     LOAD_FEATURES,
+    UPWIND_FEATURES,
     SEASON_FEATURE,
     WEATHER_DERIVED_FEATURES,
     LEAD_FEATURES,
@@ -47,6 +48,7 @@ from .types import (
     SPECIES_ACTIVATION_TEMP,
     _DEFAULT_ACTIVATION_TEMP,
 )
+from .upwind import upwind_block, upwind_series, with_lead_feature
 from .onset import (
     climatological_onset_doy,
     observed_onsets,
@@ -477,16 +479,44 @@ def onset_ramp_flag(history: pd.DataFrame, species: str, dates: pd.Series) -> np
     return flag
 
 
+def _add_upwind_features(df: pd.DataFrame, series: pd.Series, lead: int = 1) -> pd.DataFrame:
+    """Upwind-station block anchored *lead* windows back, like the lag block.
+
+    Built on the time grid (:func:`src.upwind.upwind_block`), so it is
+    attached by date rather than by row. Must run after the lag block: the
+    lead feature is the difference against ``pollen_max_8``.
+    """
+    df = df.copy()
+    block = upwind_block(series, df["date"], lead=lead)
+    block = with_lead_feature(block, df["pollen_max_8"].to_numpy(dtype=float))
+    for col in UPWIND_FEATURES:
+        df[col] = block[col].to_numpy()
+    return df
+
+
+def finalize_features(X: pd.DataFrame) -> pd.DataFrame:
+    """The last step before a feature frame reaches XGBoost, in training and
+    serving alike: every NaN becomes 0.
+
+    One function so the trainer, the rollout benchmark and the forecaster
+    cannot disagree about what a missing value looks like to the model.
+    """
+    return X.fillna(0)
+
+
 def prepare_training_data(
     history: pd.DataFrame,
     species: str,
     leads: tuple[int, ...] = TRAINING_LEADS,
     with_ramp: bool = False,
+    upwind: pd.DataFrame | None = None,
 ) -> tuple[pd.DataFrame, pd.Series, pd.Series] | tuple[pd.DataFrame, pd.Series, pd.Series, np.ndarray]:
     """
     Prepare feature matrix X, target y (log-transformed), and raw_values
     (original scale) for a single species. With *with_ramp*, also the
-    onset-ramp flag per row (see :func:`onset_ramp_flag`).
+    onset-ramp flag per row (see :func:`onset_ramp_flag`). *upwind* is the
+    long-format upwind-station frame (see :mod:`src.upwind`); without it the
+    upwind features are NaN.
 
     One copy of the history per entry in *leads*: the same target windows, each
     time with the lag block anchored that many windows further back. This is
@@ -511,12 +541,14 @@ def prepare_training_data(
     species_df = _add_season_feature(species_df, species)
     species_df = _add_phenology_features(species_df, species)
     species_df = _add_load_features(species_df, species)
+    upwind_by_window = upwind_series(upwind, species)
 
     # Everything above is independent of the lead, so it is built once and only
     # the lag block is rebuilt per lead.
     per_lead: list[pd.DataFrame] = []
     for lead in leads:
         frame = _add_lag_features(species_df, lead=lead)
+        frame = _add_upwind_features(frame, upwind_by_window, lead=lead)
         frame = frame.dropna(subset=LAG_FEATURES)
         if not frame.empty:
             per_lead.append(frame)
@@ -531,8 +563,7 @@ def prepare_training_data(
     raw_values = combined["value"].reset_index(drop=True)
     y = pd.Series(log_transform(combined["value"]), index=combined.index)
 
-    # Fill any remaining NaN in features with 0
-    X = X.fillna(0)
+    X = finalize_features(X)
 
     if with_ramp:
         return X, y, raw_values, onset_ramp_flag(species_df, species, combined["date"])
@@ -794,6 +825,7 @@ FEATURE_FAMILIES: dict[str, list[str]] = {
     "cams": CAMS_FEATURES,
     "intraday": INTRADAY_FEATURES,
     "lag": LAG_FEATURES,
+    "upwind": UPWIND_FEATURES,
 }
 
 
@@ -960,7 +992,7 @@ def check_feature_coverage(
     return report
 
 
-def train_all(history: pd.DataFrame) -> dict[str, TwoStageModel]:
+def train_all(history: pd.DataFrame, upwind: pd.DataFrame | None = None) -> dict[str, TwoStageModel]:
     """
     Train one two-stage model per species.  Returns dict[species → TwoStageModel].
     Only trains if there are enough data points (>= 14 days).
@@ -975,7 +1007,9 @@ def train_all(history: pd.DataFrame) -> dict[str, TwoStageModel]:
     check_feature_coverage(history)
 
     for species in ALL_SPECIES:
-        X, y, raw_values, ramp = prepare_training_data(history, species, with_ramp=True)
+        X, y, raw_values, ramp = prepare_training_data(
+            history, species, with_ramp=True, upwind=upwind
+        )
         if len(X) < 14:
             print(f"  {species}: skipped (only {len(X)} training samples, need >= 14)")
             continue

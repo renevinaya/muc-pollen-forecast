@@ -117,7 +117,9 @@ def test_lag_block_is_identical_across_a_whole_forecast(history: pd.DataFrame) -
         LagState.from_history(history, SPECIES, origin).lag_features()
         for _ in range(3)
     ]
-    assert blocks[0] == blocks[1] == blocks[2]
+    # NaN-aware: the upwind features are NaN when no station data is given.
+    assert pd.Series(blocks[0]).equals(pd.Series(blocks[1]))
+    assert pd.Series(blocks[1]).equals(pd.Series(blocks[2]))
 
     # And the state carries no mutation API that could reintroduce a feedback
     # loop by accident.

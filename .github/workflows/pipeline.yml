@@ -13,9 +13,10 @@ on:
         description: >-
           forecast = collect + predict; train = also retrain models;
           backfill = rewrite the weather and NDVI columns of the stored history
-          from the archives (no forecast is published)
+          from the archives; backfill-upwind = fetch the upwind stations'
+          history from pollenscience.eu (neither publishes a forecast)
         type: choice
-        options: [forecast, train, backfill]
+        options: [forecast, train, backfill, backfill-upwind]
         default: forecast
 
 permissions:
@@ -64,12 +65,14 @@ jobs:
             uv run python -m src.main run-train
           elif [ "$MODE" = "backfill" ]; then
             uv run python -m src.main run-backfill
+          elif [ "$MODE" = "backfill-upwind" ]; then
+            uv run python -m src.main backfill-upwind
           else
             uv run python -m src.main run
           fi
 
       - name: Publish forecast.json to GitHub Pages
-        if: env.MODE != 'backfill'
+        if: env.MODE == 'forecast' || env.MODE == 'train'
         run: |
           test -s data/forecast.json || { echo "::error::no forecast.json produced"; exit 1; }
 

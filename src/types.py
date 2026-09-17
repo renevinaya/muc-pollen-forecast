@@ -180,6 +180,17 @@ INTRADAY_FEATURES = [
     "temp_rate_of_change",     # temperature change from previous 3h window (°C)
 ]
 
+# Upwind stations (src/upwind.py): the highest reading at any of the ePIN
+# stations around Munich over the 24 h and 7 d before the forecast origin, in
+# log space, and how far the 24 h upwind maximum sits above Munich's own.
+# Anchored at the origin for every lead, like the lag block. NaN where no
+# station reported.
+UPWIND_FEATURES = [
+    "upwind_max_8",     # 24h max over upwind stations (log1p)
+    "upwind_max_56",    # 7-day max over upwind stations (log1p)
+    "upwind_lead_8",    # upwind_max_8 - pollen_max_8: upwind ahead of Munich
+]
+
 # How far ahead of the last measurement a prediction is being made, in 3h
 # windows (1 = the first unforecast window). The lag block is anchored at the
 # forecast origin rather than the target, so this is what tells the model how
@@ -204,6 +215,7 @@ FEATURE_COLS = (
     + CAMS_FEATURES
     + INTRADAY_FEATURES
     + LAG_FEATURES
+    + UPWIND_FEATURES
     + LEAD_FEATURES
 )
 

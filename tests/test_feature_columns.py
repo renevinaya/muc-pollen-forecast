@@ -18,7 +18,7 @@ from src.trainer import (
     prepare_training_data,
 )
 from src.types import FEATURE_COLS, WEATHER_COLUMNS, WEATHER_FEATURES
-from tests.test_feature_parity import SPECIES, build_history
+from tests.test_feature_parity import SPECIES, build_history, build_upwind
 
 # Raw columns that exist so a *derived* feature can be computed from them.
 # Each is read by name in _add_weather_derived_features.
@@ -77,7 +77,7 @@ def test_every_model_feature_is_actually_supplied(history: pd.DataFrame) -> None
     feature the model chose to ignore. `cams_pollen` sat in the list that way
     for its whole life.
     """
-    x, _, _ = prepare_training_data(history, SPECIES)
+    x, _, _ = prepare_training_data(history, SPECIES, upwind=build_upwind(history, SPECIES))
     assert not x.empty
     constant = [
         c for c in FEATURE_COLS

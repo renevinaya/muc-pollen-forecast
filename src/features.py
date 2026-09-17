@@ -38,6 +38,7 @@ from .types import (
     LOAD_FEATURES,
     is_season_active,
 )
+from .upwind import upwind_state
 from .season_load import load_features_for_years, season_totals, season_year
 from .onset import (
     onset_doy_by_day,
@@ -86,20 +87,31 @@ class LagState:
     morning: list[float] = field(default_factory=list)
     days_since_active: float = NEVER_ACTIVE
     day: pd.Timestamp | None = None
+    # The upwind stations as of the origin (src/upwind.py); NaN without data.
+    upwind: dict[str, float] = field(default_factory=dict)
 
     @classmethod
     def from_history(
-        cls, history: pd.DataFrame, species: str, origin: pd.Timestamp
+        cls,
+        history: pd.DataFrame,
+        species: str,
+        origin: pd.Timestamp,
+        upwind: pd.DataFrame | None = None,
     ) -> "LagState":
-        """Seed the state from every measurement strictly before *origin*."""
+        """Seed the state from every measurement strictly before *origin*.
+
+        *upwind* is the long-format upwind-station frame; its readings before
+        the origin become the upwind block.
+        """
+        upwind_now = upwind_state(upwind, species, pd.Timestamp(origin))
         if history.empty:
-            return cls(log_vals=[0.0] * LAG_WINDOW)
+            return cls(log_vals=[0.0] * LAG_WINDOW, upwind=upwind_now)
 
         sp = history[history["species"] == species]
         sp = sp[pd.to_datetime(sp["date"]) < pd.Timestamp(origin)]
         sp = sp.sort_values("date")
         if sp.empty:
-            return cls(log_vals=[0.0] * LAG_WINDOW)
+            return cls(log_vals=[0.0] * LAG_WINDOW, upwind=upwind_now)
 
         values = sp["value"].to_numpy(dtype=float)
         log_vals = list(np.log1p(values[-LAG_WINDOW:]))
@@ -115,10 +127,12 @@ class LagState:
         same_day = sp[pd.to_datetime(sp["date"]).dt.normalize() == day]
         morning = list(np.log1p(same_day["value"].to_numpy(dtype=float)))
 
-        return cls(log_vals=log_vals, morning=morning, days_since_active=dsa, day=day)
+        return cls(
+            log_vals=log_vals, morning=morning, days_since_active=dsa, day=day, upwind=upwind_now
+        )
 
     def lag_features(self) -> dict[str, float]:
-        """The 13 lag features implied by the current state."""
+        """The 13 lag features implied by the current state, plus the upwind block."""
         vals = self.log_vals
         if not vals:
             vals = [0.0]
@@ -140,6 +154,16 @@ class LagState:
             "pollen_max_56": float(np.max(vals[-56:])),
             "pollen_morning_avg": float(np.mean(self.morning)) if self.morning else 0.0,
             "days_since_active": float(self.days_since_active),
+            **self.upwind_features(float(np.max(vals[-8:]))),
+        }
+
+    def upwind_features(self, local_max_8: float) -> dict[str, float]:
+        """The upwind block as of the origin, with the lead over Munich."""
+        short = float(self.upwind.get("upwind_max_8", float("nan")))
+        return {
+            "upwind_max_8": short,
+            "upwind_max_56": float(self.upwind.get("upwind_max_56", float("nan"))),
+            "upwind_lead_8": short - local_max_8,
         }
 
 

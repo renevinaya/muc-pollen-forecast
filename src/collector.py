@@ -14,6 +14,7 @@ from pathlib import Path
 import pandas as pd
 
 from .pollenscience import fetch_pollenscience
+from .upwind import UPWIND_STATIONS, fetch_upwind, update_upwind
 from .pollen import pivot_pollen
 from .weather import fetch_historical_weather, fetch_weather_forecast
 from .ndvi import fetch_ndvi, interpolate_ndvi, set_composites_cache
@@ -44,6 +45,17 @@ def _add_calendar_features(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def _upwind_result(future) -> pd.DataFrame:
+    """The upwind fetch's frame, or an empty one — the stations are optional."""
+    if future is None:
+        return pd.DataFrame()
+    try:
+        return future.result()
+    except Exception as exc:  # noqa: BLE001 — a missing upwind read costs features, not the run
+        print(f"  Upwind fetch failed ({exc}), continuing without it.")
+        return pd.DataFrame()
+
+
 def collect(days: int = 14) -> pd.DataFrame:
     """
     Collect recent pollen + weather data and return a tidy DataFrame.
@@ -61,8 +73,9 @@ def collect(days: int = 14) -> pd.DataFrame:
     archive_start = start - timedelta(days=1)
 
     # Fetch pollen, weather, and NDVI in parallel
-    with ThreadPoolExecutor(max_workers=4) as pool:
+    with ThreadPoolExecutor(max_workers=5) as pool:
         fut_pollen = pool.submit(fetch_pollenscience, start, end)
+        fut_upwind = pool.submit(fetch_upwind, start, end) if UPWIND_STATIONS else None
         fut_archive = (
             pool.submit(fetch_historical_weather, archive_start, archive_end)
             if archive_start <= archive_end
@@ -72,12 +85,19 @@ def collect(days: int = 14) -> pd.DataFrame:
         fut_ndvi = pool.submit(fetch_ndvi)
 
         pollen_raw = fut_pollen.result()
+        upwind_raw = _upwind_result(fut_upwind)
         archive_weather = fut_archive.result() if fut_archive else None
         recent_weather_full = fut_forecast.result()
         ndvi_composites = fut_ndvi.result()
 
     # Populate NDVI in-memory cache for later use by forecaster
     set_composites_cache(ndvi_composites)
+
+    # The upwind stations keep their own file; they never touch the history.
+    if not upwind_raw.empty:
+        n_st = upwind_raw["station"].nunique()
+        print(f"  Upwind: {len(upwind_raw)} rows from {n_st} station(s)")
+        update_upwind(upwind_raw)
 
     # Optional CAMS pollen forecast (fail-open: empty when inactive). For the
     # recent-data window most values are 0; a dedicated CAMS backfill populates

@@ -9,6 +9,7 @@ Usage:
     python -m src.main run-train    # Collect + train + forecast (monthly cron)
     python -m src.main backfill N   # Backfill N days of historical data
     python -m src.main backfill-ps  # Backfill from pollenscience.eu (2019+, slow)
+    python -m src.main backfill-upwind [START_YEAR]  # Fetch the upwind stations' history (2019+, slow)
     python -m src.main backfill-weather [START] [END]  # Rewrite weather columns from the archive
     python -m src.main backfill-ndvi [START]           # Rewrite NDVI columns from MODIS
     python -m src.main run-backfill # Both of the above against the data release (Actions)
@@ -53,6 +54,15 @@ from .rollout import rollout_evaluate, print_rollout_report
 from .onset_report import WINDOW_DAYS
 from .types import ALL_SPECIES, FORECAST_DAYS
 from .clock import local_now, local_today
+from .upwind import (
+    UPWIND_ASSET,
+    UPWIND_FILE,
+    UPWIND_STATIONS,
+    fetch_upwind_chunked,
+    load_upwind,
+    sync_upwind,
+    update_upwind,
+)
 
 
 def cmd_collect(days: int = 14) -> pd.DataFrame:
@@ -81,7 +91,7 @@ def cmd_train(history: pd.DataFrame | None = None) -> None:
         print("Run 'collect' daily to accumulate data, or use 'backfill' for bulk import.")
         return
 
-    train_all(history)
+    train_all(history, upwind=load_upwind())
 
 
 def cmd_forecast(history: pd.DataFrame | None = None) -> None:
@@ -95,7 +105,7 @@ def cmd_forecast(history: pd.DataFrame | None = None) -> None:
         else:
             history = pd.DataFrame()
 
-    forecast = generate_forecast(history)
+    forecast = generate_forecast(history, upwind=load_upwind())
 
     # Print summary (show daily peak per species across windows)
     print("\nForecast summary:")
@@ -125,6 +135,8 @@ def cmd_forecast(history: pd.DataFrame | None = None) -> None:
         pheno_file = DATA_DIR / "phenology.csv"
         if pheno_file.exists():
             upload_csv(pheno_file, PHENOLOGY_ASSET)
+        if UPWIND_FILE.exists():
+            upload_csv(UPWIND_FILE, UPWIND_ASSET)
 
 
 def cmd_backfill(days: int = 365) -> pd.DataFrame:
@@ -352,6 +364,45 @@ def cmd_backfill_pollenscience(start_year: int = 2019) -> pd.DataFrame:
     return history
 
 
+def _describe_upwind(upwind: pd.DataFrame) -> str:
+    """One line on the upwind file: which stations, over which dates."""
+    if upwind.empty:
+        return "none (upwind features NaN)"
+    dates = pd.to_datetime(upwind["date"])
+    stations = ", ".join(sorted(upwind["station"].unique()))
+    return f"{stations}, {dates.min().date()} to {dates.max().date()}, {len(upwind)} rows"
+
+
+def cmd_backfill_upwind(start_year: int = 2019) -> pd.DataFrame:
+    """Fetch the upwind stations' full history from pollenscience.eu.
+
+    Same pacing as ``backfill-ps``. Merges into ``data/upwind.csv`` and, with
+    a token, backs the file up to the data release so the next forecast run
+    starts from it.
+    """
+    if not UPWIND_STATIONS:
+        print("No upwind stations configured (src/upwind.py).")
+        return pd.DataFrame()
+    start = date(start_year, 1, 1)
+    end = local_today()
+    print("=" * 60)
+    print(f"BACKFILL UPWIND STATIONS: {start} to {end}")
+    print(f"  Stations: {', '.join(f'{c} ({n})' for c, n in UPWIND_STATIONS.items())}")
+    print("=" * 60)
+    sync_upwind()
+    fetched = fetch_upwind_chunked(start, end, delay=5.0)
+    if fetched.empty:
+        print("No upwind data returned.")
+        return load_upwind()
+    upwind = update_upwind(fetched)
+    print(f"Upwind stations: {_describe_upwind(upwind)}")
+    if can_upload():
+        upload_csv(UPWIND_FILE, UPWIND_ASSET)
+    else:
+        print("No GITHUB_TOKEN — upwind file kept locally only")
+    return upwind
+
+
 def cmd_benchmark(
     horizon: int = FORECAST_DAYS,
     folds: int = 6,
@@ -391,8 +442,11 @@ def cmd_benchmark(
     else:
         print(f"Horizon: {horizon} days   Folds: {folds}\n")
 
+    upwind = load_upwind()
+    print(f"Upwind stations: {_describe_upwind(upwind)}")
     results = rollout_evaluate(
-        history, horizon_days=horizon, n_folds=folds, species=species, months=months
+        history, horizon_days=horizon, n_folds=folds, species=species, months=months,
+        upwind=upwind,
     )
     if results.empty:
         print("No rollout results.")
@@ -420,7 +474,7 @@ def cmd_benchmark(
     print("BENCHMARK: One Window Ahead (measured lag features)")
     print("=" * 60)
     print("Not the shipped forecast — every row is handed the true recent counts.")
-    lagged = temporal_split_evaluate(history, n_folds=folds, species=species)
+    lagged = temporal_split_evaluate(history, n_folds=folds, species=species, upwind=upwind)
     if lagged.empty:
         return
     print_evaluation_report(lagged)
@@ -488,15 +542,17 @@ def cmd_benchmark_onset(
         return
 
     history = pd.read_csv(HISTORY_FILE, parse_dates=["date"])
+    upwind = load_upwind()
     months = onset_focus_months(history, targets, window_days=WINDOW_DAYS, years=years)
     print(f"History: {len(history)} rows")
+    print(f"Upwind stations: {_describe_upwind(upwind)}")
     print(f"Species: {', '.join(targets)}")
     print(f"Months: {', '.join(str(m) for m in months)} "
           f"(±{WINDOW_DAYS} d around each onset of the last {years} season(s))\n")
     DATA_DIR.mkdir(parents=True, exist_ok=True)
 
     if classic:
-        results = temporal_split_evaluate(history, species=targets, months=months)
+        results = temporal_split_evaluate(history, species=targets, months=months, upwind=upwind)
         if results.empty:
             print("No evaluation results.")
             return
@@ -508,7 +564,7 @@ def cmd_benchmark_onset(
         return
 
     results = rollout_evaluate(
-        history, horizon_days=FORECAST_DAYS, species=targets, months=months
+        history, horizon_days=FORECAST_DAYS, species=targets, months=months, upwind=upwind
     )
     if results.empty:
         print("No rollout results.")
@@ -653,6 +709,7 @@ def cmd_run() -> None:
         sync_historical_data(HISTORY_FILE)
     download_models(MODELS_DIR)
     _sync_phenology()
+    sync_upwind()
     history = cmd_collect()
     cmd_forecast(history)
 
@@ -667,6 +724,7 @@ def cmd_run_train() -> None:
     if not HISTORY_FILE.exists():
         sync_historical_data(HISTORY_FILE)
     _sync_phenology()
+    sync_upwind()
     # Monthly: refresh phenology onset data so the onset features stay current
     # (best-effort — failures are non-fatal; cmd_forecast backs it up to the release).
     try:
@@ -814,6 +872,9 @@ def main() -> None:
     elif command == "backfill-ps":
         start_year = int(sys.argv[2]) if len(sys.argv) > 2 else 2019
         cmd_backfill_pollenscience(start_year)
+    elif command == "backfill-upwind":
+        start_year = int(sys.argv[2]) if len(sys.argv) > 2 else 2019
+        cmd_backfill_upwind(start_year)
     elif command == "backfill-weather":
         cmd_backfill_weather(*_parse_date_args(sys.argv[2:]))
     elif command == "backfill-ndvi":

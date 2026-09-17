@@ -24,8 +24,10 @@ from src.trainer import (
     _add_ndvi_features,
     _add_phenology_features,
     _add_season_feature,
+    _add_upwind_features,
     _add_weather_derived_features,
 )
+from src.upwind import upwind_series
 from src.types import ALL_SPECIES, FEATURE_COLS, WEATHER_COLUMNS
 
 WINDOW = pd.Timedelta(hours=3)
@@ -129,7 +131,7 @@ def build_history(
 
 
 def trainer_features(
-    history: pd.DataFrame, species: str, lead: int = 1
+    history: pd.DataFrame, species: str, lead: int = 1, upwind: pd.DataFrame | None = None
 ) -> pd.DataFrame:
     """The trainer's batch path, in the order prepare_training_data applies it."""
     df = history[history["species"] == species].sort_values("date").reset_index(drop=True)
@@ -140,11 +142,35 @@ def trainer_features(
     df = _add_phenology_features(df, species)
     df = _add_load_features(df, species)
     df = _add_lag_features(df, lead=lead)
+    df = _add_upwind_features(df, upwind_series(upwind, species), lead=lead)
     return df.set_index("date")
 
 
+def build_upwind(history: pd.DataFrame, species: str, seed: int = 3) -> pd.DataFrame:
+    """Two upwind stations that run a few days ahead of the local series, with
+    one station dark for a stretch and a gap no station covers."""
+    rng = np.random.default_rng(seed)
+    sp = history[history["species"] == species].sort_values("date")
+    dates = pd.DatetimeIndex(sp["date"])
+    values = sp["value"].to_numpy(dtype=float)
+    rows = []
+    for shift, code in ((16, "DEAAAA"), (32, "DEBBBB")):
+        led = np.roll(values, -shift) * rng.uniform(0.5, 2.0, len(values))
+        for dt, v in zip(dates, led):
+            if code == "DEBBBB" and pd.Timestamp("2021-04-10") <= dt < pd.Timestamp("2021-04-20"):
+                continue  # one station dark
+            if pd.Timestamp("2021-05-01") <= dt < pd.Timestamp("2021-05-03"):
+                continue  # nobody reports
+            rows.append({"date": dt, "station": code, "species": species, "value": float(v)})
+    return pd.DataFrame(rows)
+
+
 def serving_features(
-    history: pd.DataFrame, species: str, windows: pd.DatetimeIndex, lead: int = 1
+    history: pd.DataFrame,
+    species: str,
+    windows: pd.DatetimeIndex,
+    lead: int = 1,
+    upwind: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """The forecaster's row path over *windows*, all from one origin.
 
@@ -170,7 +196,9 @@ def serving_features(
     for dt in windows:
         # Each window gets its own origin, `lead` windows back, which is the
         # state the forecaster would have had when predicting it at that lead.
-        lag = LagState.from_history(history, species, dt - lead * WINDOW + WINDOW)
+        lag = LagState.from_history(
+            history, species, dt - lead * WINDOW + WINDOW, upwind=upwind
+        )
         rows[dt] = build_feature_row(ctx, species, dt, lag, lead=lead)
     return pd.DataFrame.from_dict(rows, orient="index")
 
@@ -180,21 +208,30 @@ def history() -> pd.DataFrame:
     return build_history()
 
 
+@pytest.fixture(scope="module")
+def upwind(history: pd.DataFrame) -> pd.DataFrame:
+    return build_upwind(history, SPECIES)
+
+
 @pytest.mark.parametrize("lead", [1, 8, 40])
-def test_serving_matches_training_features(history: pd.DataFrame, lead: int) -> None:
+def test_serving_matches_training_features(
+    history: pd.DataFrame, upwind: pd.DataFrame, lead: int
+) -> None:
     """Every feature agrees between the batch and row paths, at every lead.
 
     Checking lead 1 alone would miss the whole point of the direct model: the
     forecast spends 39 of its 40 windows at leads above 1, and those are exactly
     the rows a train/serve mismatch would silently corrupt.
     """
-    batch = trainer_features(history, SPECIES, lead=lead)
+    batch = trainer_features(history, SPECIES, lead=lead, upwind=upwind)
 
     # Start well inside the frame so both paths have their lags warmed up, and
     # cover the season so the phenology and burst features are exercised.
     all_windows = pd.DatetimeIndex(batch.index)
     windows = all_windows[(all_windows >= all_windows[600]) & (all_windows <= all_windows[1400])]
-    served = serving_features(history, SPECIES, windows, lead=lead)
+    served = serving_features(history, SPECIES, windows, lead=lead, upwind=upwind)
+    assert batch.loc[windows, "upwind_max_8"].notna().mean() > 0.9
+    assert batch.loc[windows, "upwind_max_8"].isna().any(), "the uncovered gap must stay NaN"
 
     mismatches = []
     for col in FEATURE_COLS:

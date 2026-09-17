@@ -36,7 +36,7 @@ from .types import (
     ForecastOutput,
 )
 from .weather import fetch_weather_forecast
-from .trainer import TwoStageModel, load_models, inv_log_transform
+from .trainer import TwoStageModel, finalize_features, load_models, inv_log_transform
 from .confidence import confidence_for, load_table
 from .features import FeatureContext, LagState, build_context, build_feature_row
 from .cams import fetch_cams_forecast
@@ -91,7 +91,7 @@ def predict_window(
 ) -> float:
     """Model prediction for one (window, species), in log space."""
     features = build_feature_row(ctx, species, dt, lag, lead)
-    x_features = pd.DataFrame([features])[FEATURE_COLS]
+    x_features = finalize_features(pd.DataFrame([features])[FEATURE_COLS])
     return max(0.0, float(model.predict(x_features)[0]))
 
 
@@ -132,6 +132,7 @@ def _fetch_dwd_levels() -> dict[tuple[object, str], float]:
 def generate_forecast(
     history: pd.DataFrame,
     models: dict[str, TwoStageModel] | None = None,
+    upwind: pd.DataFrame | None = None,
 ) -> ForecastOutput:
     """
     Generate a multi-day pollen forecast at 3-hour window resolution.
@@ -147,6 +148,7 @@ def generate_forecast(
     Args:
         history: Full historical data (date, species, value, weather features...).
         models: Pre-loaded models. If None, loads from disk.
+        upwind: Upwind-station measurements (src/upwind.py); optional.
     """
     if models is None:
         models = load_models()
@@ -192,7 +194,9 @@ def generate_forecast(
         return windows[-1] + WINDOW
 
     origins = {sp: first_unobserved(sp) for sp in ALL_SPECIES}
-    lags = {sp: LagState.from_history(history, sp, origins[sp]) for sp in ALL_SPECIES}
+    lags = {
+        sp: LagState.from_history(history, sp, origins[sp], upwind=upwind) for sp in ALL_SPECIES
+    }
 
     n_obs_windows = len({dt for dt, _ in observed})
     if n_obs_windows > 0:

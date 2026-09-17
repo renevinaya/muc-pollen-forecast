@@ -36,7 +36,7 @@ ML-based pollen forecast for Munich at 3-hour resolution, using a three-stage XG
 
 | Source | API | What it provides |
 |--------|-----|------------------|
-| [pollenscience.eu](https://pollenscience.eu/api/measurements) | Pollen measurements | Primary source: 3-hour pollen counts for Munich (station DEMUNC, 2019+) |
+| [pollenscience.eu](https://pollenscience.eu/api/measurements) | Pollen measurements | Primary source: 3-hour pollen counts for Munich (station DEMUNC, 2019+), plus the four ePIN stations around it (Mindelheim, Altötting, Feucht, Viechtach) as upwind context — see [Upwind stations](#upwind-stations) |
 | [LGL Bayern](https://d1ppjuhp1nvtc2.cloudfront.net/measurements) | Pollen measurements | Alternative: real-time 3-hour pollen counts for Munich |
 | [Open-Meteo](https://open-meteo.com/) | Weather forecast + historical archive | Hourly weather aggregated to 3-hour windows: temperature, precipitation, wind, humidity, sunshine, radiation, boundary layer height, dew point, CAPE, direct radiation, soil temperature + moisture (no API key required) |
 | [MODIS (ORNL DAAC)](https://modis.ornl.gov/rst/api/v1) | NDVI / EVI satellite data | MOD13Q1 250 m 16-day vegetation indices, cubic-interpolated to daily resolution |
@@ -69,7 +69,7 @@ Each species gets a **three-stage pipeline** with species-specific hyperparamete
 
 **Real-time observation assimilation**: when the pipeline runs every 3 hours, forecast windows that already have real pollen measurements use the observed values instead of model predictions. This breaks the autoregressive error cascade and grounds lag features for subsequent windows in actual data.
 
-## Features (62 total)
+## Features (65 total)
 
 | Category | Count | Features |
 |----------|-------|----------|
@@ -84,6 +84,7 @@ Each species gets a **three-stage pipeline** with species-specific hyperparamete
 | Intra-day | 3 | temp vs. daily max (ratio), precipitation in prior window (binary), temperature rate of change |
 | Lead | 1 | `lead_windows` — 3h windows between the last measurement and this one |
 | Lag | 13 | pollen at t-1/t-2/t-3/t-8(24h)/t-16(48h)/t-24(72h)/t-56(7d), 24h + 7d rolling mean, 24h + 7d rolling max, morning average (today's earlier windows), days since active (all log-space) |
+| Upwind | 3 | highest reading at any of the four upwind stations over the 24 h and 7 d before the origin (log-space), and the 24 h maximum minus Munich's own; anchored at the origin like the lag block, NaN where no station reported (`src/upwind.py`) |
 
 Lag features carry about a third of all model gain, which is why forecast skill
 is reported per horizon day — see [Evaluation](#evaluation).
@@ -192,6 +193,43 @@ The DWD phenology fetch (`python -m src.main phenology`) is unrelated to these
 features now. It returns a single year of Munich observations with no Alnus at
 all, which put Corylus 24 days and Alnus 17 days off their measured medians.
 
+### Upwind stations
+
+Pre-onset pollen is transport: in 2026 Munich measured 15–24 birch grains/m³
+on 27 Feb – 5 Mar, five weeks before the local trees opened, and the first
+two weeks of every heavy season were forecast at a tenth to a third of the
+truth, because nothing the model read preceded the local count. The ePIN
+network's other automatic stations see the same air hours to a day earlier.
+
+`src/upwind.py` keeps the 3h measurements of the four stations within
+~150 km — Mindelheim (85 km WSW), Altötting (85 km E), Feucht (140 km N),
+Viechtach (140 km NE), one in each direction so whichever way the air arrives
+from, a station saw it first — in `data/upwind.csv`, a second long-format
+file beside the history. The collector appends the last two weeks on every
+run and backs the file up to the data release; `backfill-upwind` fetches the
+history from 2019. Three features come out of it, all anchored at the forecast
+origin like the lag block: the highest reading at any station over the 24 h
+and 7 d before the origin, and the 24 h maximum minus Munich's own (positive
+= the region is ahead of the city). They are built on the time grid, so a
+station outage shifts nothing, and they are NaN where no station reported.
+Garmisch (75 km S, alpine, flowers later) and the two stations 250 km north
+are not read.
+
+What it bought, on the same six folds and onset months as everything else
+(B.6 → B.5): general MAE 7.0 → 6.8, RMSE 44.0 → 43.6, level accuracy 75.7% →
+76.3%, skill against persistence up 2–3 points at every horizon — the best
+of the series on every number, mostly through poplar (March in-season MAE
+82 → 70) and ash (27 → 24). Alder's day-1 onset timing goes from 6.0 to 2.0
+days off (the 2025 start, 17 days late before, is 3 days late now) and false
+starts fall 48 → 46 run-days. **What it did not buy is the heavy-year ramp**:
+Betula 2024 and 2026 still get 6–18% of what arrives in days 5–9 of the
+season, exactly as before. The stations do see those years coming —
+Viechtach's 2024 and 2026 peaks are 16 000 and 17 500 grains against 1 000–
+3 000 in the light years — but a 24 h or 7 d maximum at onset is a level the
+model has seen in every year, and it still predicts the average of them. The
+year's *amount* is a property of the season, not of the last day, and no
+feature yet carries it (TASKS.md, B.5).
+
 ## Setup
 
 ```bash
@@ -254,6 +292,7 @@ python -m src.main benchmark 5 --folds 3
 | `forecast` | Generate 5-day forecast at 3h resolution using trained models |
 | `backfill [days]` | Bulk import historical pollen, weather, and NDVI data (default: 365 days) |
 | `backfill-ps [start_year]` | Bulk import from pollenscience.eu at 3h resolution (default: 2019, 5s rate limit) |
+| `backfill-upwind [start_year]` | Fetch the upwind stations' history into `data/upwind.csv` (default: 2019, same pacing) and back it up to the data release |
 | `backfill-weather [start] [end]` | Rewrite every weather column of the existing history from the Open-Meteo archive; pollen values untouched |
 | `backfill-ndvi [start] [end]` | Rewrite the NDVI columns of the existing history from MODIS composites |
 | `run-backfill` | Both of the above against the data release (what `mode: backfill` runs in Actions) |
@@ -299,13 +338,13 @@ origins, 80 680 scored predictions. Persistence is the same baseline throughout
 
 | Horizon | MAE | RMSE | Level acc. | Bias | Persistence MAE | Skill |
 |---------|-----|------|-----------|------|-----------------|-------|
-| day 1 | **7.3** | 46.6 | 76.1% | **+0.1** | 10.4 | **+29.6%** |
-| day 2 | **7.2** | 46.3 | 75.9% | **−0.1** | 10.9 | **+33.9%** |
-| day 3 | **6.9** | 43.3 | 75.8% | **+0.1** | 11.2 | **+38.4%** |
-| day 4 | **6.7** | 41.7 | 75.5% | **+0.2** | 11.8 | **+43.2%** |
-| day 5 | **6.8** | 41.9 | 75.3% | **+0.5** | 11.4 | **+40.3%** |
+| day 1 | **7.1** | 45.8 | 76.8% | **−0.4** | 10.4 | **+32.0%** |
+| day 2 | **7.0** | 45.7 | 76.5% | **−0.5** | 10.9 | **+35.7%** |
+| day 3 | **6.7** | 43.2 | 76.3% | **−0.4** | 11.2 | **+40.5%** |
+| day 4 | **6.5** | 41.5 | 76.0% | **−0.3** | 11.8 | **+44.6%** |
+| day 5 | **6.6** | 41.4 | 75.8% | **−0.0** | 11.4 | **+42.0%** |
 
-The model beats persistence at every horizon by 28–42%, with a bias near
+The model beats persistence at every horizon by 32–45%, with a bias near
 zero and no decay across the five days.
 
 These numbers are measured on the **complete** history (see *Data coverage*
@@ -319,7 +358,8 @@ recent seasons are; the three season-load features are the honest
 replacement and take the model to 7.0 — better than the artefact — though
 they leave the level accuracy where it was and the season-start amplitude
 untouched (TASKS.md, B.6). The per-species onset rules and the transport-aware
-onset detector (B.2/B.3) take it to 6.9, mostly through hazel.
+onset detector (B.2/B.3) take it to 6.9, mostly through hazel, and the four
+upwind stations (B.5) to 6.8.
 
 Three fixes got here, each measured on these same folds:
 
@@ -333,7 +373,8 @@ Three fixes got here, each measured on these same folds:
 | C.1 season load | 7.4 | 6.8 | −0.2 | +0.1 | +40.7% |
 | B.2 + B.3 onset calibration | 7.3 | 6.7 | −0.5 | −0.2 | +41.4% |
 | B.4 rule-based readiness | 7.5 | 6.9 | +0.1 | +0.3 | +39.9% |
-| B.6 onset-ramp weighting | **7.3** | **6.8** | **+0.1** | **+0.5** | **+40.3%** |
+| B.6 onset-ramp weighting | 7.3 | 6.8 | +0.1 | +0.5 | +40.3% |
+| B.5 upwind stations | **7.1** | **6.6** | **−0.4** | **−0.0** | **+42.0%** |
 
 **3.1** stopped the extreme regressor being consulted about ordinary windows.
 **3.5** removed the feedback loop that let a residual bias compound into the
@@ -341,7 +382,7 @@ horizon. **Phase 2** cut 73 features to 60 — and the smaller model is better a
 every horizon, not merely equal, so those features were adding variance rather
 than signal.
 
-Day-5 MAE has gone 17.1 → 6.8 and day-5 bias +13.2 → +0.5.
+Day-5 MAE has gone 17.1 → 6.6 and day-5 bias +13.2 → −0.0.
 
 > **On fold counts.** An earlier version of this section reported three folds
 > (Sep, Jan, May) and concluded that the model beat persistence from day 3 on
@@ -417,7 +458,7 @@ for public repositories.
 |---------|-----------|---------|
 | Forecast | `17 2,5,8,11,14,17,20,23 * * *` (every 3h) | `python -m src.main run` |
 | Retrain | `43 4 1 * *` (1st of the month) | `python -m src.main run-train` |
-| Manual | `workflow_dispatch` with a `mode` input | `forecast`, `train`, or `backfill` (`run-backfill`; publishes nothing) |
+| Manual | `workflow_dispatch` with a `mode` input | `forecast`, `train`, `backfill` (`run-backfill`) or `backfill-upwind`; the last two publish nothing |
 
 The schedules sit at `:17` and `:43` on purpose: GitHub queues scheduled
 workflows and the top of the hour is the most congested slot. Scheduled runs
@@ -436,6 +477,7 @@ Runners are ephemeral, so accumulated state lives on a GitHub release tagged
 |-------|----------|
 | `history.csv.gz` | Accumulated 3h pollen + weather + NDVI observations |
 | `phenology.csv.gz` | DWD flowering-onset records |
+| `upwind.csv.gz` | 3h measurements of the four upwind stations (date, station, species, value) |
 | `models.tar.gz` | All trained `*.joblib` models |
 
 Release assets are used rather than commits because `history.csv` is far too
@@ -498,7 +540,7 @@ differ a lot:
 
 | Field | Meaning | Current value |
 |-------|---------|---------------|
-| `confidence` | P(the emitted level is exactly right) | ~0.35 |
+| `confidence` | P(the emitted level is exactly right) | ~0.36 |
 | `confidence_within_one` | P(the truth is within one level of it) | ~0.89 |
 
 Both come from `src/confidence.json`, generated by

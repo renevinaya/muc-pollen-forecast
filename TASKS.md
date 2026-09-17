@@ -284,12 +284,39 @@ What did change, and is kept:
   general folds — and general MAE slips 0.2, mostly Populus (54 → 62) and
   Alnus (63 → 65). Adopted for the onset gains and the coherent feature set;
   the MAE cost is real and is noted. Amplitude ratios unchanged (B.6).
-- [ ] **B.5 Upwind stations (was 5.2).** Pre-onset birch pollen is transport:
-  in 2026 Munich measured 15–24 grains/m³ on 27 Feb – 5 Mar, five weeks before
-  local onset; the 2025 "onset" was the same thing. Nothing in the feature set
-  can see it coming. The pollenscience.eu client already queries two Munich
-  codes; add one or two upwind stations lagged 3–24 h. Accept on B.1 false
-  starts and ±10-day MAE.
+- [x] **B.5 Upwind stations (was 5.2).** **Done — the general benchmark's
+  best; the premise did not hold.** `src/upwind.py` reads the four ePIN
+  automatic stations within ~150 km of Munich (Mindelheim WSW, Altötting E,
+  Feucht N, Viechtach NE; pollenscience.eu serves them from 2019 at 3 h)
+  into a second long-format file backed up to the data release, and turns
+  them into three features anchored at the forecast origin: the highest
+  reading at any station over the last 24 h and 7 d, and the 24 h maximum
+  minus Munich's own. Built on the time grid, NaN where nobody reported.
+  `backfill-upwind` (also a workflow mode) fetched the history; the
+  collector appends the last two weeks every run. 65 features.
+
+  | | General MAE / RMSE / level / bias | Onset timing d1 / d3 / d5 (C/A/B) | Ramp ratio days 5–9, heavy years (B24 / B26 / A25 / C26) | False starts |
+  |---|---|---|---|---|
+  | B.6 | 7.0 / 44.0 / 75.7% / +0.1 | 1.3-6.0-7.3 / 1.7-3.3-6.7 / 4.0-3.7-6.7 | 0.07 / 0.18 / 0.42 / 0.40 | 48 |
+  | **B.5** | **6.8 / 43.6 / 76.3% / −0.3** | 1.3-2.0-7.3 / 1.3-5.0-6.7 / 1.0-3.7-7.0 | 0.06 / 0.18 / 0.33 / 0.35 | 46 |
+
+  Skill against persistence is up 2–3 points at every horizon (day 1 +29.6%
+  → +32.0%, day 5 +40.3% → +42.0%), mostly through Populus (March MAE 82 →
+  70) and Fraxinus (27 → 24); Betula's March and May 2026 in-season MAE is
+  0.9–1.2 worse with a more positive March bias — the stations report the
+  pre-onset transport and the model believes them a little. Alder's day-1
+  onset timing 6.0 → 2.0 days (2025: +17 d → +3 d), hazel's day-5 4.0 → 1.0.
+  **The heavy-year ramp did not move**: Betula 2024 and 2026 stay at 6–18%
+  of the truth in days 5–9. The stations do carry the information — Viechtach
+  peaked at 16 000 (2024) and 17 500 (2026) grains against 1 000–3 000 in
+  the light years — but a maximum over the last day or week at onset is a
+  level the model has seen in every year, so it still predicts their
+  average. The amount of a season is a property of the season, and only a
+  feature that summarises the *region's* season so far (upwind cumulative
+  load since 1 Jan, or the upwind stations' own onset-to-date total) could
+  tell a 25 000-grain year from a 3 000-grain one on its fifth day. That is
+  the follow-up (B.8); the three features stay because everything else
+  improved.
 - [x] **B.6 Ramp amplitude at onset.** **Done — option (a); the premise only
   half held.** Rows in the first 14 days after each year's *measured* onset
   weigh four times more in the stage-2 regressor and the extreme gate
@@ -317,6 +344,12 @@ What did change, and is kept:
   expected to reach it either. What would: a measured signal that precedes
   the local season, i.e. upwind stations (B.5), or the DWD forecast level
   for the first days, which already blends in for today/tomorrow.
+- [ ] **B.8 Upwind season load.** B.5's follow-up: a cumulative feature —
+  the upwind stations' season-to-date total (log, since 1 Jan or since the
+  species' upwind onset) and its ratio to the same total in Munich — so the
+  model can read on day 5 of a season whether the region is having a heavy
+  one. Accept on the B.1 ramp ratios for Betula 2024/2026, which every
+  change so far has left at 0.06–0.18.
 - [ ] **B.7 December continuity (was part of 5.3).** `gdd` and the forcing
   accumulation reset on 1 Jan, so a hazel season that starts in a warm
   December (2023 onset = 1 Jan, i.e. already running) is invisible to the
@@ -388,13 +421,12 @@ What did change, and is kept:
 
 ## Suggested order
 
-Phases A and C are done, and B.1–B.4 and B.6 with them. Next: B.5 → A.5 →
-D.1 → D.4 → B.7 → D.2/D.3 → E.x → D.5. B.5 (upwind stations) is now the
-only item on the list with a claim on the heavy-year ramp: every change so
-far has improved timing and the mid-season and left the first two weeks of
-a heavy season at a tenth to a third of the truth, because nothing the model
-reads precedes the local count. D.1 early because it is a five-line change
-that makes finished work visible.
+Phases A and C are done, and B.1–B.6 with them. Next: A.5 → D.1 → B.8 →
+D.4 → B.7 → D.2/D.3 → E.x → D.5. B.8 (upwind season load) is now the only
+item on the list with a claim on the heavy-year ramp: B.5 showed the upwind
+stations carry the information and that a last-day or last-week maximum
+does not deliver it. D.1 early because it is a five-line change that makes
+finished work visible.
 
 ## Done so far (first task list)
 
@@ -411,6 +443,7 @@ Measured over six folds (184 origins, 80,680 predictions), same folds throughout
 | B.2 + B.3 onset calibration | 7.3 | 6.7 | −0.5 | −0.2 | +41.4% |
 | B.4 rule-based readiness (62 features) | 7.5 | 6.9 | +0.1 | +0.3 | +39.9% |
 | B.6 onset-ramp weighting | 7.3 | 6.8 | +0.1 | +0.5 | +40.3% |
+| B.5 upwind stations (65 features) | 7.1 | 6.6 | −0.4 | −0.0 | +42.0% |
 
 - Phase 1: rollout benchmark per horizon, feature-gain report, train/serve
   parity test, shared row-wise feature assembly (`src/features.py`). Fixed
