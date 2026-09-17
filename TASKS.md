@@ -173,12 +173,26 @@ What did change, and is kept:
   than half of the rows (NaN, or 0.0 for NDVI, soil moisture, dew point and
   boundary layer height). `run-train` restores the released models and still
   publishes a forecast when the retrain is refused.
-- [ ] **A.5 Let XGBoost see missing values.** Replace the blanket
-  `X.fillna(0)` in `prepare_training_data` (and the matching fills in
-  `src/features.py` / `src/rollout.py`) with NaN passed through for the raw
-  weather and NDVI columns, so a gap like the 2024 boundary-layer hole is
-  "missing" rather than "zero". Benchmark on the six folds; accept if it does
-  not regress.
+- [ ] **A.5 Let XGBoost see missing values.** **Tried — not adopted**
+  (parked on `claude/forecast-app-review-xwisqv`). `finalize_features` —
+  since B.5 the one place a feature frame is filled, shared by the trainer,
+  the rollout benchmark and the forecaster — was changed to keep NaN for the
+  raw weather, NDVI and upwind columns and to turn the stored 0.0 markers of
+  the coverage guard's four columns into NaN. Same six folds, B.5 → A.5:
+  MAE 6.79 → 6.77, level accuracy 76.3% → 76.5%, bias −0.34 → −0.30, skill
+  +0.0…+0.4 points by day — a wash. The onset benchmark went the other way:
+  false starts 46 → 60 run-days, level accuracy 51.9% → 51.3%, and new
+  runs 21 days early for Corylus 2024 (d1–d3) and 18 days early for Betula
+  2024 (d2–d3). Both are the 2024 folds: their training data predates the
+  only gap in the history (boundary-layer height, Jan–Jun 2024), so the test
+  rows meet a "missing" the model never learned a branch for and XGBoost
+  routes them to its arbitrary default — while the zero fill sends them
+  down the "stable, low boundary layer" side, which happens to be the
+  conservative one. That is not only a backtest artefact: a feed that
+  fails next March would put the live model in the same position. Revisit
+  when there is a second season with gaps to learn from, or with a fill
+  that is conservative by construction (the column's training median)
+  instead of NaN.
 
 ## Phase B — Make the season start a first-class target
 
@@ -293,7 +307,8 @@ What did change, and is kept:
   reading at any station over the last 24 h and 7 d, and the 24 h maximum
   minus Munich's own. Built on the time grid, NaN where nobody reported.
   `backfill-upwind` (also a workflow mode) fetched the history; the
-  collector appends the last two weeks every run. 65 features.
+  collector appends the last two weeks every run. 65 features; the live
+  retrain gives the family 2.3% of total gain, `upwind_max_56` first.
 
   | | General MAE / RMSE / level / bias | Onset timing d1 / d3 / d5 (C/A/B) | Ramp ratio days 5–9, heavy years (B24 / B26 / A25 / C26) | False starts |
   |---|---|---|---|---|
@@ -421,8 +436,8 @@ What did change, and is kept:
 
 ## Suggested order
 
-Phases A and C are done, and B.1–B.6 with them. Next: A.5 → D.1 → B.8 →
-D.4 → B.7 → D.2/D.3 → E.x → D.5. B.8 (upwind season load) is now the only
+Phases A and C are done, and B.1–B.6 with them; A.5 was tried and parked.
+Next: D.1 → B.8 → D.4 → B.7 → D.2/D.3 → E.x → D.5. B.8 (upwind season load) is now the only
 item on the list with a claim on the heavy-year ramp: B.5 showed the upwind
 stations carry the information and that a last-day or last-week maximum
 does not deliver it. D.1 early because it is a five-line change that makes
