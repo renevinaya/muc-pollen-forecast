@@ -500,14 +500,33 @@ def _add_upwind_features(
     return df
 
 
+# Raw inputs the model is allowed to see as missing. Everything else is
+# derived, and a NaN there is a computation edge (the first row of a
+# difference, a species with no onset yet) that genuinely means "nothing".
+NAN_PASSTHROUGH = frozenset(WEATHER_FEATURES) | frozenset(NDVI_FEATURES) | frozenset(UPWIND_FEATURES)
+
+
 def finalize_features(X: pd.DataFrame) -> pd.DataFrame:
     """The last step before a feature frame reaches XGBoost, in training and
-    serving alike: every NaN becomes 0.
+    serving alike.
+
+    A missing raw input stays missing: XGBoost learns a default branch for
+    it, instead of reading the six months of 2024 without a boundary-layer
+    height as six months of a zero-metre boundary layer. The columns in
+    :data:`ZERO_MEANS_MISSING` are stored as 0.0 when absent (the collector
+    and the weather client write 0 for "no data"), so their exact zeros are
+    missing too. Every derived feature's NaN becomes 0, as before.
 
     One function so the trainer, the rollout benchmark and the forecaster
     cannot disagree about what a missing value looks like to the model.
     """
-    return X.fillna(0)
+    X = X.copy()
+    for col in ZERO_MEANS_MISSING:
+        if col in X.columns:
+            X[col] = X[col].mask(X[col] == 0.0)
+    fill = [c for c in X.columns if c not in NAN_PASSTHROUGH]
+    X[fill] = X[fill].fillna(0)
+    return X
 
 
 def prepare_training_data(
