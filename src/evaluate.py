@@ -24,7 +24,7 @@ from .types import (
 )
 from .onset import ONSET_RUN_DAYS, observed_onsets
 from .rollout import eligible_months
-from .upwind import upwind_series
+from .upwind import upwind_tables
 from .trainer import (
     prepare_training_data,
     train_species_model,
@@ -124,7 +124,9 @@ def temporal_split_evaluate(
             species_all = _add_ndvi_features(species_all)
             species_all = _add_intraday_features(species_all)
             species_all = _add_lag_features(species_all)
-            species_all = _add_upwind_features(species_all, upwind_series(upwind, species_name))
+            species_all = _add_upwind_features(
+                species_all, species_name, upwind_tables(upwind, species_name)
+            )
             species_all = _add_season_feature(species_all, species_name)
             species_all = _add_phenology_features(species_all, species_name)
 
