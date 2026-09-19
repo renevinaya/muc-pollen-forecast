@@ -1,0 +1,544 @@
+{
+  "generated": "2026-09-19T20:26:54.700754Z",
+  "location": "DEMUNC",
+  "measurements": [
+    {
+      "polle": "Ambrosia",
+      "location": "DEMUNC",
+      "data": [
+        {
+          "from": 1789812000,
+          "to": 1789822800,
+          "value": 3.1,
+          "level": "low",
+          "confidence": 1.0,
+          "confidence_within_one": 1.0
+        },
+        {
+          "from": 1789833600,
+          "to": 1789844400,
+          "value": 12.9,
+          "level": "low",
+          "confidence": 0.676,
+          "confidence_within_one": 0.99
+        },
+        {
+          "from": 1789898400,
+          "to": 1789909200,
+          "value": 1.7,
+          "level": "low",
+          "confidence": 0.665,
+          "confidence_within_one": 0.99
+        },
+        {
+          "from": 1789909200,
+          "to": 1789920000,
+          "value": 1.5,
+          "level": "low",
+          "confidence": 0.665,
+          "confidence_within_one": 0.99
+        },
+        {
+          "from": 1789920000,
+          "to": 1789930800,
+          "value": 1.7,
+          "level": "low",
+          "confidence": 0.665,
+          "confidence_within_one": 0.99
+        },
+        {
+          "from": 1789930800,
+          "to": 1789941600,
+          "value": 1.9,
+          "level": "low",
+          "confidence": 0.665,
+          "confidence_within_one": 0.99
+        },
+        {
+          "from": 1789941600,
+          "to": 1789952400,
+          "value": 1.3,
+          "level": "low",
+          "confidence": 0.658,
+          "confidence_within_one": 0.99
+        }
+      ]
+    },
+    {
+      "polle": "Poaceae",
+      "location": "DEMUNC",
+      "data": [
+        {
+          "from": 1789801200,
+          "to": 1789812000,
+          "value": 1.9,
+          "level": "low",
+          "confidence": 1.0,
+          "confidence_within_one": 1.0
+        },
+        {
+          "from": 1789812000,
+          "to": 1789822800,
+          "value": 1.9,
+          "level": "low",
+          "confidence": 1.0,
+          "confidence_within_one": 1.0
+        },
+        {
+          "from": 1789855200,
+          "to": 1789866000,
+          "value": 0.5,
+          "level": "low",
+          "confidence": 0.665,
+          "confidence_within_one": 0.99
+        },
+        {
+          "from": 1789887600,
+          "to": 1789898400,
+          "value": 0.6,
+          "level": "low",
+          "confidence": 0.665,
+          "confidence_within_one": 0.99
+        },
+        {
+          "from": 1789898400,
+          "to": 1789909200,
+          "value": 1.1,
+          "level": "low",
+          "confidence": 0.665,
+          "confidence_within_one": 0.99
+        },
+        {
+          "from": 1789909200,
+          "to": 1789920000,
+          "value": 1.2,
+          "level": "low",
+          "confidence": 0.665,
+          "confidence_within_one": 0.99
+        },
+        {
+          "from": 1789920000,
+          "to": 1789930800,
+          "value": 0.7,
+          "level": "low",
+          "confidence": 0.665,
+          "confidence_within_one": 0.99
+        },
+        {
+          "from": 1789930800,
+          "to": 1789941600,
+          "value": 0.6,
+          "level": "low",
+          "confidence": 0.665,
+          "confidence_within_one": 0.99
+        },
+        {
+          "from": 1789952400,
+          "to": 1789963200,
+          "value": 0.6,
+          "level": "low",
+          "confidence": 0.658,
+          "confidence_within_one": 0.99
+        },
+        {
+          "from": 1789974000,
+          "to": 1789984800,
+          "value": 0.6,
+          "level": "low",
+          "confidence": 0.658,
+          "confidence_within_one": 0.99
+        },
+        {
+          "from": 1789984800,
+          "to": 1789995600,
+          "value": 0.8,
+          "level": "low",
+          "confidence": 0.658,
+          "confidence_within_one": 0.99
+        },
+        {
+          "from": 1789995600,
+          "to": 1790006400,
+          "value": 0.9,
+          "level": "low",
+          "confidence": 0.658,
+          "confidence_within_one": 0.99
+        },
+        {
+          "from": 1790006400,
+          "to": 1790017200,
+          "value": 0.7,
+          "level": "low",
+          "confidence": 0.658,
+          "confidence_within_one": 0.99
+        },
+        {
+          "from": 1790017200,
+          "to": 1790028000,
+          "value": 0.6,
+          "level": "low",
+          "confidence": 0.658,
+          "confidence_within_one": 0.99
+        },
+        {
+          "from": 1790028000,
+          "to": 1790038800,
+          "value": 0.9,
+          "level": "low",
+          "confidence": 0.638,
+          "confidence_within_one": 0.988
+        },
+        {
+          "from": 1790038800,
+          "to": 1790049600,
+          "value": 0.9,
+          "level": "low",
+          "confidence": 0.638,
+          "confidence_within_one": 0.988
+        },
+        {
+          "from": 1790049600,
+          "to": 1790060400,
+          "value": 0.8,
+          "level": "low",
+          "confidence": 0.638,
+          "confidence_within_one": 0.988
+        },
+        {
+          "from": 1790060400,
+          "to": 1790071200,
+          "value": 1.1,
+          "level": "low",
+          "confidence": 0.638,
+          "confidence_within_one": 0.988
+        },
+        {
+          "from": 1790071200,
+          "to": 1790082000,
+          "value": 1.4,
+          "level": "low",
+          "confidence": 0.638,
+          "confidence_within_one": 0.988
+        },
+        {
+          "from": 1790082000,
+          "to": 1790092800,
+          "value": 1.5,
+          "level": "low",
+          "confidence": 0.638,
+          "confidence_within_one": 0.988
+        },
+        {
+          "from": 1790092800,
+          "to": 1790103600,
+          "value": 1.2,
+          "level": "low",
+          "confidence": 0.638,
+          "confidence_within_one": 0.988
+        },
+        {
+          "from": 1790103600,
+          "to": 1790114400,
+          "value": 1.0,
+          "level": "low",
+          "confidence": 0.638,
+          "confidence_within_one": 0.988
+        },
+        {
+          "from": 1790114400,
+          "to": 1790125200,
+          "value": 1.0,
+          "level": "low",
+          "confidence": 0.626,
+          "confidence_within_one": 0.983
+        },
+        {
+          "from": 1790157600,
+          "to": 1790168400,
+          "value": 1.6,
+          "level": "low",
+          "confidence": 0.626,
+          "confidence_within_one": 0.983
+        },
+        {
+          "from": 1790168400,
+          "to": 1790179200,
+          "value": 1.7,
+          "level": "low",
+          "confidence": 0.626,
+          "confidence_within_one": 0.983
+        },
+        {
+          "from": 1790179200,
+          "to": 1790190000,
+          "value": 1.1,
+          "level": "low",
+          "confidence": 0.626,
+          "confidence_within_one": 0.983
+        },
+        {
+          "from": 1790190000,
+          "to": 1790200800,
+          "value": 1.1,
+          "level": "low",
+          "confidence": 0.626,
+          "confidence_within_one": 0.983
+        }
+      ]
+    },
+    {
+      "polle": "Urtica",
+      "location": "DEMUNC",
+      "data": [
+        {
+          "from": 1789812000,
+          "to": 1789822800,
+          "value": 9.4,
+          "level": "low",
+          "confidence": 1.0,
+          "confidence_within_one": 1.0
+        },
+        {
+          "from": 1789822800,
+          "to": 1789833600,
+          "value": 13.1,
+          "level": "low",
+          "confidence": 1.0,
+          "confidence_within_one": 1.0
+        },
+        {
+          "from": 1789833600,
+          "to": 1789844400,
+          "value": 5.6,
+          "level": "low",
+          "confidence": 0.676,
+          "confidence_within_one": 0.99
+        },
+        {
+          "from": 1789844400,
+          "to": 1789855200,
+          "value": 4.0,
+          "level": "low",
+          "confidence": 0.676,
+          "confidence_within_one": 0.99
+        },
+        {
+          "from": 1789855200,
+          "to": 1789866000,
+          "value": 1.8,
+          "level": "low",
+          "confidence": 0.665,
+          "confidence_within_one": 0.99
+        },
+        {
+          "from": 1789866000,
+          "to": 1789876800,
+          "value": 1.8,
+          "level": "low",
+          "confidence": 0.665,
+          "confidence_within_one": 0.99
+        },
+        {
+          "from": 1789876800,
+          "to": 1789887600,
+          "value": 1.5,
+          "level": "low",
+          "confidence": 0.665,
+          "confidence_within_one": 0.99
+        },
+        {
+          "from": 1789887600,
+          "to": 1789898400,
+          "value": 4.4,
+          "level": "low",
+          "confidence": 0.665,
+          "confidence_within_one": 0.99
+        },
+        {
+          "from": 1789898400,
+          "to": 1789909200,
+          "value": 11.7,
+          "level": "low",
+          "confidence": 0.665,
+          "confidence_within_one": 0.99
+        },
+        {
+          "from": 1789909200,
+          "to": 1789920000,
+          "value": 5.7,
+          "level": "low",
+          "confidence": 0.665,
+          "confidence_within_one": 0.99
+        },
+        {
+          "from": 1789920000,
+          "to": 1789930800,
+          "value": 8.8,
+          "level": "low",
+          "confidence": 0.665,
+          "confidence_within_one": 0.99
+        },
+        {
+          "from": 1789930800,
+          "to": 1789941600,
+          "value": 9.9,
+          "level": "low",
+          "confidence": 0.665,
+          "confidence_within_one": 0.99
+        },
+        {
+          "from": 1789952400,
+          "to": 1789963200,
+          "value": 3.1,
+          "level": "low",
+          "confidence": 0.658,
+          "confidence_within_one": 0.99
+        },
+        {
+          "from": 1789963200,
+          "to": 1789974000,
+          "value": 2.4,
+          "level": "low",
+          "confidence": 0.658,
+          "confidence_within_one": 0.99
+        },
+        {
+          "from": 1789974000,
+          "to": 1789984800,
+          "value": 2.6,
+          "level": "low",
+          "confidence": 0.658,
+          "confidence_within_one": 0.99
+        },
+        {
+          "from": 1789984800,
+          "to": 1789995600,
+          "value": 4.7,
+          "level": "low",
+          "confidence": 0.658,
+          "confidence_within_one": 0.99
+        },
+        {
+          "from": 1789995600,
+          "to": 1790006400,
+          "value": 5.0,
+          "level": "low",
+          "confidence": 0.658,
+          "confidence_within_one": 0.99
+        },
+        {
+          "from": 1790006400,
+          "to": 1790017200,
+          "value": 5.1,
+          "level": "low",
+          "confidence": 0.658,
+          "confidence_within_one": 0.99
+        },
+        {
+          "from": 1790017200,
+          "to": 1790028000,
+          "value": 2.2,
+          "level": "low",
+          "confidence": 0.658,
+          "confidence_within_one": 0.99
+        },
+        {
+          "from": 1790038800,
+          "to": 1790049600,
+          "value": 1.6,
+          "level": "low",
+          "confidence": 0.638,
+          "confidence_within_one": 0.988
+        },
+        {
+          "from": 1790060400,
+          "to": 1790071200,
+          "value": 2.2,
+          "level": "low",
+          "confidence": 0.638,
+          "confidence_within_one": 0.988
+        },
+        {
+          "from": 1790071200,
+          "to": 1790082000,
+          "value": 5.9,
+          "level": "low",
+          "confidence": 0.638,
+          "confidence_within_one": 0.988
+        },
+        {
+          "from": 1790082000,
+          "to": 1790092800,
+          "value": 8.1,
+          "level": "low",
+          "confidence": 0.638,
+          "confidence_within_one": 0.988
+        },
+        {
+          "from": 1790092800,
+          "to": 1790103600,
+          "value": 6.9,
+          "level": "low",
+          "confidence": 0.638,
+          "confidence_within_one": 0.988
+        },
+        {
+          "from": 1790103600,
+          "to": 1790114400,
+          "value": 2.6,
+          "level": "low",
+          "confidence": 0.638,
+          "confidence_within_one": 0.988
+        },
+        {
+          "from": 1790114400,
+          "to": 1790125200,
+          "value": 3.0,
+          "level": "low",
+          "confidence": 0.626,
+          "confidence_within_one": 0.983
+        },
+        {
+          "from": 1790146800,
+          "to": 1790157600,
+          "value": 3.7,
+          "level": "low",
+          "confidence": 0.626,
+          "confidence_within_one": 0.983
+        },
+        {
+          "from": 1790157600,
+          "to": 1790168400,
+          "value": 7.9,
+          "level": "low",
+          "confidence": 0.626,
+          "confidence_within_one": 0.983
+        },
+        {
+          "from": 1790168400,
+          "to": 1790179200,
+          "value": 8.7,
+          "level": "low",
+          "confidence": 0.626,
+          "confidence_within_one": 0.983
+        },
+        {
+          "from": 1790179200,
+          "to": 1790190000,
+          "value": 4.0,
+          "level": "low",
+          "confidence": 0.626,
+          "confidence_within_one": 0.983
+        },
+        {
+          "from": 1790190000,
+          "to": 1790200800,
+          "value": 2.2,
+          "level": "low",
+          "confidence": 0.626,
+          "confidence_within_one": 0.983
+        }
+      ]
+    }
+  ]
+}
