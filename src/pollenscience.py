@@ -182,3 +182,61 @@ def fetch_pollenscience_chunked(
     combined = pd.concat(all_chunks, ignore_index=True)
     combined = combined.drop_duplicates(subset=["date", "species"], keep="last")
     return combined.sort_values(["date", "species"]).reset_index(drop=True)
+
+
+# --- Diagnostics -------------------------------------------------------------
+
+# Fungal spore taxa the ePIN automatic samplers can report, under the names
+# the network uses. Asked for by name because the API only answers about the
+# taxa it is asked for.
+SPORE_CANDIDATES = [
+    "Alternaria", "Cladosporium", "Epicoccum", "Ganoderma", "Ustilago",
+    "Aspergillus", "Penicillium", "Botrytis", "Didymella", "Drechslera",
+    "Helminthosporium", "Erysiphe", "Leptosphaeria", "Torula", "Pleospora",
+    "Polythrincium", "Stemphylium", "Tilletia", "Fungi", "Sporen", "Pilzsporen",
+    "Fungal spores", "Spores", "Mold", "Schimmel", "Basidiospores", "Ascospores",
+    "Puccinia", "Fusarium", "Curvularia", "Pithomyces", "Nigrospora", "Agaricus",
+    "Coprinus", "Periconia", "Rusts", "Smuts", "Myxomycetes",
+]
+
+
+def probe_taxa(location: str, days: int = 30) -> dict[str, dict[str, object]]:
+    """What the API reports for *location* over the last *days*, by taxon.
+
+    Two calls: one without a ``pollen`` filter (in case the API then answers
+    with everything it has) and one naming every spore candidate. Returns
+    {taxon: {"n": rows, "last": date, "max": value, "mean": value}}.
+    """
+    end = date.today()
+    start = end - timedelta(days=days)
+    from_ts = int(pd.Timestamp(str(start), tz="Europe/Berlin").timestamp())
+    to_ts = int(pd.Timestamp(str(end + timedelta(days=1)), tz="Europe/Berlin").timestamp())
+    found: dict[str, dict[str, object]] = {}
+    for label, pollen in (("unfiltered", None), ("spore candidates", ",".join(SPORE_CANDIDATES)),
+                          ("pollen list", _POLLEN_PARAM)):
+        params: dict[str, object] = {"from": from_ts, "to": to_ts, "locations": location}
+        if pollen:
+            params["pollen"] = pollen
+        try:
+            response = httpx.get(API_URL, params=params, timeout=60)
+            print(f"  {location} {label}: HTTP {response.status_code}, {len(response.content)} bytes")
+            response.raise_for_status()
+            data = response.json()
+        except Exception as exc:  # diagnostics: report and carry on
+            print(f"  {location} {label}: failed ({exc})")
+            continue
+        if isinstance(data, dict):
+            print(f"    top-level keys: {sorted(data.keys())}")
+        for measurement in data.get("measurements", []) if isinstance(data, dict) else []:
+            points = measurement.get("data", [])
+            values = [float(p.get("value", 0) or 0) for p in points]
+            entry = {
+                "n": len(points),
+                "last": pd.Timestamp(max((p["from"] for p in points), default=0), unit="s").isoformat()
+                if points else None,
+                "max": max(values, default=0.0),
+                "mean": (sum(values) / len(values)) if values else 0.0,
+                "via": label,
+            }
+            found.setdefault(str(measurement.get("polle")), entry)
+    return found

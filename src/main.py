@@ -649,6 +649,30 @@ def cmd_calibrate(rebuild: bool = False) -> None:
     print(f"\nWritten to {TABLE_PATH}")
 
 
+def cmd_probe_species() -> None:
+    """Diagnostic: which taxa (pollen and fungal spores) the API reports for Munich."""
+    from .pollenscience import MUNICH_LOCATIONS, probe_taxa
+
+    print("=" * 60)
+    print("PROBE: taxa reported by pollenscience.eu (last 30 days)")
+    print("=" * 60)
+    for location in MUNICH_LOCATIONS + ["DEMIND", "DEVIEC", "DEALTO", "DEFEUC"]:
+        found = probe_taxa(location)
+        for taxon, info in sorted(found.items()):
+            print(f"  {location} {taxon:<20} n={info['n']:<5} last={info['last']} "
+                  f"max={info['max']:.1f} mean={info['mean']:.1f} (via {info['via']})")
+    # Also try a few endpoints that might list what exists.
+    import httpx
+    for url in ("https://pollenscience.eu/api/pollen", "https://pollenscience.eu/api/locations",
+                "https://pollenscience.eu/api/measurements", "https://pollenscience.eu/api/taxa",
+                "https://pollenscience.eu/api/species", "https://pollenscience.eu/api"):
+        try:
+            r = httpx.get(url, timeout=30)
+            print(f"  {url}: HTTP {r.status_code} {r.headers.get('content-type','')} {r.text[:300]!r}")
+        except Exception as exc:
+            print(f"  {url}: failed ({exc})")
+
+
 def cmd_dwd() -> None:
     """Fetch and display the current DWD pollen forecast for Oberbayern."""
     from .dwd import fetch_dwd_forecast
@@ -906,6 +930,8 @@ def main() -> None:
         cmd_benchmark_onset(**_parse_onset_args(sys.argv[2:]))
     elif command == "calibrate":
         cmd_calibrate(rebuild="--rebuild" in sys.argv[2:])
+    elif command == "probe-species":
+        cmd_probe_species()
     elif command == "dwd":
         cmd_dwd()
     elif command == "phenology":

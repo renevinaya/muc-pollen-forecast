@@ -16,7 +16,7 @@ on:
           from the archives; backfill-upwind = fetch the upwind stations'
           history from pollenscience.eu (neither publishes a forecast)
         type: choice
-        options: [forecast, train, backfill, backfill-upwind]
+        options: [forecast, train, backfill, backfill-upwind, probe]
         default: forecast
 
 permissions:
@@ -67,6 +67,8 @@ jobs:
             uv run python -m src.main run-backfill
           elif [ "$MODE" = "backfill-upwind" ]; then
             uv run python -m src.main backfill-upwind
+          elif [ "$MODE" = "probe" ]; then
+            uv run python -m src.main probe-species
           else
             uv run python -m src.main run
           fi
