@@ -38,7 +38,8 @@ from .types import (
     LOAD_FEATURES,
     is_season_active,
 )
-from .upwind import upwind_state, upwind_tables
+from .upwind import upwind_state
+from .trainer import WINDOW, grid_series
 from .season_load import load_features_for_years, season_totals, season_year
 from .onset import (
     onset_doy_by_day,
@@ -115,24 +116,26 @@ class LagState:
         if sp.empty:
             return cls(log_vals=[0.0] * LAG_WINDOW, upwind=upwind_now)
 
-        values = sp["value"].to_numpy(dtype=float)
-        log_vals = list(np.log1p(values[-LAG_WINDOW:]))
+        # On the time grid, as the trainer builds it (E.1): the block is the
+        # 56 windows of *time* before the origin, gaps carried forward from
+        # the last measurement, and days_since_active is a distance in time
+        # from the last window measured above zero.
+        origin_ts = pd.Timestamp(origin)
+        values = pd.Series(sp["value"].to_numpy(dtype=float), index=pd.DatetimeIndex(pd.to_datetime(sp["date"])))
+        raw, filled = grid_series(values, end=origin_ts - WINDOW)
+        before = filled[filled.index < origin_ts]
+        log_vals = list(before.to_numpy(dtype=float)[-LAG_WINDOW:])
         while len(log_vals) < LAG_WINDOW:
             log_vals.insert(0, 0.0)
 
-        # days_since_active over the *whole* history, not just the tail.
-        active = np.flatnonzero(values > 0)
-        dsa = float(len(values) - 1 - active[-1]) if active.size else NEVER_ACTIVE
+        active = raw[(raw.index < origin_ts) & (raw > 0)]
+        dsa = (
+            float((origin_ts - WINDOW - active.index.max()) / WINDOW) if not active.empty else NEVER_ACTIVE
+        )
 
-        # Season-to-date sum: the rows before the origin in its season year.
-        years = season_year(species, sp["date"])
-        this_year = season_year(species, pd.DatetimeIndex([pd.Timestamp(origin)]))[0]
-        season_sum = float(np.log1p(values[years == this_year].sum()))
-
-        # Earlier windows of the origin's own calendar day are already measured.
-        day = pd.Timestamp(origin).normalize()
-        same_day = sp[pd.to_datetime(sp["date"]).dt.normalize() == day]
-        morning = list(np.log1p(same_day["value"].to_numpy(dtype=float)))
+        # Earlier windows of the origin's own calendar day are already known.
+        day = origin_ts.normalize()
+        morning = list(before[before.index.normalize() == day].to_numpy(dtype=float))
 
         return cls(
             log_vals=log_vals,

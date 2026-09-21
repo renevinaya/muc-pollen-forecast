@@ -271,3 +271,65 @@ def test_lag_state_seeds_days_since_active_from_full_history(history: pd.DataFra
     origin = pd.Timestamp(history["date"].max())
     lag = LagState.from_history(history, SPECIES, origin)
     assert lag.days_since_active > 56
+
+
+# --- Time-based lag alignment (E.1) ------------------------------------------
+
+
+def _with_gap(history: pd.DataFrame, start: str, end: str) -> pd.DataFrame:
+    """The history with every row in [start, end) removed: a station outage."""
+    dates = pd.to_datetime(history["date"])
+    return history[(dates < pd.Timestamp(start)) | (dates >= pd.Timestamp(end))].reset_index(drop=True)
+
+
+def test_lags_are_time_based_across_a_gap(history: pd.DataFrame) -> None:
+    """"24 h ago" stays 24 h ago through an outage, on both paths.
+
+    Row-based shifting made the first window after a three-day gap read its
+    ``pollen_lag_8`` from four days earlier. On the grid the value is the one
+    the station last reported before the gap, carried forward, and the
+    ``days_since_active`` distance counts the gap's windows too.
+    """
+    gap_start, gap_end = "2021-04-20 00:00", "2021-04-23 00:00"
+    gapped = _with_gap(history, gap_start, gap_end)
+    batch = trainer_features(gapped, SPECIES, lead=1)
+    first_after = pd.Timestamp(gap_end)
+    last_before = pd.Timestamp(gap_start) - WINDOW
+
+    sp = gapped[gapped["species"] == SPECIES].set_index("date")["value"]
+    carried = float(np.log1p(sp.loc[last_before]))
+    row = batch.loc[first_after]
+    # Every lag inside the gap carries the last measurement across it...
+    for col in ("pollen_lag_1", "pollen_lag_8", "pollen_lag_16"):
+        assert row[col] == pytest.approx(carried), col
+    # ...while a lag that reaches past the gap reads the real value there.
+    assert row["pollen_lag_56"] == pytest.approx(float(np.log1p(sp.loc[first_after - 56 * WINDOW])))
+    # The 24 h mean before the first window after the gap is the carried
+    # value alone; row-based it would have been the mean of a whole day of
+    # real windows from before the gap.
+    assert row["pollen_rolling_8"] == pytest.approx(carried)
+
+    # And the serving path agrees on the whole block.
+    served = serving_features(gapped, SPECIES, pd.DatetimeIndex([first_after, first_after + 5 * WINDOW]), lead=1)
+    for col in FEATURE_COLS:
+        if col.startswith("upwind"):
+            continue
+        assert np.allclose(batch.loc[served.index, col].to_numpy(dtype=float), served[col].to_numpy(dtype=float), atol=1e-6), col
+
+
+def test_days_since_active_counts_gap_windows(history: pd.DataFrame) -> None:
+    """A quiet stretch plus an outage is measured in time on both paths."""
+    # Birch is dormant in the fixture from day 141 on; cut a gap in June and
+    # look just after it.
+    gap_start, gap_end = "2021-06-10 00:00", "2021-06-14 00:00"
+    gapped = _with_gap(history, gap_start, gap_end)
+    origin = pd.Timestamp(gap_end)
+    state = LagState.from_history(gapped, SPECIES, origin)
+    sp = gapped[gapped["species"] == SPECIES]
+    last_active = pd.to_datetime(sp.loc[sp["value"] > 0, "date"]).max()
+    expected = float((origin - WINDOW - last_active) / WINDOW)
+    assert state.days_since_active == expected
+    batch = trainer_features(gapped, SPECIES, lead=1)
+    assert batch.loc[origin, "days_since_active"] == expected
+    # Row-based counting would have been shorter by the gap's 32 windows.
+    assert expected > 32

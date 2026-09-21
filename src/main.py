@@ -580,13 +580,15 @@ def cmd_calibrate(rebuild: bool = False) -> None:
     """Regenerate the confidence table from a rollout benchmark.
 
     Reads ``data/benchmark_rollout.csv`` — pass *rebuild* to run the benchmark
-    first. Writes ``src/confidence.json``, which is committed, so the published
-    confidence is auditable against the run that produced it.
+    first, over ``CALIBRATION_HORIZON_DAYS`` so the table also covers the
+    horizons a stale run lands on. Writes ``src/confidence.json``, which is
+    committed, so the published confidence is auditable against the run that
+    produced it.
 
     Re-run this whenever the model changes materially; a stale table publishes
     the accuracy of a model that no longer exists.
     """
-    from .confidence import TABLE_PATH, breakdown, build_table
+    from .confidence import CALIBRATION_HORIZON_DAYS, TABLE_PATH, breakdown, build_table
 
     print("=" * 60)
     print("CALIBRATE: Measured Forecast Confidence")
@@ -598,7 +600,11 @@ def cmd_calibrate(rebuild: bool = False) -> None:
             print("No history file found. Run 'collect' or 'backfill' first.")
             return
         history = pd.read_csv(HISTORY_FILE, parse_dates=["date"])
-        results = rollout_evaluate(history, horizon_days=FORECAST_DAYS, n_folds=6)
+        # Twice the shipped horizon: a stale run publishes the rate of the
+        # horizon it really is, which can lie beyond FORECAST_DAYS.
+        results = rollout_evaluate(
+            history, horizon_days=CALIBRATION_HORIZON_DAYS, n_folds=6, upwind=load_upwind()
+        )
         if results.empty:
             print("Benchmark produced no results.")
             return
@@ -617,9 +623,22 @@ def cmd_calibrate(rebuild: bool = False) -> None:
     print(f"  Exact level correct:      {table['overall']['exact']:.1%}")
     print(f"  Within one level:         {table['overall']['within_one']:.1%}")
     print("\n  Per horizon (offset from the overall rate):")
-    for day, delta in sorted(table["horizon_delta"].items()):
+    for day, delta in sorted(table["horizon_delta"].items(), key=lambda kv: int(kv[0])):
         print(f"    day {day}: exact {delta['exact']:+.3f}   "
               f"within one {delta['within_one']:+.3f}")
+
+    residuals = table.get("residuals", {})
+    if residuals.get("window"):
+        from .confidence import INTERVAL_COVERAGE, value_interval
+
+        print(f"\n  Residual distributions stored for horizons "
+              f"{', '.join(sorted(residuals['day_mean'], key=int))} (day means) — the level")
+        print("  confidence is conformal: the residual mass inside the level's band.")
+        for day in ("1", "5", str(max(int(k) for k in residuals["window"]))):
+            interval = value_interval(table, 10.0, int(day))
+            if interval:
+                print(f"    day {day}: {INTERVAL_COVERAGE:.0%} interval for a value of 10 = "
+                      f"{interval[0]:.1f} – {interval[1]:.1f}")
 
     print("\n  Per species x level (diagnostic only — NOT published).")
     print("  These vary 5x in-sample but do not generalise to a held-out fold,")

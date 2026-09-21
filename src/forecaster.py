@@ -27,6 +27,8 @@ from .types import (
     LOCATION,
     FEATURE_COLS,
     SPECIES_THRESHOLDS,
+    STALE_AFTER_WINDOWS,
+    WINDOWS_PER_DAY,
     _DEFAULT_THRESHOLDS,
     season_gate_active,
     value_to_level,
@@ -34,10 +36,13 @@ from .types import (
     WindowForecast,
     DayForecast,
     ForecastOutput,
+    ObservationStatus,
+    RunStatus,
 )
+from .clock import local_now
 from .weather import fetch_weather_forecast
 from .trainer import TwoStageModel, finalize_features, load_models, inv_log_transform
-from .confidence import confidence_for, load_table
+from .confidence import confidence_for, load_table, value_interval
 from .features import FeatureContext, LagState, build_context, build_feature_row
 from .cams import fetch_cams_forecast
 
@@ -113,24 +118,32 @@ def predict_window(
     return max(0.0, float(model.predict(x_features)[0]))
 
 
-def _fetch_ndvi(days: pd.DatetimeIndex) -> pd.DataFrame:
-    """Daily NDVI for the forecast dates; zeros when the fetch fails."""
+def _fetch_ndvi(days: pd.DatetimeIndex, defaulted: dict[str, str]) -> pd.DataFrame:
+    """Daily NDVI for the forecast dates; zeros when the fetch fails.
+
+    A failure is recorded in *defaulted* (D.3) rather than only printed.
+    """
     try:
         from .ndvi import ndvi_features
 
-        return ndvi_features(days)
+        table = ndvi_features(days)
     except Exception as exc:
         print(f"  NDVI fetch failed ({exc}), using defaults")
+        defaulted["ndvi"] = f"fetch failed ({exc}); zeros"
         return pd.DataFrame(
             {"ndvi": 0.0, "evi": 0.0, "ndvi_delta": 0.0}, index=days
         )
+    if table.empty or not (table["ndvi"] != 0).any():
+        defaulted["ndvi"] = "no composites; zeros"
+    return table
 
 
-def _fetch_dwd_levels() -> dict[tuple[object, str], float]:
+def _fetch_dwd_levels(defaulted: dict[str, str]) -> dict[tuple[object, str], float]:
     """DWD categorical levels keyed by (date, species); empty when unavailable.
 
     DWD only covers today/tomorrow/day-after, so most forecast windows are
-    untouched. Fail-open: an empty lookup leaves predictions unchanged.
+    untouched. Fail-open: an empty lookup leaves predictions unchanged, and
+    is recorded in *defaulted* (D.3).
     """
     levels: dict[tuple[object, str], float] = {}
     try:
@@ -142,9 +155,66 @@ def _fetch_dwd_levels() -> dict[tuple[object, str], float]:
             )
         if levels:
             print(f"DWD blend: {len(levels)} (date, species) levels available")
+        else:
+            defaulted["dwd"] = "no levels for the region; blend skipped"
     except Exception as exc:
         print(f"  DWD forecast unavailable ({exc}); skipping DWD blend")
+        defaulted["dwd"] = f"unavailable ({exc}); blend skipped"
     return levels
+
+
+def _soil_defaulted(weather: pd.DataFrame) -> bool:
+    """True when the forecast's soil variables are the all-zero fallback."""
+    cols = [c for c in ("soil_temperature_mean", "soil_moisture_mean") if c in weather.columns]
+    if not cols or weather.empty:
+        return True
+    return not (weather[cols].fillna(0.0) != 0.0).any().any()
+
+
+def windows_since(last: pd.Timestamp, now: pd.Timestamp) -> int:
+    """Complete 3 h windows since the window that starts at *last*, with no measurement.
+
+    The window at *last* itself and the one in progress do not count: a
+    measurement for 06:00 seen at 13:30 is one window old (09:00 passed
+    unmeasured; 12:00 is still running).
+    """
+    return max(0, int((pd.Timestamp(now) - pd.Timestamp(last)) // WINDOW) - 1)
+
+
+def observation_status(
+    history: pd.DataFrame, now: pd.Timestamp
+) -> tuple[dict[str, ObservationStatus], dict[str, pd.Timestamp]]:
+    """Per-species newest measurement and its age at *now* (D.2).
+
+    Returns the status per species and the newest measurement's timestamp per
+    species (absent when a species has never been measured).
+    """
+    last_by_species: dict[str, pd.Timestamp] = {}
+    if not history.empty:
+        newest = history.groupby("species")["date"].max()
+        last_by_species = {str(sp): pd.Timestamp(ts) for sp, ts in newest.items()}
+
+    status: dict[str, ObservationStatus] = {}
+    for species in ALL_SPECIES:
+        last = last_by_species.get(species)
+        if last is None:
+            status[species] = ObservationStatus(last=None, age_windows=None, stale=True)
+            continue
+        age = windows_since(last, now)
+        status[species] = ObservationStatus(
+            last=last.isoformat(), age_windows=age, stale=age >= STALE_AFTER_WINDOWS
+        )
+    return status, last_by_species
+
+
+def worst_observation(status: dict[str, ObservationStatus]) -> ObservationStatus:
+    """The oldest newest-measurement over all species: the run's headline."""
+    if not status:
+        return ObservationStatus(last=None, age_windows=None, stale=True)
+    return max(
+        status.values(),
+        key=lambda st: (st.age_windows if st.age_windows is not None else float("inf")),
+    )
 
 
 def generate_forecast(
@@ -172,21 +242,27 @@ def generate_forecast(
         models = load_models()
         print(f"Loaded {len(models)} species models")
 
+    # Which input groups fell back to a default this run (D.3), by name.
+    defaulted: dict[str, str] = {}
+
     weather = fetch_weather_forecast(FORECAST_DAYS)
     print(f"Weather forecast: {len(weather)} windows ({FORECAST_DAYS} days)")
+    if _soil_defaulted(weather):
+        defaulted["weather_soil"] = "soil variables not in the weather response; zeros"
 
     forecast_days_index = pd.DatetimeIndex(weather.index).normalize().unique()
     ctx = build_context(
         history,
         weather,
-        ndvi=_fetch_ndvi(forecast_days_index),
+        ndvi=_fetch_ndvi(forecast_days_index, defaulted),
         cams=fetch_cams_forecast(FORECAST_DAYS),
     )
-    dwd_levels = _fetch_dwd_levels()
+    dwd_levels = _fetch_dwd_levels(defaulted)
 
     calibration = load_table()
     if calibration is None:
         print("  No calibration table; publishing fallback confidence")
+        defaulted["confidence"] = "no calibration table; fallback rates"
     else:
         print(f"Confidence calibrated {calibration['generated'][:10]}: "
               f"exact {calibration['overall']['exact']:.2f}, "
@@ -194,9 +270,12 @@ def generate_forecast(
 
     # --- Real-time observation assimilation ---
     # Windows that already have a measurement emit it directly, and the origin
-    # for a species is its first window without one. Everything measured before
-    # that origin feeds the lag block, so the forecast starts from as much real
-    # data as exists.
+    # for a species is the window after its newest measurement. Everything
+    # measured before that origin feeds the lag block, so the forecast starts
+    # from as much real data as exists — and ``lead_windows`` counts from
+    # there, so when the station has been silent for two days the first
+    # forecast window is honestly a lead of two days plus one, not lead 1
+    # over a block that quietly ended two days ago (D.2).
     observed: dict[tuple[pd.Timestamp, str], float] = {}
     if not history.empty:
         recent = history[history["date"] >= pd.Timestamp(weather.index.min())]
@@ -211,7 +290,16 @@ def generate_forecast(
                 return window
         return windows[-1] + WINDOW
 
-    origins = {sp: first_unobserved(sp) for sp in ALL_SPECIES}
+    obs_status, last_by_species = observation_status(history, local_now())
+
+    def origin_for(species: str) -> pd.Timestamp:
+        origin = first_unobserved(species)
+        last = last_by_species.get(species)
+        if last is not None:
+            origin = min(origin, last + WINDOW)
+        return origin
+
+    origins = {sp: origin_for(sp) for sp in ALL_SPECIES}
     lags = {
         sp: LagState.from_history(history, sp, origins[sp], upwind=upwind) for sp in ALL_SPECIES
     }
@@ -219,6 +307,24 @@ def generate_forecast(
     n_obs_windows = len({dt for dt, _ in observed})
     if n_obs_windows > 0:
         print(f"Real-time assimilation: {n_obs_windows} observed windows will use actual data")
+
+    no_upwind = [
+        sp for sp in ALL_SPECIES if np.isnan(lags[sp].upwind.get("upwind_max_56", np.nan))
+    ]
+    if len(no_upwind) == len(ALL_SPECIES):
+        defaulted["upwind"] = "no station readings in the last 7 days; zeros"
+    elif no_upwind:
+        defaulted["upwind"] = (
+            "no station readings in the last 7 days for " + ", ".join(no_upwind) + "; zeros"
+        )
+    no_model = [sp for sp in ALL_SPECIES if sp not in models]
+    if no_model:
+        defaulted["model"] = "no trained model, persistence for " + ", ".join(no_model)
+
+    status = RunStatus(
+        observations=worst_observation(obs_status), species=obs_status, defaulted=defaulted
+    )
+    print(f"Inputs: {status.describe()}")
 
     # Pass 1: one value per (window, species) — the observation where there
     # is one, the model otherwise, the season gate last.
@@ -272,16 +378,9 @@ def generate_forecast(
     }
 
     window_results: list[tuple[str, WindowForecast]] = []
-    prev_date_str: str | None = None
-    day_idx = -1
 
     for dt in windows:
         date_str = dt.strftime("%Y-%m-%d")
-
-        if date_str != prev_date_str:
-            day_idx += 1
-            prev_date_str = date_str
-
         window_species: list[SpeciesForecast] = []
 
         for species in ALL_SPECIES:
@@ -289,15 +388,26 @@ def generate_forecast(
             has_observation = (dt, species) in observed
             prediction = values[(dt, species)]
 
-            level = value_to_level(day_mean_of[(dt.date(), species)], species).value
+            day_mean = day_mean_of[(dt.date(), species)]
+            level = value_to_level(day_mean, species).value
+            # The horizon is counted from the newest measurement, as the
+            # calibration rollout counts it: eight windows per day from the
+            # origin. A stale run therefore reads a longer horizon's rate.
+            lead = max(1, int((dt - origins[species]) / WINDOW) + 1)
+            horizon_day = (lead - 1) // WINDOWS_PER_DAY + 1
             exact, within_one = confidence_for(
                 calibration,
                 species,
                 level,
-                horizon_day=day_idx + 1,
+                horizon_day=horizon_day,
                 has_model=has_model,
                 observed=has_observation,
+                log_day_mean=float(np.log1p(max(0.0, day_mean))),
             )
+            if has_observation:
+                interval: tuple[float, float] | None = (prediction, prediction)
+            else:
+                interval = value_interval(calibration, prediction, horizon_day)
             window_species.append(
                 SpeciesForecast(
                     name=species,
@@ -305,6 +415,8 @@ def generate_forecast(
                     value=prediction,
                     confidence=exact,
                     confidence_within_one=within_one,
+                    value_low=interval[0] if interval else None,
+                    value_high=interval[1] if interval else None,
                 )
             )
 
@@ -328,4 +440,5 @@ def generate_forecast(
             DayForecast(date=date_str, windows=windows)
             for date_str, windows in days_dict.items()
         ],
+        status=status,
     )

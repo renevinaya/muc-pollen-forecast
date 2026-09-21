@@ -384,13 +384,32 @@ What did change, and is kept:
   station 300+ km south-west, or a physics forecast (CAMS, off by default,
   see README) that carries the emission inventory. Both are new data
   sources, not features; neither is on this list yet.
-- [ ] **B.7 December continuity (was part of 5.3).** `gdd` and the forcing
-  accumulation reset on 1 Jan, so a hazel season that starts in a warm
-  December (2023 onset = 1 Jan, i.e. already running) is invisible to the
-  onset features. Start the accumulation on 1 Nov of the previous year for
-  Corylus and Alnus (LOO-check the start date as in B.3). Chill units
-  themselves are **not** supported by the data at eight seasons; revisit
-  when there are twelve.
+- [ ] **B.7 December continuity (was part of 5.3).** **Tried — not adopted**
+  (parked on `claude/forecast-app-review-xwisqv`, commit `cd0c8cd`). Two
+  changes: forcing rules may start on 1 November or 1 December of the year
+  before the season and accumulate across New Year, with the leave-one-out
+  selection deciding per species; and from November a day carries the
+  *coming* season's rule, threshold and onset climatology, so the readiness
+  features and days-since-onset run continuously into January instead of
+  reading last season's total in December and resetting.
+
+  The premise failed first. On the eight measured seasons the autumn starts
+  project the hazel and alder onsets *worse* than the January ones —
+  leave-one-out, base 0 °C: Corylus 1 Jan 4.0 d, 1 Dec 8.6 d, 1 Nov 11.6 d;
+  Alnus 15 Jan 6.5 d, 1 Nov 21.5 d, 1 Dec 24.4 d (bases 3 and 5 are worse
+  still) — so the selection keeps the January rules for both and nothing
+  in the live projection changes. What the benchmark priced is the
+  November turn alone. Six general folds, D.4 → B.7: MAE 6.79 → 6.82, RMSE
+  43.6 → 42.0, bias −0.34 → −0.20, level accuracy unchanged, per-species
+  moves of ±2 that look like retraining noise (no fold holds a December).
+  Onset benchmark: alder d2/d3 timing 4.7/5.0 → 2.3/3.3 d, but hazel
+  worse at three of five horizons (d5 1.0 → 4.0 d), Alnus 2026 over-
+  predicted (ratio 1.00 → 1.29) and **false starts 46 → 59 run-days**,
+  Betula 2024 now false-starting at every horizon: giving every December
+  row a negative days-since-onset moves the early-season shape the model
+  learned. Two seasons with warm Decembers (2020 onset DOY 13, 2023 DOY 11)
+  are not enough to teach a rule; revisit with twelve, as the chill-unit
+  note already says.
 
 ## Phase C — Season load (was 5.1) — **DONE**
 
@@ -435,10 +454,56 @@ What did change, and is kept:
   them up whenever it likes; until it does, the numbers are at least there.
   The README's output section now documents the file that is actually
   published (it described `to_dict()`, which nothing publishes).
-- [ ] **D.2 Staleness guard (was 4.2).** If the last observation is older
-  than N windows, cap confidence and say so in the output.
-- [ ] **D.3 Degradation flags (was 4.3).** Emit a per-run list of feature
-  groups that were defaulted (NDVI, DWD, weather forecast fallback).
+- [x] **D.2 Staleness guard (was 4.2).** **Done — a stale run is forecast
+  and published as the longer-range forecast it is.** The live history has
+  231 gaps longer than a window, most of them a day, the longest 13.5 days
+  (June 2026). Before, the forecaster's origin was the first unobserved
+  window of *today*, so after two silent days a window this afternoon was
+  predicted at lead 1 over a lag block that had quietly ended two days
+  earlier, with the day-1 confidence attached and nothing in the file. Now
+  the origin is the window after the newest measurement: `lead_windows`
+  counts from there (the model was trained on exactly that anchoring), and
+  the confidence horizon is counted the way the calibration rollout counts
+  it, eight windows per day from the origin. A run two days stale therefore
+  publishes day-3 rates for tomorrow. So that those rates exist, the
+  calibration rollout now runs to twice the shipped horizon
+  (`CALIBRATION_HORIZON_DAYS = 10`; `calibrate --rebuild`), and a window
+  beyond the furthest measured horizon gets that horizon's rate halved, the
+  same rule as a species without a model. The output's `status.observations`
+  block carries the newest measurement, its age in complete windows and a
+  `stale` flag from eight windows (a day), per species and as a worst-case
+  headline. On a normal run nothing changes: the newest measurement is one
+  window old and the origin is where it always was.
+
+  Measured on the same six folds, rolled out to 10 days (same origins, so
+  days 1–5 are the standard benchmark and are unchanged):
+
+  | | d1 | d2 | d3 | d4 | d5 | d6 | d7 | d8 | d9 | d10 |
+  |---|---|---|---|---|---|---|---|---|---|---|
+  | MAE | 7.1 | 7.0 | 6.7 | 6.5 | 6.6 | 6.4 | 6.5 | 7.0 | 8.0 | 8.6 |
+  | level accuracy | 73.5% | 73.0% | 73.0% | 72.2% | 72.2% | 71.8% | 72.2% | 71.3% | 70.8% | 71.0% |
+  | skill vs persistence | +32% | +36% | +40% | +45% | +42% | +46% | +50% | +49% | +46% | +45% |
+  | Betula in-season MAE | 16.8 | 16.5 | 15.1 | 15.2 | 19.4 | 24.7 | 33.0 | 55.6 | 111.1 | 146.2 |
+  | exact level, emitted rows | 67.6% | 66.5% | 65.8% | 63.8% | 62.6% | 61.6% | 62.2% | 59.9% | 58.7% | 58.9% |
+
+  The pooled numbers barely move because most rows are quiet; the birch row
+  is what a stale run costs, and it is why the guard matters: a forecast
+  built on a block five days old misses the birch ramp by 6–9× more than a
+  fresh one, and before D.2 it was published with the day-1 confidence.
+  `src/confidence.json` is regenerated from this rollout: the overall rate
+  and days 1–5 are unchanged (0.652 / 0.989), days 6–10 are new.
+- [x] **D.3 Degradation flags (was 4.3).** **Done.** `status.defaulted` in
+  the published file names every input group that fell back to a default
+  this run, with the reason: `ndvi` (fetch failed or no composites → zeros),
+  `dwd` (no index → blend skipped), `weather_soil` (Open-Meteo answered
+  without soil variables → zeros), `upwind` (no station readings in the last
+  7 days, for some or all species → zeros), `model` (species with no trained
+  model → persistence) and `confidence` (no calibration table → fallback
+  rates). `status.degraded` is the one-bit summary and the same line goes to
+  the run log. CAMS is deliberately not listed: it has never been active in
+  training or live, so its zero is the norm rather than a fallback. The
+  weather forecast itself has no fallback — the run fails without it, which
+  is the right behaviour and needs no flag.
 - [x] **D.4 Level-threshold semantics (was 4.5).** **Done — levels are
   daily-mean levels.** The DWD/ePIN thresholds are defined on daily means;
   the app applied them to 3 h values. Now a window's level is the level of
@@ -470,24 +535,125 @@ What did change, and is kept:
   accuracy under the daily definition is 66.6% against the model's 73.5%
   at day 1, where the 3-hour definition had persistence *ahead* (78.7% vs
   76.8%) because predicting `none` at night was free.
-- [ ] **D.5 Discriminative confidence (was 4.6).** Quantile-ensemble spread or
-  conformal intervals over the rollout residuals. Schema change.
+- [x] **D.5 Discriminative confidence (was 4.6).** **Done — conformal.**
+  `calibrate` now stores, per forecast horizon, the quantiles of the rollout's
+  log-space residuals (`log1p(actual) − log1p(predicted)`), once over the
+  emitted day means and once over the emitted windows. A prediction's
+  `confidence` is the residual mass that keeps its daily mean inside its
+  level's band, `confidence_within_one` the mass inside the neighbouring
+  bands too, and each point carries `value_low`/`value_high`, the 80%
+  central interval of the window residuals applied to its value (additive
+  keys; a value of 0 has none). Leave-one-fold-out on the 10-day rollout's
+  emitted day-rows:
+
+  | scheme | ECE | corr. with being right | Brier |
+  |---|---|---|---|
+  | flat + horizon offset (D.1/D.4) | 0.072 | −0.072 | 0.239 |
+  | conformal per horizon day (adopted) | 0.037 | 0.323 | 0.209 |
+  | conformal pooled | 0.039 | 0.316 | 0.210 |
+  | conformal per magnitude bin | 0.049 | 0.298 | 0.215 |
+  | conformal per species | 0.073 | 0.225 | 0.229 |
+
+  The flat table's ceiling was the table, not the model: the information
+  that separates reliable predictions from unreliable ones is where the
+  prediction sits relative to the thresholds, which the lookup keyed on the
+  level threw away. Reliability held-out: stated 0.27 → right 11%, 0.45 →
+  46%, 0.65 → 70%, 0.82 → 78%. Within-one stays calibrated (ECE 0.007) and
+  now discriminates (corr. 0.17). The interval's coverage is 70–90% per
+  held-out fold. The quantile-ensemble alternative (several `quantile_alpha`
+  regressors) was not tried: it needs retraining and a second model per
+  quantile, and the residual approach already gets the correlation from
+  −0.07 to 0.32 with no model change. The flat rate stays in the table as
+  the fallback for a prediction without a residual distribution.
 
 ## Phase E — Model correctness leftovers
 
-- [ ] **E.1 Time-based lag alignment (was 4.1).** Row-based `shift(n)` turns
-  a station outage into "8 rows ago, whenever that was". Reindex each species
-  frame to the full 3 h grid before shifting.
-- [ ] **E.2 One peak-emphasis mechanism (was 3.2).** Bias is ~0 now, so this
-  is tidiness, not accuracy.
-- [ ] **E.3 Log-space probability scaling (was 3.3).**
-- [ ] **E.4 Beat persistence as the headline metric (was 3.4).** Already
-  reported; make it the first line of the benchmark output.
+- [x] **E.1 Time-based lag alignment (was 4.1).** **Done.** The lag block
+  is built on the full 3 h grid (`trainer.lag_block_on_grid`) and
+  `LagState.from_history` builds the same block the same way, so a lag of 8
+  is the window 24 h earlier through an outage and `days_since_active` is
+  a distance in time. The history has 231 gaps longer than a window — 184
+  whole days in 2019–2020 when the source reported once a day, the longest
+  13.5 days in June 2026 — and every one of them used to compact the block.
+  Three fills were benchmarked on the same six folds (D.5 baseline 6.8 /
+  43.6 / 72.8% / −0.3):
+
+  | fill of a window inside a gap | MAE | RMSE | level acc. | bias | onset false starts |
+  |---|---|---|---|---|---|
+  | last measurement carried forward | 7.0 | 43.5 | 73.0% | +0.1 | 49 |
+  | **same hour of the previous day, then carry-forward** | **6.9** | **43.4** | **73.3%** | **−0.1** | **43** |
+  | as above, but training drops every block that spans a gap (−10% rows) | 6.9 | 43.8 | 72.7% | −0.3 | — |
+
+  The diurnal fill is adopted: level accuracy +0.5 points at every horizon,
+  bias at zero, false starts 46 → 43, for +0.1 MAE. Onset timing moved by
+  one to three days in either direction on cells of three species-years
+  (hazel d2 1.3 → 3.0, alder d1 2.0 → 6.3, birch d1 7.3 → 11.7 — see the
+  E.2 entry, which then takes birch's d1 timing to 2.3), which is the size
+  of the swing between two retrains of the same code. The benchmark's test
+  months barely touch a gap, so what it measures is the training-set
+  change; the serving-side correctness — an outage no longer shifts the
+  block — is the point of the task and is pinned by a parity test that
+  cuts a three-day gap into the fixture.
+- [x] **E.2 One peak-emphasis mechanism (was 3.2).** **Done — the raised
+  quantile survives, the value weights go.** It was not tidiness: the two
+  compounded. Stage 2 was a quantile regressor (α 0.85–0.92 per species)
+  *and* weighted by `1 + √value` plus tier bonuses, and weighting by the
+  target inside a quantile loss shifts the effective quantile above the
+  nominal one. A/B on the same six folds, on E.1:
+
+  | arm | MAE | RMSE | level acc. | bias | onset false starts | birch onset d1 |
+  |---|---|---|---|---|---|---|
+  | E.1 (both mechanisms) | 6.9 | 43.4 | 73.3% | −0.1 | 43 | 11.7 d |
+  | **quantile only** | **6.1** | **42.4** | **74.5%** | −1.7 | **8** | **2.3 d** |
+  | value weights only (median regression) | 6.1 | 45.5 | 74.0% | −3.9 | — | — |
+  | quantile only, α + 0.03 | 6.5 | 43.0 | 74.4% | −0.8 | — | — |
+
+  Quantile-only is adopted: MAE −12%, level accuracy +1.2 points, skill vs
+  persistence +30% → +38% at day 1, onset false starts 43 → 8 run-days and
+  birch's onset timing 11.7 → 2.3 days at day 1. Its cost is a bias of
+  −1.7 (the weights were pushing predictions up, which is what the near-zero
+  bias was made of) and hazel/alder onset timing about two days later
+  (hazel 1.3 → 4.3 d, alder 6.3 → 7.3 d at day 1, cells of three
+  species-years). Tuning the survivor against the bias — every species'
+  quantile up by 0.03 — buys half the bias back at +0.4 MAE, so the
+  quantiles stay where they were. The extreme regressor keeps its own
+  `1 + √value` weight: it is fitted to peak samples only and has no
+  quantile to shift. The onset-ramp weight (B.6) stays too: it is
+  label-driven, not value-driven.
+- [x] **E.3 Log-space probability scaling (was 3.3).** **Benchmarked —
+  the current form is kept, and now justified.** `TwoStageModel.predict`
+  multiplies the log-space regression output by the clamped activation
+  probability, which is a power transform (`count^p`, p ∈ [0.5, 1]) in
+  real space rather than a hurdle model. Two alternatives, on the same six
+  folds on top of E.2:
+
+  | form | MAE | RMSE | level acc. | bias | onset false starts | hazel / alder / birch onset d1 |
+  |---|---|---|---|---|---|---|
+  | **log-space scaling (kept)** | **6.1** | 42.4 | **74.5%** | −1.7 | **8** | 4.3 / 7.3 / 2.3 d |
+  | hurdle: scale after `expm1` | 6.6 | 42.2 | 73.5% | −0.5 | 52 | 0.7 / 2.7 / 7.3 d |
+  | threshold: zero below p = 0.5, the regressor's value above | 6.9 | 42.3 | 72.0% | +0.1 | — | — |
+
+  The shrinkage is what the level accuracy and the false-start count are
+  made of: the hurdle form hands uncertain windows their full regressed
+  value, which lifts the bias to −0.5 and brings hazel and alder onsets in
+  two to four days earlier, but it costs a point of level accuracy, half a
+  grain of MAE and 44 run-days of false starts, mostly birch. A model
+  whose bias is the complaint should raise its quantile (E.2's tuning arm:
+  −0.8 at +0.4 MAE), not change the blend. The justification lives next to
+  the code.
+- [x] **E.4 Beat persistence as the headline metric (was 3.4).** **Done.**
+  The rollout report now opens with skill vs persistence per horizon — MAE
+  and level accuracy against "the last measured window held flat" — and a
+  one-line verdict (beats persistence at every horizon, or loses at some),
+  before any absolute number. Currently +32% at day 1 rising to +45% at
+  day 5, level accuracy 73.5% vs 66.6% at day 1. The report's preamble also
+  stopped claiming the lags are fed from the model's own predictions; they
+  have been measured since the direct model.
 
 ## Suggested order
 
 Phases A and C are done, and B.1–B.6 with them; A.5 and B.8 were tried and
-parked. D.1 and D.4 are done. Next: B.7 → D.2/D.3 → E.x → D.5. Nothing left on
+parked, and so was B.7. Phases D and E are done; E.3 was benchmarked and the existing form kept. Nothing left on
 the list claims the heavy-year ramp; that now needs a data source that sees
 a season before Munich does (B.8, last paragraph).
 

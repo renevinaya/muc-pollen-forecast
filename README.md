@@ -48,7 +48,7 @@ ML-based pollen forecast for Munich at 3-hour resolution, using a three-stage XG
 Each species gets a **three-stage pipeline** with species-specific hyperparameters:
 
 1. **Stage 1 — XGBClassifier**: predicts P(pollen > 0). 200 estimators, learning rate 0.08, adaptive `scale_pos_weight`.
-2. **Stage 2 — XGBRegressor**: predicts log1p(pollen count) via quantile regression. Sample-weighted by `1 + √(value)` with tier bonuses (+8 for >100, +20 for >500, +40 for >1000).
+2. **Stage 2 — XGBRegressor**: predicts log1p(pollen count) via quantile regression (α 0.85–0.92 per species). That raised quantile is the one peak-emphasis mechanism; the `1 + √(value)` sample weights with tier bonuses it used to carry as well were removed in E.2 (they shifted the effective quantile above the nominal one, and the A/B without them is MAE 6.9 → 6.1).
 3. **Stage 3 — Extreme Regressor** (optional): fitted only to high-pollen samples (>50), squared error in log space. Blended into Stage 2 in proportion to a **separate gate classifier for P(pollen > 50)**, ramping from 0.5 to 0.9 and capped at 70% weight.
 
    The gate used to be the Stage 1 classifier's P(pollen > 0) at a 0.6 cutoff. In peak season that sits near 1.0 for weeks, so a regressor that has never seen an ordinary window was given its full weight on one: measured over this history the blend fired on **20–28% of all windows**, and at those windows the truth was at or below the threshold ~75% of the time and exactly zero 14–28% of the time. With the dedicated gate it fires on 4–7% of windows, and the truth is above the threshold 97–99% of the time.
@@ -155,6 +155,23 @@ sum that does not advance while a species is inactive, so training saw a
 **constant 0** on every row after the first active one, while the forecaster
 served a live count. The feature is worth 6.5% of model gain once it actually
 varies (0–980 windows).
+
+The lag block is built on the **3-hour time grid**, not by row (E.1). The
+history has 231 gaps longer than a window — 184 of them whole days in
+2019–2020, when the source reported once a day, the longest 13.5 days in
+June 2026 — and a row-based `shift(8)` turned "24 h ago" into "8 rows ago,
+whenever that was" through every one of them, in training and at forecast
+time alike. Now `trainer.lag_block_on_grid` and `LagState.from_history`
+both put the species' values on the full grid first: a lag of 8 is the
+window 24 h earlier whether or not the station reported in between, and
+`days_since_active` is a distance in time from the last window measured
+above zero. A window inside an outage carries the same time of day one day
+earlier when that was measured (pollen is diurnal, so yesterday's noon is a
+better stand-in for a missing noon than this morning's 03:00), and the last
+measurement of any kind otherwise; plain carry-forward was benchmarked too
+and was worse (MAE 7.0 against 6.9, and hazel's onset timing 1.3→6.0 days
+at day 2). The parity test cuts a gap into its fixture and requires both
+paths to agree through it.
 
 ### Season onset
 
@@ -307,6 +324,7 @@ python -m src.main benchmark 5 --folds 3
 | `run-backfill` | Both of the above against the data release (what `mode: backfill` runs in Actions) |
 | `benchmark [days]` | Walk-forward **rollout** of the real autoregressive forecast, scored per forecast day (default: 5). `--folds N` or `--months 2026-02,2026-04`, `--species A,B`, `--classic` |
 | `benchmark-onset` | The shipped rollout over the months containing each measured season start of the last three seasons (default: Corylus, Alnus, Betula): timing, amount and false starts per species-year and horizon. `--species A,B`, `--years N`, `--classic` (old one-window-ahead diagnostic) |
+| `calibrate [--rebuild]` | Regenerate `src/confidence.json` from `data/benchmark_rollout.csv`; `--rebuild` runs the rollout first, over 10 days so stale runs read a measured rate |
 | `dwd` | Display the current DWD pollen danger index for Oberbayern |
 | `phenology` | Download DWD phenology data and show flowering-onset statistics |
 | `run` | Execute collect → forecast in sequence (every 3 hours) |
@@ -321,11 +339,13 @@ the only features whose quality depends on how far ahead you are forecasting.
 ### `benchmark` — autoregressive rollout (the shipped forecast)
 
 `src/rollout.py` replays the forecast exactly as `generate_forecast` runs it:
-lag features start from measurements before the forecast origin and are then
-fed from the model's own predictions, through the same `src/features.py` code
-path production uses. A forecast is launched from every day of a test month and
-rolled five days out, and skill is reported **per forecast day** against a
-persistence baseline.
+every window is predicted directly from the measured lag block at the forecast
+origin, through the same `src/features.py` code path production uses. A
+forecast is launched from every day of a test month and rolled five days out,
+and skill is reported **per forecast day** against a persistence baseline.
+That comparison is the report's first block and its verdict — a forecast that
+loses to "nothing changes" has no claim on a user's attention, whatever its
+MAE — and everything else follows it.
 
 Folds are spread across the calendar year rather than evenly along the
 timeline. Even spacing put all three folds in August — dormant for every tree
@@ -347,19 +367,21 @@ origins, 80 680 scored predictions. Persistence is the same baseline throughout
 
 | Horizon | MAE | RMSE | Level acc. | Bias | Persistence MAE | Skill |
 |---------|-----|------|-----------|------|-----------------|-------|
-| day 1 | **7.1** | 45.8 | 73.5% | **−0.4** | 10.4 | **+32.0%** |
-| day 2 | **7.0** | 45.7 | 73.0% | **−0.5** | 10.9 | **+35.7%** |
-| day 3 | **6.7** | 43.2 | 73.0% | **−0.4** | 11.2 | **+40.5%** |
-| day 4 | **6.5** | 41.5 | 72.2% | **−0.3** | 11.8 | **+44.6%** |
-| day 5 | **6.6** | 41.4 | 72.2% | **−0.0** | 11.4 | **+42.0%** |
+| day 1 | **6.4** | 45.1 | 75.2% | **−1.7** | 10.4 | **+38.3%** |
+| day 2 | **6.3** | 44.9 | 74.8% | **−1.9** | 10.9 | **+42.2%** |
+| day 3 | **6.1** | 42.0 | 74.5% | **−1.8** | 11.2 | **+45.8%** |
+| day 4 | **5.9** | 40.2 | 74.2% | **−1.7** | 11.8 | **+49.5%** |
+| day 5 | **5.9** | 39.6 | 73.6% | **−1.5** | 11.4 | **+48.2%** |
 
-The model beats persistence at every horizon by 32–45%, with a bias near
-zero and no decay across the five days. Level accuracy is measured on
-daily-mean levels (D.4; see *Model*): 72.8% exact and 99.5% within one
-level, against persistence's 66.6% / 64.5% at days 1 / 5. Under the old
-3-hour definition the same predictions scored 76.3% exact — and persistence
-78.7%, because "none at night" was free; the daily definition is the one
-under which the model's level skill is visible at all.
+The model beats persistence at every horizon by 38–50%, with no decay across
+the five days and a bias of about −1.7 grains/m³ (it leans low since E.2
+removed the value weights that were pushing it up; see the stage table).
+Level accuracy is measured on daily-mean levels (D.4; see *Model*): 74.5%
+exact and 99.8% within one level, against persistence's 66.6% / 64.5% at
+days 1 / 5. Under the old 3-hour definition the B.5 predictions scored
+76.3% exact — and persistence 78.7%, because "none at night" was free; the
+daily definition is the one under which the model's level skill is visible
+at all.
 
 These numbers are measured on the **complete** history (see *Data coverage*
 below). Before the backfill the model scored 7.3 / 76.9%; on the complete
@@ -373,7 +395,10 @@ replacement and take the model to 7.0 — better than the artefact — though
 they leave the level accuracy where it was and the season-start amplitude
 untouched (TASKS.md, B.6). The per-species onset rules and the transport-aware
 onset detector (B.2/B.3) take it to 6.9, mostly through hazel, and the four
-upwind stations (B.5) to 6.8.
+upwind stations (B.5) to 6.8. Building the lag block on the time grid
+(E.1) costs 0.1 of that back for half a point of level accuracy, and
+dropping the value weights that compounded with the quantile target (E.2)
+takes it to 6.1.
 
 Three fixes got here, each measured on these same folds:
 
@@ -388,7 +413,9 @@ Three fixes got here, each measured on these same folds:
 | B.2 + B.3 onset calibration | 7.3 | 6.7 | −0.5 | −0.2 | +41.4% |
 | B.4 rule-based readiness | 7.5 | 6.9 | +0.1 | +0.3 | +39.9% |
 | B.6 onset-ramp weighting | 7.3 | 6.8 | +0.1 | +0.5 | +40.3% |
-| B.5 upwind stations | **7.1** | **6.6** | **−0.4** | **−0.0** | **+42.0%** |
+| B.5 upwind stations | 7.1 | 6.6 | −0.4 | −0.0 | +42.0% |
+| E.1 time-based lags | 7.3 | 6.8 | −0.0 | +0.2 | +40.8% |
+| E.2 one peak-emphasis mechanism | **6.4** | **5.9** | **−1.7** | **−1.5** | **+48.2%** |
 
 **3.1** stopped the extreme regressor being consulted about ordinary windows.
 **3.5** removed the feedback loop that let a residual bias compound into the
@@ -396,7 +423,7 @@ horizon. **Phase 2** cut 73 features to 60 — and the smaller model is better a
 every horizon, not merely equal, so those features were adding variance rather
 than signal.
 
-Day-5 MAE has gone 17.1 → 6.6 and day-5 bias +13.2 → −0.0.
+Day-5 MAE has gone 17.1 → 5.9 and day-5 bias +13.2 → −1.5.
 
 > **On fold counts.** An earlier version of this section reported three folds
 > (Sep, Jan, May) and concluded that the model beat persistence from day 3 on
@@ -548,69 +575,82 @@ One-time, in repository settings:
 
 ## Forecast Confidence
 
-Confidence is **measured, not assumed**. Two numbers are published per
-prediction, because "is this level right" has two defensible readings that
-differ a lot:
+Confidence is **measured, not assumed**, and since D.5 it is also
+**discriminative**: it differs from one prediction to the next, and the
+difference means something. Two numbers are published per prediction, because
+"is this level right" has two defensible readings that differ a lot:
 
-| Field | Meaning | Current value |
+| Field | Meaning | Typical range |
 |-------|---------|---------------|
-| `confidence` | P(the emitted level is exactly right) | ~0.65 |
-| `confidence_within_one` | P(the truth is within one level of it) | ~0.99 |
+| `confidence` | P(the emitted level is exactly right) | 0.3 – 0.9 (mean ~0.7) |
+| `confidence_within_one` | P(the truth is within one level of it) | ~0.9 – 0.99 |
+| `value_low`, `value_high` | central 80% interval for `value` | ×0.09 – ×2.3 of the value at day 1 |
 
-Both come from `src/confidence.json`, generated by
-`python -m src.main calibrate` from a rollout benchmark and committed so the
-published number is auditable against the run that produced it. **Re-run it
-whenever the model changes materially** — a stale table advertises the accuracy
-of a model that no longer exists.
+All of them are **conformal**: `src/confidence.json`, generated by
+`python -m src.main calibrate` from the 10-day rollout benchmark, stores per
+forecast horizon the distribution of the benchmark's residuals in log space —
+`log1p(actual) − log1p(predicted)` — once for daily means (levels are daily
+means) and once for 3-hour windows. A prediction's confidence is the share of
+that distribution that keeps the truth inside its level's band: a daily mean of
+30 grains/m³ sits in the middle of birch's *moderate* band (10–50) and gets
+about 0.7; one of 12 sits a few grains above the threshold and gets about 0.5.
+The interval is the same distribution's 10th and 90th percentile applied to
+the window's value. The table is committed so every published number is
+auditable against the run that produced it. **Re-run `calibrate` whenever the
+model changes materially** — a stale table advertises the accuracy of a model
+that no longer exists.
 
-Windows with a real measurement (assimilated) publish 1.0; a species with no
-trained model is marked down by half.
+Windows with a real measurement (assimilated) publish 1.0 and an interval of
+the value itself; a species with no trained model is marked down by half.
+
+The horizon a window's confidence is read at is counted from the newest
+measurement, not from today, because that is what the model's `lead_windows`
+counts from and what the benchmark measured. On a normal run the two agree.
+When the station has been silent for two days, a window "tomorrow" is a
+three-day forecast, and it is published as one. The table is therefore
+measured to twice the shipped horizon (`calibrate --rebuild` runs the rollout
+over 10 days), so a run up to five days stale still reads a measured
+distribution; a window beyond the furthest measured horizon gets that
+horizon's rate halved, the same "never measured, so published low" rule as a
+species without a model. The `status` block in the output says when this is
+happening.
 
 ### What this replaced, and why
 
-The old scheme was `0.90 − 0.08 × day`, clipped, with a +0.05 bonus for
-assimilated windows. Measured against the rollout benchmark, both the level and
-the slope were wrong:
+Two schemes came before. The original was `0.90 − 0.08 × day`, clipped, with
+a +0.05 bonus for assimilated windows — invented numbers, wrong on both the
+level (the emitted level was right 35% of the time under the 3-hour level
+definition, 65% under the daily-mean one, not 90%) and the slope (accuracy
+barely moves across the horizon — 67.6% at day 1, 62.6% at day 5, 58.7% at
+day 10 — because the model is direct rather than recursive; the old decay
+dropped 32 points over the first five days alone).
 
-- **The level.** On the rows the forecast actually emits (value > 0.5), the
-  level was exactly right **34.9%** of the time under the 3-hour level
-  definition (re-measured after B.3), and is **65.2%** under the daily-mean
-  one (D.4), which is what is published now. The 76% level accuracy the
-  3-hour benchmark reported overall was carried almost entirely by `none`
-  predictions, and those are filtered out before a user sees them. The old
-  day-1 figure of 0.90 overstated reliability by about 2.5× against the
-  3-hour rate and by a third against the daily one.
-- **The slope.** Accuracy barely moves across the horizon — 67.5% at day 1
-  to 62.6% at day 5 on daily levels (35.8% to 33.9% on 3-hour ones) — because
-  the model is direct rather than recursive. The old decay dropped 32 points
-  over that span.
+The second was a **flat table**: one measured rate for everything plus a
+small per-horizon offset. It was flat because the evidence rejected anything
+finer — keyed on species, level or both, a lookup table calibrates *worse* on
+a held-out fold, and none of them correlates with being right. That ceiling
+was the lookup table, not the model: what tells reliable predictions from
+unreliable ones is *where the prediction sits relative to the thresholds*,
+which the point estimate always carried and a table keyed on the level threw
+away. Scored leave-one-fold-out on the 10-day rollout's emitted day-rows:
 
-Scored leave-one-fold-out, expected calibration error falls from **0.393 to
-0.053**, a 7.4× improvement.
+| Scheme | ECE | Correlation with being right | Brier |
+|--------|-----|------------------------------|-------|
+| old `0.90 − 0.08/day` | 0.393 | 0.013 | — |
+| flat + horizon offset | 0.072 | −0.072 | 0.239 |
+| **conformal, per horizon day** | **0.037** | **0.323** | **0.209** |
+| conformal, pooled | 0.039 | 0.316 | 0.210 |
+| conformal, per magnitude bin | 0.049 | 0.298 | 0.215 |
+| conformal, per species | 0.073 | 0.225 | 0.229 |
 
-### Why the table is flat
-
-The obvious design is per-species, per-horizon rates. The evidence rejects it —
-finer tables calibrate *worse* on a held-out fold:
-
-| Scheme | ECE | Correlation with being right |
-|--------|-----|------------------------------|
-| old `0.90 − 0.08/day` | 0.393 | 0.013 |
-| **flat + horizon offset** | **0.053** | −0.059 |
-| by level | 0.063 | 0.046 |
-| by species | 0.077 | 0.003 |
-| by species × level | 0.120 | −0.020 |
-
-Per-species/level accuracy varies 5× in-sample (0.12 to 0.62 across cells), but
-those differences are season- and year-specific and do not survive to a
-held-out fold. Publishing them would be false precision.
-
-The correlation column is the more sobering result: it is ~0 for every scheme,
-fine-grained ones included. **The average can be calibrated; which individual
-predictions are more reliable cannot currently be told.** A confidence that
-barely varies is the honest consequence of that, not an oversight. Making it
-genuinely discriminative needs a different model output — a predictive
-distribution rather than a point estimate — not a bigger lookup table.
+Finer conditioning of the residuals (species, magnitude bin) still calibrates
+worse held-out, for the same reason the finer flat tables did: those
+differences are season- and year-specific. Reliability of the shipped scheme,
+leave-one-fold-out: when it says 0.27 it is right 11% of the time, at 0.45
+46%, at 0.65 70%, at 0.82 78%. The within-one figure stays as calibrated as
+the flat one was (ECE 0.007 vs 0.008) and now also discriminates (correlation
+0.17 vs 0.01). The 80% value interval covers 70–90% of the windows per
+held-out fold.
 
 ## Output Format
 
@@ -633,9 +673,11 @@ value:
           "from": 1772600400,
           "to": 1772611200,
           "value": 35.2,
+          "value_low": 3.4,
+          "value_high": 81.0,
           "level": "moderate",
-          "confidence": 0.358,
-          "confidence_within_one": 0.888
+          "confidence": 0.71,
+          "confidence_within_one": 0.99
         }
       ]
     }
@@ -645,7 +687,45 @@ value:
 
 `from`/`to` are Unix seconds bounding the 3-hour window. `confidence` is
 P(the level is exactly right) and `confidence_within_one` P(the truth is
-within one level of it), from the calibration table above; a frontend that
-ignores the two extra keys keeps working. `ForecastOutput.to_dict()` is the
+within one level of it); `value_low`/`value_high` bound the central 80%
+interval for `value`, and are absent on a point that has no interval (a
+value of 0). All from the calibration described above; a frontend that
+ignores the extra keys keeps working. `ForecastOutput.to_dict()` is the
 window-centric form of the same forecast (date → window → species), used
 for logging and tests.
+
+Beside `measurements` the file carries a `status` block saying what the run
+was built from — the part of the output that used to be silent:
+
+```json
+"status": {
+  "degraded": true,
+  "observations": {
+    "last": "2026-09-21T06:00:00",
+    "age_windows": 1,
+    "stale": false,
+    "species": { "Alnus": { "last": "...", "age_windows": 1, "stale": false }, "...": {} }
+  },
+  "defaulted": {
+    "dwd": "unavailable (HTTP 503); blend skipped",
+    "ndvi": "fetch failed (timeout); zeros"
+  }
+}
+```
+
+- `observations` is the newest measurement (local time) and how many complete
+  3-hour windows have passed since it without one; the headline is the worst
+  species, and `species` has each one. `stale` is set from eight windows —
+  a day of silence from the station. A stale run is not just flagged: its
+  windows are forecast at the lead they really are, counted from the newest
+  measurement, and their confidence is the confidence of that horizon (see
+  [Forecast Confidence](#forecast-confidence)).
+- `defaulted` names every input group that fell back to a default this run,
+  with the reason: `ndvi` (fetch failed or no composites), `dwd` (no index to
+  blend), `weather_soil` (Open-Meteo answered without soil variables),
+  `upwind` (no station readings in the last 7 days, for some or all species),
+  `model` (a species with no trained model, forecast by persistence), and
+  `confidence` (no calibration table). CAMS is not listed: it has never been
+  active, in training or live, so a zero there is the norm, not a fallback.
+- `degraded` is true when observations are stale or anything was defaulted.
+  The same line is printed in the run log (`Inputs: ...`).

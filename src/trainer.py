@@ -11,8 +11,8 @@ The combined prediction is:
 Key design decisions:
   - Log-transform on the target to handle extreme skew
   - Season-active + NDVI + phenology features capture biological timing
-  - Sample weighting up-weights rare peak events
-  - Quantile regression (α = 0.80) biases toward higher predictions
+  - A raised quantile target is the one peak-emphasis mechanism (E.2)
+  - Quantile regression (α = 0.85–0.92 per species) biases toward higher predictions
 """
 
 from __future__ import annotations
@@ -83,11 +83,85 @@ def inv_log_transform(values: np.ndarray[Any, Any]) -> np.ndarray[Any, Any]:
 
 # --- Feature engineering ---
 
+WINDOW = pd.Timedelta(hours=3)
+
+
+def grid_series(values: pd.Series, end: pd.Timestamp | None = None) -> tuple[pd.Series, pd.Series]:
+    """A species' log values on the full 3 h grid, raw and gap-filled.
+
+    *values* is indexed by measurement time. The raw series is NaN wherever a
+    window was not measured. The filled one is "the state of the world as
+    last known" at a window inside an outage: the same time of day one day
+    earlier when that was measured (pollen is diurnal, so yesterday's noon
+    is a better stand-in for a missing noon than this morning's 03:00), and
+    the last measurement of any kind otherwise. The grid runs to *end* when
+    that lies past the last measurement.
+    """
+    index = pd.DatetimeIndex(values.index)
+    if len(index) == 0:
+        empty = pd.Series(dtype=float)
+        return empty, empty
+    stop = index.max() if end is None else max(index.max(), pd.Timestamp(end))
+    grid = pd.date_range(index.min(), stop, freq=WINDOW)
+    raw = pd.Series(log_transform(values), index=index)
+    # A window measured twice (a re-collected day) keeps its latest value,
+    # as the collector's own de-duplication does.
+    raw = raw[~raw.index.duplicated(keep="last")].reindex(grid)
+    same_slot = raw.groupby(raw.index.hour).ffill(limit=1)
+    return raw, same_slot.ffill()
+
+
+def lag_block_on_grid(values: pd.Series, lead: int = 1) -> pd.DataFrame:
+    """The lag block for every window of the 3 h grid spanned by *values*.
+
+    Time-based (E.1): a lag of 8 is the window 24 h earlier whether or not
+    the station reported in between, and ``days_since_active`` counts
+    windows of time, not rows. The block at grid window *t* describes the
+    state as of ``lead`` windows before *t*.
+    """
+    raw, s = grid_series(values)
+    out = pd.DataFrame(index=s.index)
+    if s.empty:
+        return out.reindex(columns=LAG_FEATURES)
+    out["pollen_lag_1"] = s.shift(1)           # previous 3h window
+    out["pollen_lag_2"] = s.shift(2)           # 6h ago
+    out["pollen_lag_3"] = s.shift(3)           # 9h ago
+    out["pollen_lag_8"] = s.shift(8)           # same time yesterday (24h)
+    out["pollen_lag_16"] = s.shift(16)         # 48h ago (#3)
+    out["pollen_lag_24"] = s.shift(24)         # same time 3 days ago (72h)
+    out["pollen_lag_56"] = s.shift(56)         # 7 days ago (#3)
+    out["pollen_rolling_8"] = s.rolling(8, min_periods=1).mean().shift(1)    # 24h mean
+    out["pollen_rolling_56"] = s.rolling(56, min_periods=1).mean().shift(1)  # 7-day mean
+    out["pollen_max_8"] = s.rolling(8, min_periods=1).max().shift(1)         # 24h max (#3)
+    out["pollen_max_56"] = s.rolling(56, min_periods=1).max().shift(1)       # 7-day max (#3)
+    # Mean of the day's earlier windows (intra-day trend signal).
+    day_groups = s.index.normalize()
+    out["pollen_morning_avg"] = (
+        s.groupby(day_groups).transform(lambda g: g.expanding(min_periods=1).mean().shift(1))
+        .fillna(0.0)
+    )
+    # Windows since pollen was last *measured* above 0: a gap does not count
+    # as activity, and the distance is in time. The cumsum formulation this
+    # replaces was degenerate (constant 0 after the first active row).
+    positions = pd.Series(np.arange(len(s), dtype=float), index=s.index)
+    last_active = positions.where(raw > 0).ffill()
+    out["days_since_active"] = (positions - last_active).shift(1).fillna(999).astype(float)
+
+    # Move the finished block back to the forecast origin. Every column above
+    # describes the state as of one window before its row, so shifting by
+    # lead - 1 makes it describe the state as of `lead` windows before instead.
+    if lead > 1:
+        out[LAG_FEATURES] = out[LAG_FEATURES].shift(lead - 1)
+    return out
+
+
 def _add_lag_features(df: pd.DataFrame, lead: int = 1) -> pd.DataFrame:
     """
     Add lag and rolling features for a single species' time series.
-    Lag features are computed in log-space. Each row is a 3h window.
-    Expects df sorted by date with a 'value' column.
+    Lag features are computed in log-space on the full 3 h time grid
+    (:func:`lag_block_on_grid`), so a station outage leaves a gap in time
+    rather than silently shortening "24 h ago" to "8 rows ago". Expects a
+    'value' column and a 'date' column.
 
     *lead* is how many windows ahead of the last known measurement each row is
     being predicted. At ``lead=1`` the block is the state of the world one
@@ -108,46 +182,10 @@ def _add_lag_features(df: pd.DataFrame, lead: int = 1) -> pd.DataFrame:
     there, ...) and simply moves the whole thing back to the origin.
     """
     df = df.copy().sort_values("date")
-    log_val = log_transform(df["value"])
-    s = pd.Series(log_val, index=df.index)
-    df["pollen_lag_1"] = s.shift(1)           # previous 3h window
-    df["pollen_lag_2"] = s.shift(2)           # 6h ago
-    df["pollen_lag_3"] = s.shift(3)           # 9h ago
-    df["pollen_lag_8"] = s.shift(8)           # same time yesterday (24h)
-    df["pollen_lag_16"] = s.shift(16)         # 48h ago (#3)
-    df["pollen_lag_24"] = s.shift(24)         # same time 3 days ago (72h)
-    df["pollen_lag_56"] = s.shift(56)         # 7 days ago (#3)
-    df["pollen_rolling_8"] = s.rolling(8, min_periods=1).mean().shift(1)    # 24h mean
-    df["pollen_rolling_56"] = s.rolling(56, min_periods=1).mean().shift(1)  # 7-day mean
-    df["pollen_max_8"] = s.rolling(8, min_periods=1).max().shift(1)         # 24h max (#3)
-    df["pollen_max_56"] = s.rolling(56, min_periods=1).max().shift(1)       # 7-day max (#3)
-    # Mean of today's earlier windows (intra-day trend signal)
-    # Group by calendar day, use expanding mean of log-values within the day, shifted
-    day_groups = pd.to_datetime(df["date"]).dt.normalize()
-    morning_avg = s.groupby(day_groups.values).apply(
-        lambda g: g.expanding(min_periods=1).mean().shift(1)
-    )
-    if hasattr(morning_avg.index, 'droplevel'):
-        try:
-            morning_avg = morning_avg.droplevel(0)
-        except (ValueError, IndexError):
-            pass
-    df["pollen_morning_avg"] = morning_avg.reindex(df.index).fillna(0).values
-    # Windows since pollen was last > 0.
-    # The cumsum formulation this replaces was degenerate: cumsum does not
-    # advance while a species is inactive, so ``cumactive - last_active`` was 0
-    # on every row after the first active one — the model trained on a constant
-    # while the forecaster served it a real count. Position arithmetic gives
-    # the distance the feature was always meant to carry (0–980 windows here).
-    positions = pd.Series(np.arange(len(s), dtype=float), index=s.index)
-    last_active = positions.where(s > 0).ffill()
-    df["days_since_active"] = (positions - last_active).shift(1).fillna(999).astype(float)
-
-    # Move the finished block back to the forecast origin. Every column above
-    # describes the state as of one window before its row, so shifting by
-    # lead - 1 makes it describe the state as of `lead` windows before instead.
-    if lead > 1:
-        df[LAG_FEATURES] = df[LAG_FEATURES].shift(lead - 1)
+    dates = pd.DatetimeIndex(pd.to_datetime(df["date"]))
+    block = lag_block_on_grid(pd.Series(df["value"].to_numpy(dtype=float), index=dates), lead)
+    for col in LAG_FEATURES:
+        df[col] = block[col].reindex(dates).to_numpy()
     df["lead_windows"] = float(lead)
     return df
 
@@ -623,8 +661,18 @@ class TwoStageModel:
         """
         prob_active = self.classifier.predict_proba(X)[:, 1]
         reg_pred = self.regressor.predict(X)
-        # Blend: scale regression output by activation probability
-        # When prob_active < 0.3, strongly suppress
+        # Blend: scale the *log-space* regression output by the activation
+        # probability, suppressing entirely below 0.3. In real space that is
+        # a power transform, count^p with p in [0.5, 1] — a shrinkage of
+        # uncertain windows toward zero, not a hurdle model. Kept on the
+        # benchmark's word (E.3, same six folds): this form scores MAE 6.1 /
+        # level 74.5% / bias -1.7; the hurdle form (scale after expm1, so
+        # the count itself is multiplied by the probability) 6.6 / 73.5% /
+        # -0.5; and a plain threshold (zero below 0.5, the regressor's value
+        # above it) 6.9 / 72.0% / +0.1. The shrinkage is the cheapest bias
+        # of the three where the level is concerned; the hurdle form buys
+        # bias and hazel/alder onset timing at the price of level accuracy
+        # and 52 onset false starts against 8.
         result = np.where(prob_active < 0.3, 0.0, reg_pred * np.clip(prob_active, 0.5, 1.0))
         result = np.maximum(0.0, result)
 
@@ -687,12 +735,11 @@ def train_species_model(
     Stage 3: XGBRegressor  — extreme regressor (fitted only to high-pollen
              samples), gated by an XGBClassifier for P(value > threshold)
 
-    Improvements applied:
-    - Stronger sample weighting for extreme events (#1)
-    - Species-specific hyperparameters (#5)
-    - Raised quantile target (#4)
-    - Rows in the first RAMP_DAYS after the year's measured onset weigh
-      (1 + RAMP_BOOST) times more in the regressor and the extreme gate (B.6)
+    Peak emphasis is one mechanism, the raised quantile target (#4, E.2),
+    with species-specific hyperparameters (#5). Rows in the first RAMP_DAYS
+    after the year's measured onset weigh (1 + RAMP_BOOST) times more in the
+    regressor and the extreme gate (B.6); that weight is label-driven, not
+    value-driven, so it does not shift the quantile.
     """
     ramp_weight = 1.0 + RAMP_BOOST * ramp if ramp is not None else None
     hp = _SPECIES_HYPERPARAMS.get(species, _DEFAULT_HYPERPARAMS)
@@ -737,19 +784,15 @@ def train_species_model(
         verbosity=0,
     )
 
-    # (#1) Stronger sample weighting: sqrt-based + tier bonuses for extreme events
-    sample_weight = None
-    if raw_values is not None:
-        rv = raw_values.to_numpy(dtype=float)
-        w = 1.0 + np.sqrt(rv)
-        w += (rv > 100) * 8.0
-        w += (rv > 500) * 20.0
-        w += (rv > 1000) * 40.0
-        if ramp_weight is not None:
-            w = w * ramp_weight
-        sample_weight = w
-
-    regressor.fit(X, y, sample_weight=sample_weight)
+    # One peak-emphasis mechanism (E.2): the raised quantile. The regressor
+    # used to be weighted by 1 + sqrt(value) with tier bonuses on top of the
+    # quantile, and weighting by the target inside a quantile loss shifts the
+    # effective quantile above the nominal one, so the two compounded. A/B on
+    # the same six folds (E.1 baseline MAE 6.9 / level 73.3% / bias -0.1):
+    # quantile alone 6.1 / 74.5% / -1.7, weights alone (median regression)
+    # 6.1 / 74.0% / -3.9, and raising the quantile by 0.03 on top 6.5 / 74.4%
+    # / -0.8. Only the onset-ramp weight (B.6, label-driven) remains.
+    regressor.fit(X, y, sample_weight=ramp_weight)
 
     # --- Stage 3: extreme regressor, plus the gate that decides when to use it ---
     # The regressor is fitted only to samples above extreme_threshold, with
