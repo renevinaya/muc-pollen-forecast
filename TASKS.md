@@ -384,13 +384,32 @@ What did change, and is kept:
   station 300+ km south-west, or a physics forecast (CAMS, off by default,
   see README) that carries the emission inventory. Both are new data
   sources, not features; neither is on this list yet.
-- [ ] **B.7 December continuity (was part of 5.3).** `gdd` and the forcing
-  accumulation reset on 1 Jan, so a hazel season that starts in a warm
-  December (2023 onset = 1 Jan, i.e. already running) is invisible to the
-  onset features. Start the accumulation on 1 Nov of the previous year for
-  Corylus and Alnus (LOO-check the start date as in B.3). Chill units
-  themselves are **not** supported by the data at eight seasons; revisit
-  when there are twelve.
+- [ ] **B.7 December continuity (was part of 5.3).** **Tried — not adopted**
+  (parked on `claude/forecast-app-review-xwisqv`, commit `cd0c8cd`). Two
+  changes: forcing rules may start on 1 November or 1 December of the year
+  before the season and accumulate across New Year, with the leave-one-out
+  selection deciding per species; and from November a day carries the
+  *coming* season's rule, threshold and onset climatology, so the readiness
+  features and days-since-onset run continuously into January instead of
+  reading last season's total in December and resetting.
+
+  The premise failed first. On the eight measured seasons the autumn starts
+  project the hazel and alder onsets *worse* than the January ones —
+  leave-one-out, base 0 °C: Corylus 1 Jan 4.0 d, 1 Dec 8.6 d, 1 Nov 11.6 d;
+  Alnus 15 Jan 6.5 d, 1 Nov 21.5 d, 1 Dec 24.4 d (bases 3 and 5 are worse
+  still) — so the selection keeps the January rules for both and nothing
+  in the live projection changes. What the benchmark priced is the
+  November turn alone. Six general folds, D.4 → B.7: MAE 6.79 → 6.82, RMSE
+  43.6 → 42.0, bias −0.34 → −0.20, level accuracy unchanged, per-species
+  moves of ±2 that look like retraining noise (no fold holds a December).
+  Onset benchmark: alder d2/d3 timing 4.7/5.0 → 2.3/3.3 d, but hazel
+  worse at three of five horizons (d5 1.0 → 4.0 d), Alnus 2026 over-
+  predicted (ratio 1.00 → 1.29) and **false starts 46 → 59 run-days**,
+  Betula 2024 now false-starting at every horizon: giving every December
+  row a negative days-since-onset moves the early-season shape the model
+  learned. Two seasons with warm Decembers (2020 onset DOY 13, 2023 DOY 11)
+  are not enough to teach a rule; revisit with twelve, as the chill-unit
+  note already says.
 
 ## Phase C — Season load (was 5.1) — **DONE**
 
@@ -487,7 +506,7 @@ What did change, and is kept:
 ## Suggested order
 
 Phases A and C are done, and B.1–B.6 with them; A.5 and B.8 were tried and
-parked. D.1 and D.4 are done. Next: B.7 → D.2/D.3 → E.x → D.5. Nothing left on
+parked, and so was B.7. D.1 and D.4 are done. Next: D.2/D.3 → E.x → D.5. Nothing left on
 the list claims the heavy-year ramp; that now needs a data source that sees
 a season before Munich does (B.8, last paragraph).
 
