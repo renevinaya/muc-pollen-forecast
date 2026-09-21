@@ -636,8 +636,18 @@ class TwoStageModel:
         """
         prob_active = self.classifier.predict_proba(X)[:, 1]
         reg_pred = self.regressor.predict(X)
-        # Blend: scale regression output by activation probability
-        # When prob_active < 0.3, strongly suppress
+        # Blend: scale the *log-space* regression output by the activation
+        # probability, suppressing entirely below 0.3. In real space that is
+        # a power transform, count^p with p in [0.5, 1] — a shrinkage of
+        # uncertain windows toward zero, not a hurdle model. Kept on the
+        # benchmark's word (E.3, same six folds): this form scores MAE 6.1 /
+        # level 74.5% / bias -1.7; the hurdle form (scale after expm1, so
+        # the count itself is multiplied by the probability) 6.6 / 73.5% /
+        # -0.5; and a plain threshold (zero below 0.5, the regressor's value
+        # above it) 6.9 / 72.0% / +0.1. The shrinkage is the cheapest bias
+        # of the three where the level is concerned; the hurdle form buys
+        # bias and hazel/alder onset timing at the price of level accuracy
+        # and 52 onset false starts against 8.
         result = np.where(prob_active < 0.3, 0.0, reg_pred * np.clip(prob_active, 0.5, 1.0))
         result = np.maximum(0.0, result)
 

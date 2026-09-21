@@ -620,7 +620,27 @@ What did change, and is kept:
   `1 + √value` weight: it is fitted to peak samples only and has no
   quantile to shift. The onset-ramp weight (B.6) stays too: it is
   label-driven, not value-driven.
-- [ ] **E.3 Log-space probability scaling (was 3.3).**
+- [x] **E.3 Log-space probability scaling (was 3.3).** **Benchmarked —
+  the current form is kept, and now justified.** `TwoStageModel.predict`
+  multiplies the log-space regression output by the clamped activation
+  probability, which is a power transform (`count^p`, p ∈ [0.5, 1]) in
+  real space rather than a hurdle model. Two alternatives, on the same six
+  folds on top of E.2:
+
+  | form | MAE | RMSE | level acc. | bias | onset false starts | hazel / alder / birch onset d1 |
+  |---|---|---|---|---|---|---|
+  | **log-space scaling (kept)** | **6.1** | 42.4 | **74.5%** | −1.7 | **8** | 4.3 / 7.3 / 2.3 d |
+  | hurdle: scale after `expm1` | 6.6 | 42.2 | 73.5% | −0.5 | 52 | 0.7 / 2.7 / 7.3 d |
+  | threshold: zero below p = 0.5, the regressor's value above | 6.9 | 42.3 | 72.0% | +0.1 | — | — |
+
+  The shrinkage is what the level accuracy and the false-start count are
+  made of: the hurdle form hands uncertain windows their full regressed
+  value, which lifts the bias to −0.5 and brings hazel and alder onsets in
+  two to four days earlier, but it costs a point of level accuracy, half a
+  grain of MAE and 44 run-days of false starts, mostly birch. A model
+  whose bias is the complaint should raise its quantile (E.2's tuning arm:
+  −0.8 at +0.4 MAE), not change the blend. The justification lives next to
+  the code.
 - [x] **E.4 Beat persistence as the headline metric (was 3.4).** **Done.**
   The rollout report now opens with skill vs persistence per horizon — MAE
   and level accuracy against "the last measured window held flat" — and a
@@ -633,7 +653,7 @@ What did change, and is kept:
 ## Suggested order
 
 Phases A and C are done, and B.1–B.6 with them; A.5 and B.8 were tried and
-parked, and so was B.7. Phase D is done, and E.1, E.2 and E.4. Next: E.3. Nothing left on
+parked, and so was B.7. Phases D and E are done; E.3 was benchmarked and the existing form kept. Nothing left on
 the list claims the heavy-year ramp; that now needs a data source that sees
 a season before Munich does (B.8, last paragraph).
 
