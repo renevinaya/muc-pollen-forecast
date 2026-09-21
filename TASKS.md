@@ -535,8 +535,36 @@ What did change, and is kept:
   accuracy under the daily definition is 66.6% against the model's 73.5%
   at day 1, where the 3-hour definition had persistence *ahead* (78.7% vs
   76.8%) because predicting `none` at night was free.
-- [ ] **D.5 Discriminative confidence (was 4.6).** Quantile-ensemble spread or
-  conformal intervals over the rollout residuals. Schema change.
+- [x] **D.5 Discriminative confidence (was 4.6).** **Done — conformal.**
+  `calibrate` now stores, per forecast horizon, the quantiles of the rollout's
+  log-space residuals (`log1p(actual) − log1p(predicted)`), once over the
+  emitted day means and once over the emitted windows. A prediction's
+  `confidence` is the residual mass that keeps its daily mean inside its
+  level's band, `confidence_within_one` the mass inside the neighbouring
+  bands too, and each point carries `value_low`/`value_high`, the 80%
+  central interval of the window residuals applied to its value (additive
+  keys; a value of 0 has none). Leave-one-fold-out on the 10-day rollout's
+  emitted day-rows:
+
+  | scheme | ECE | corr. with being right | Brier |
+  |---|---|---|---|
+  | flat + horizon offset (D.1/D.4) | 0.072 | −0.072 | 0.239 |
+  | conformal per horizon day (adopted) | 0.037 | 0.323 | 0.209 |
+  | conformal pooled | 0.039 | 0.316 | 0.210 |
+  | conformal per magnitude bin | 0.049 | 0.298 | 0.215 |
+  | conformal per species | 0.073 | 0.225 | 0.229 |
+
+  The flat table's ceiling was the table, not the model: the information
+  that separates reliable predictions from unreliable ones is where the
+  prediction sits relative to the thresholds, which the lookup keyed on the
+  level threw away. Reliability held-out: stated 0.27 → right 11%, 0.45 →
+  46%, 0.65 → 70%, 0.82 → 78%. Within-one stays calibrated (ECE 0.007) and
+  now discriminates (corr. 0.17). The interval's coverage is 70–90% per
+  held-out fold. The quantile-ensemble alternative (several `quantile_alpha`
+  regressors) was not tried: it needs retraining and a second model per
+  quantile, and the residual approach already gets the correlation from
+  −0.07 to 0.32 with no model change. The flat rate stays in the table as
+  the fallback for a prediction without a residual distribution.
 
 ## Phase E — Model correctness leftovers
 
@@ -558,7 +586,7 @@ What did change, and is kept:
 ## Suggested order
 
 Phases A and C are done, and B.1–B.6 with them; A.5 and B.8 were tried and
-parked, and so was B.7. Phase D is done except D.5. Next: E.x → D.5. Nothing left on
+parked, and so was B.7. Phase D is done. Next: E.1 → E.2 → E.3. Nothing left on
 the list claims the heavy-year ramp; that now needs a data source that sees
 a season before Munich does (B.8, last paragraph).
 

@@ -238,18 +238,22 @@ def test_stale_run_counts_its_lead_from_the_newest_measurement(
     def published(day: int, window: int) -> float:
         return next(sp for sp in out.forecast[day].windows[window].species if sp.name == SPECIES).confidence
 
-    def expected(lead: int) -> float:
-        level = "low"  # unused by the table, see confidence_for
-        return confidence_for(table, SPECIES, level, horizon_day=(lead - 1) // 8 + 1)[0]
+    def expected(lead: int, day: int = 0) -> float:
+        # The conformal rate needs the day's predicted mean and level, as the
+        # forecaster computes them.
+        values = [
+            sp.value for w in out.forecast[day].windows for sp in w.species if sp.name == SPECIES
+        ]
+        day_mean = float(np.mean(values)) if len(values) == 8 else 0.0
+        level = out.forecast[day].windows[0].species[0].level if day_mean > 0 else "none"
+        level = next(sp.level for sp in out.forecast[day].windows[0].species if sp.name == SPECIES)
+        return confidence_for(
+            table, SPECIES, level, horizon_day=(lead - 1) // 8 + 1, log_day_mean=float(np.log1p(day_mean))
+        )[0]
 
-    assert published(0, 0) == pytest.approx(expected(14), abs=1e-6)
-    assert published(4, 0) == pytest.approx(expected(46), abs=1e-6)
+    assert published(0, 0) == pytest.approx(expected(14, day=0), abs=1e-6)
+    assert published(4, 0) == pytest.approx(expected(46, day=4), abs=1e-6)
     assert (46 - 1) // 8 + 1 == 6 and "6" in table["horizon_delta"]
-
-    fresh = _run(monkeypatch, frame, last_obs=pd.Timestamp("2021-04-20 06:00"))
-    fresh_day1 = next(sp for sp in fresh.forecast[0].windows[3].species if sp.name == SPECIES).confidence
-    assert fresh_day1 == pytest.approx(expected(1), abs=1e-6)
-    assert published(4, 0) < published(0, 0) < fresh_day1
 
 
 def test_far_beyond_the_table_the_rate_is_halved(
@@ -260,8 +264,10 @@ def test_far_beyond_the_table_the_rate_is_halved(
     table = load_table()
     assert table is not None
     furthest = max(int(k) for k in table["horizon_delta"])
-    last_measured = confidence_for(table, SPECIES, "low", horizon_day=furthest)[0]
     first = next(sp for sp in out.forecast[0].windows[0].species if sp.name == SPECIES)
+    values = [sp.value for w in out.forecast[0].windows for sp in w.species if sp.name == SPECIES]
+    log_day_mean = float(np.log1p(np.mean(values)))
+    last_measured = confidence_for(table, SPECIES, first.level, horizon_day=furthest, log_day_mean=log_day_mean)[0]
     lead = int((pd.Timestamp("2021-04-20") - pd.Timestamp("2021-04-08 09:00")) / WINDOW) + 1
     assert (lead - 1) // 8 + 1 > furthest
     assert first.confidence == pytest.approx(last_measured * BEYOND_HORIZON_SCALE, abs=1e-6)

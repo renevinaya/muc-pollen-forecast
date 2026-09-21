@@ -627,6 +627,19 @@ def cmd_calibrate(rebuild: bool = False) -> None:
         print(f"    day {day}: exact {delta['exact']:+.3f}   "
               f"within one {delta['within_one']:+.3f}")
 
+    residuals = table.get("residuals", {})
+    if residuals.get("window"):
+        from .confidence import INTERVAL_COVERAGE, value_interval
+
+        print(f"\n  Residual distributions stored for horizons "
+              f"{', '.join(sorted(residuals['day_mean'], key=int))} (day means) — the level")
+        print("  confidence is conformal: the residual mass inside the level's band.")
+        for day in ("1", "5", str(max(int(k) for k in residuals["window"]))):
+            interval = value_interval(table, 10.0, int(day))
+            if interval:
+                print(f"    day {day}: {INTERVAL_COVERAGE:.0%} interval for a value of 10 = "
+                      f"{interval[0]:.1f} – {interval[1]:.1f}")
+
     print("\n  Per species x level (diagnostic only — NOT published).")
     print("  These vary 5x in-sample but do not generalise to a held-out fold,")
     print("  which is why the published table is flat:")

@@ -42,7 +42,7 @@ from .types import (
 from .clock import local_now
 from .weather import fetch_weather_forecast
 from .trainer import TwoStageModel, finalize_features, load_models, inv_log_transform
-from .confidence import confidence_for, load_table
+from .confidence import confidence_for, load_table, value_interval
 from .features import FeatureContext, LagState, build_context, build_feature_row
 from .cams import fetch_cams_forecast
 
@@ -388,19 +388,26 @@ def generate_forecast(
             has_observation = (dt, species) in observed
             prediction = values[(dt, species)]
 
-            level = value_to_level(day_mean_of[(dt.date(), species)], species).value
+            day_mean = day_mean_of[(dt.date(), species)]
+            level = value_to_level(day_mean, species).value
             # The horizon is counted from the newest measurement, as the
             # calibration rollout counts it: eight windows per day from the
             # origin. A stale run therefore reads a longer horizon's rate.
             lead = max(1, int((dt - origins[species]) / WINDOW) + 1)
+            horizon_day = (lead - 1) // WINDOWS_PER_DAY + 1
             exact, within_one = confidence_for(
                 calibration,
                 species,
                 level,
-                horizon_day=(lead - 1) // WINDOWS_PER_DAY + 1,
+                horizon_day=horizon_day,
                 has_model=has_model,
                 observed=has_observation,
+                log_day_mean=float(np.log1p(max(0.0, day_mean))),
             )
+            if has_observation:
+                interval: tuple[float, float] | None = (prediction, prediction)
+            else:
+                interval = value_interval(calibration, prediction, horizon_day)
             window_species.append(
                 SpeciesForecast(
                     name=species,
@@ -408,6 +415,8 @@ def generate_forecast(
                     value=prediction,
                     confidence=exact,
                     confidence_within_one=within_one,
+                    value_low=interval[0] if interval else None,
+                    value_high=interval[1] if interval else None,
                 )
             )
 

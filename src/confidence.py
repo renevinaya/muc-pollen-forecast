@@ -3,50 +3,53 @@ Measured forecast confidence.
 
 The confidence attached to each species in ``forecast.json`` used to be
 ``0.90 - 0.08 * day``, clipped, with a +0.05 bonus for assimilated windows.
-Those numbers were invented, and the rollout benchmark says both the level and
-the slope were wrong:
+Those numbers were invented, and the rollout benchmark said both the level and
+the slope were wrong: on the rows the forecast actually emits (value > 0.5) the
+level was exactly right about 35% of the time under the old 3-hour level
+definition (65% under the daily-mean one, D.4), and accuracy is nearly flat
+across the horizon because the model is direct rather than recursive.
 
-* On the rows the forecast actually emits (value > 0.5), the emitted level is
-  exactly right **34-36%** of the time, not 90%. The pooled 77% accuracy the
-  benchmark reports is carried almost entirely by ``none`` predictions, and
-  those are filtered out of the output before a user ever sees them.
-* Accuracy is **flat** across the horizon — 35.8% at day 1 to 33.9% at day 5 —
-  because the model is direct rather than recursive. The old decay dropped 32
-  points over the same span.
-
-So the shipped number overstated day-1 reliability by about 2.5x and then
-decayed for a reason that does not exist.
-
-This module replaces it with a table measured from the benchmark. Two figures
-are published per prediction, because "is this level right" has two defensible
-readings and they differ a lot:
+Two figures are published per prediction, because "is this level right" has
+two defensible readings and they differ a lot:
 
 * ``confidence`` — P(the emitted level is exactly right).
 * ``confidence_within_one`` — P(the truth is within one level of it), which is
   closer to "would a reader have behaved correctly". That runs around 99% on
-  daily-mean levels (D.4; it was 89% on the 3-hour levels before it).
+  daily-mean levels.
 
-The table is **flat**: one rate for everything, plus a small per-horizon
-offset. That is not the obvious design — the plan called for per-species,
-per-horizon rates — but it is what the evidence supports. Scored
-leave-one-fold-out, finer tables calibrate *worse*:
+Both are **conformal** (D.5): the calibration keeps, per forecast horizon, the
+distribution of the rollout's residuals in log space — ``log1p(actual daily
+mean) - log1p(predicted daily mean)`` over the emitted day-rows — and a
+prediction's confidence is the probability mass of that distribution that
+lands inside its level's band. A prediction sitting in the middle of a wide
+band gets a high number; one a few grains from a threshold gets a low one.
+The same residuals, per window, give the ``value_low``/``value_high``
+interval published beside each value (80% central, in the log domain).
 
-    scheme                  ECE     correlation with being right
-    old 0.90-0.08/day      0.393     0.013
-    flat + horizon         0.053    -0.059
-    by level               0.063     0.046
-    by species             0.077     0.003
-    by species x level     0.120    -0.020
+That replaced a *flat* table — one rate for everything plus a small
+per-horizon offset — which was the best that keying on species, level or
+horizon could do. Scored leave-one-fold-out on the 10-day rollout
+(day-rows, emitted):
 
-Per-species/level accuracy does vary a lot in-sample (0.12 to 0.62 across
-cells), but those differences do not survive to a held-out fold: they are
-season- and year-specific, and re-publishing them as confidence is false
-precision.
+    scheme                              ECE    corr. with being right   Brier
+    flat + horizon offset (before)     0.072          -0.072            0.239
+    conformal, pooled                  0.039           0.316            0.210
+    conformal per horizon day (now)    0.037           0.323            0.209
+    conformal per magnitude bin        0.049           0.298            0.215
+    conformal per species              0.073           0.225            0.229
 
-The correlation column is the more sobering result. It is ~0 for every scheme,
-including the fine-grained ones. **The average can be calibrated; which
-individual predictions are more reliable cannot currently be told.** A
-confidence that barely varies is the honest consequence, not an oversight.
+The flat table calibrated the average and could not tell which predictions
+were more reliable (correlation ~0, for every keying). The conformal number
+can, without any new key: what carries the information is *where the
+prediction sits relative to the thresholds*, which the point estimate always
+had and the lookup table threw away. Finer conditioning (species, magnitude
+bin) still calibrates worse held-out, for the same reason as before: the
+differences are season- and year-specific. Reliability of the shipped
+scheme, leave-one-fold-out: stated 0.27 → right 11%, 0.45 → 46%, 0.65 →
+70%, 0.82 → 78%.
+
+The flat rate is kept in the table as the fallback for a prediction without a
+residual distribution to consult.
 """
 
 from __future__ import annotations
@@ -56,9 +59,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import pandas as pd
 
-from .types import FORECAST_DAYS
+from .types import FORECAST_DAYS, SPECIES_THRESHOLDS, _DEFAULT_THRESHOLDS
 
 TABLE_PATH = Path(__file__).parent / "confidence.json"
 
@@ -96,6 +100,14 @@ NO_MODEL_SCALE = 0.5
 # days — so the table is measured to twice the shipped horizon and a stale
 # run reads the rate of the horizon it really is (D.2).
 CALIBRATION_HORIZON_DAYS = 2 * FORECAST_DAYS
+
+# The residual distributions are stored as this many evenly spaced quantiles
+# (0, 1, ..., 100%): one percent resolution on the ECDF, and a table that
+# stays a few kilobytes.
+RESIDUAL_QUANTILES = 101
+
+# Central coverage of the published value interval.
+INTERVAL_COVERAGE = 0.8
 
 # A horizon beyond the last one measured has no rate to publish. It gets the
 # furthest measured rate marked down by this factor: "never measured" is
@@ -144,6 +156,7 @@ def build_table(results: pd.DataFrame) -> dict[str, Any]:
 
     return {
         "generated": datetime.now(timezone.utc).replace(tzinfo=None).isoformat() + "Z",
+        "residuals": residual_tables(results),
         "source": {
             "rows_scored": int(len(frame)),
             "rows_emitted": int(len(emitted)),
@@ -154,6 +167,132 @@ def build_table(results: pd.DataFrame) -> dict[str, Any]:
         "overall": overall,
         "horizon_delta": horizon_delta,
     }
+
+
+def day_mean_rows(results: pd.DataFrame) -> pd.DataFrame:
+    """Rollout rows collapsed to (fold, species, origin, day): the daily means.
+
+    Levels are daily means, so the residual that decides whether a level is
+    right is the residual of the day's mean, not of a window. Only complete
+    days (all eight windows scored) count.
+    """
+    frame = results.copy()
+    frame["day"] = pd.to_datetime(frame["date"]).dt.normalize()
+    keys = [k for k in ("fold", "species", "origin", "day") if k in frame]
+    days = frame.groupby(keys, as_index=False).agg(
+        predicted=("predicted", "mean"),
+        actual=("actual", "mean"),
+        horizon_day=("horizon_day", "min"),
+        n=("actual", "size"),
+    )
+    return days[days["n"] == 8].drop(columns="n")
+
+
+def _quantile_grid(residuals: np.ndarray) -> list[float]:
+    grid = np.linspace(0.0, 1.0, RESIDUAL_QUANTILES)
+    return [float(v) for v in np.quantile(residuals, grid)]
+
+
+def residual_tables(results: pd.DataFrame) -> dict[str, dict[str, list[float]]]:
+    """Per-horizon residual quantiles, for day means and for windows.
+
+    ``day_mean`` feeds the level probabilities, ``window`` the value interval;
+    both on the emitted rows, in log space, ``log1p(actual) - log1p(predicted)``.
+    """
+    out: dict[str, dict[str, list[float]]] = {"day_mean": {}, "window": {}}
+    if not {"date", "actual", "predicted", "horizon_day"} <= set(results.columns):
+        return out  # level-only results (older benchmark files): flat rates only
+    days = day_mean_rows(results)
+    days = days[days["predicted"] > EMIT_THRESHOLD]
+    for horizon, group in days.groupby("horizon_day"):
+        res = np.log1p(group["actual"].to_numpy(float)) - np.log1p(group["predicted"].to_numpy(float))
+        if len(res) >= 30:
+            out["day_mean"][str(int(horizon))] = _quantile_grid(res)
+    windows = results[results["predicted"] > EMIT_THRESHOLD]
+    for horizon, group in windows.groupby("horizon_day"):
+        res = np.log1p(group["actual"].to_numpy(float)) - np.log1p(group["predicted"].to_numpy(float))
+        if len(res) >= 30:
+            out["window"][str(int(horizon))] = _quantile_grid(res)
+    return out
+
+
+def _ecdf(quantiles: list[float], x: float) -> float:
+    """P(residual <= x) read off the stored quantile grid."""
+    if x == float("inf"):
+        return 1.0
+    if x == float("-inf"):
+        return 0.0
+    grid = np.linspace(0.0, 1.0, len(quantiles))
+    return float(np.interp(x, quantiles, grid, left=0.0, right=1.0))
+
+
+def _band(species: str, level: str) -> tuple[float, float]:
+    """The (low, high] range of daily means that reads as *level*."""
+    low_max, mod_max, high_max = SPECIES_THRESHOLDS.get(species, _DEFAULT_THRESHOLDS)
+    return {
+        "none": (float("-inf"), 0.0),
+        "low": (0.0, low_max),
+        "moderate": (low_max, mod_max),
+        "high": (mod_max, high_max),
+        "very_high": (high_max, float("inf")),
+    }[level]
+
+
+def _mass_in(quantiles: list[float], log_pred: float, low: float, high: float) -> float:
+    """Residual mass that puts the truth in (low, high], given the log prediction."""
+    lo = np.log1p(low) - log_pred if np.isfinite(low) else float("-inf")
+    hi = np.log1p(high) - log_pred if np.isfinite(high) else float("inf")
+    return max(0.0, _ecdf(quantiles, hi) - _ecdf(quantiles, lo))
+
+
+def _residuals_for(table: dict[str, Any] | None, kind: str, horizon_day: int) -> tuple[list[float] | None, bool]:
+    """The stored residual quantiles for a horizon, and whether it lay beyond the measured ones."""
+    if not table:
+        return None, False
+    stored = table.get("residuals", {}).get(kind, {})
+    if not stored:
+        return None, False
+    measured = sorted(int(k) for k in stored)
+    if int(horizon_day) in measured:
+        return stored[str(int(horizon_day))], False
+    return stored[str(max(measured))], True
+
+
+def level_probability(
+    table: dict[str, Any] | None, species: str, level: str, log_day_mean: float, horizon_day: int
+) -> tuple[float, float] | None:
+    """Conformal P(level exactly right) and P(within one level) for one day.
+
+    None when the table has no residual distribution to consult; the caller
+    then falls back to the flat rate.
+    """
+    quantiles, beyond = _residuals_for(table, "day_mean", horizon_day)
+    if quantiles is None:
+        return None
+    index = _LEVEL_INDEX[level]
+    exact = _mass_in(quantiles, log_day_mean, *_band(species, level))
+    low = _band(species, LEVEL_ORDER[max(0, index - 1)])[0]
+    high = _band(species, LEVEL_ORDER[min(len(LEVEL_ORDER) - 1, index + 1)])[1]
+    within = _mass_in(quantiles, log_day_mean, low, high)
+    if beyond:
+        exact *= BEYOND_HORIZON_SCALE
+        within *= BEYOND_HORIZON_SCALE
+    return exact, max(exact, within)
+
+
+def value_interval(
+    table: dict[str, Any] | None, value: float, horizon_day: int, coverage: float = INTERVAL_COVERAGE
+) -> tuple[float, float] | None:
+    """The central *coverage* interval for one window's value, from the window residuals."""
+    quantiles, _ = _residuals_for(table, "window", horizon_day)
+    if quantiles is None or value <= 0:
+        return None
+    grid = np.linspace(0.0, 1.0, len(quantiles))
+    tail = (1.0 - coverage) / 2.0
+    lo = float(np.interp(tail, grid, quantiles))
+    hi = float(np.interp(1.0 - tail, grid, quantiles))
+    log_value = float(np.log1p(value))
+    return max(0.0, float(np.expm1(log_value + lo))), float(np.expm1(log_value + hi))
 
 
 def breakdown(results: pd.DataFrame) -> pd.DataFrame:
@@ -191,14 +330,16 @@ def confidence_for(
     horizon_day: int,
     has_model: bool = True,
     observed: bool = False,
+    log_day_mean: float | None = None,
 ) -> tuple[float, float]:
     """Published (exact, within-one) confidence for one emitted prediction.
 
-    *species* and *level* are accepted but deliberately unused: the
-    leave-one-fold-out comparison in the module docstring shows that keying on
-    them makes calibration worse. They stay in the signature so a future
-    re-calibration that *does* find a generalising split has somewhere to put
-    it, and so callers do not have to change.
+    With *log_day_mean* — ``log1p`` of the predicted daily mean the level was
+    read from — the answer is conformal: the residual mass of the horizon's
+    distribution that keeps the truth inside the level's band (see the module
+    docstring). Without it, or without a residual table, it is the flat rate
+    plus the horizon offset, which is not keyed on *species* or *level*
+    because finer flat tables calibrate worse held-out.
 
     *horizon_day* is measured from the newest observation, not from today, so
     a forecast built on stale data asks for the horizon it really is. Beyond
@@ -207,6 +348,14 @@ def confidence_for(
     """
     if observed:
         return OBSERVED_CONFIDENCE["exact"], OBSERVED_CONFIDENCE["within_one"]
+
+    if log_day_mean is not None:
+        conformal = level_probability(table, species, level, log_day_mean, horizon_day)
+        if conformal is not None:
+            scale = 1.0 if has_model else NO_MODEL_SCALE
+            return tuple(  # type: ignore[return-value]
+                min(MAX_CONFIDENCE, max(MIN_CONFIDENCE, v * scale)) for v in conformal
+            )
 
     base = FALLBACK
     if table and table.get("overall"):

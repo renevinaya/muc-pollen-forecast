@@ -415,23 +415,31 @@ class SpeciesForecast:
     ``confidence`` is P(this level is exactly right) and
     ``confidence_within_one`` is P(the truth is within one level of it), both
     measured by the rollout benchmark rather than assumed — see
-    :mod:`src.confidence`.
+    :mod:`src.confidence`. ``value_low``/``value_high`` bound the central
+    80% interval for ``value`` from the same benchmark's residuals (D.5);
+    None when there is no interval to give.
     """
     name: str
     level: str
     value: float
     confidence: float
     confidence_within_one: float = 0.0
+    value_low: float | None = None
+    value_high: float | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize to a JSON-compatible dict."""
-        return {
+        out: dict[str, Any] = {
             "name": self.name,
             "level": self.level,
             "value": round(self.value, 1),
             "confidence": round(self.confidence, 3),
             "confidence_within_one": round(self.confidence_within_one, 3),
         }
+        if self.value_low is not None and self.value_high is not None:
+            out["value_low"] = round(self.value_low, 1)
+            out["value_high"] = round(self.value_high, 1)
+        return out
 
 
 @dataclass
@@ -568,10 +576,11 @@ class ForecastOutput:
         Restructures from window-centric (date→window→species) to
         species-centric (species→windows) with unix timestamps in seconds,
         matching the format returned by the ePIN LGL Bayern API. Each point
-        additionally carries the emitted level and the calibrated confidence
-        pair from :class:`SpeciesForecast`, which the measurement format has
-        no slot for; the frontend reads them alongside ``value``. The run's
-        ``status`` block (observation age, defaulted inputs) is top-level.
+        additionally carries the emitted level, the calibrated confidence
+        pair and the value interval from :class:`SpeciesForecast`, which the
+        measurement format has no slot for; the frontend reads them alongside
+        ``value``. The run's ``status`` block (observation age, defaulted
+        inputs) is top-level.
         """
         from datetime import datetime, timedelta
         from .clock import LOCAL_TZ
@@ -599,14 +608,18 @@ class ForecastOutput:
                 to_unix = int(to_dt.timestamp())
 
                 for sp in window.species:
-                    species_data.setdefault(sp.name, []).append({
+                    point: dict[str, Any] = {
                         "from": from_unix,
                         "to": to_unix,
                         "value": round(sp.value, 1),
                         "level": sp.level,
                         "confidence": round(sp.confidence, 3),
                         "confidence_within_one": round(sp.confidence_within_one, 3),
-                    })
+                    }
+                    if sp.value_low is not None and sp.value_high is not None:
+                        point["value_low"] = round(sp.value_low, 1)
+                        point["value_high"] = round(sp.value_high, 1)
+                    species_data.setdefault(sp.name, []).append(point)
 
         measurements = [
             {"polle": name, "location": self.location, "data": data}
