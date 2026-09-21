@@ -322,11 +322,13 @@ the only features whose quality depends on how far ahead you are forecasting.
 ### `benchmark` — autoregressive rollout (the shipped forecast)
 
 `src/rollout.py` replays the forecast exactly as `generate_forecast` runs it:
-lag features start from measurements before the forecast origin and are then
-fed from the model's own predictions, through the same `src/features.py` code
-path production uses. A forecast is launched from every day of a test month and
-rolled five days out, and skill is reported **per forecast day** against a
-persistence baseline.
+every window is predicted directly from the measured lag block at the forecast
+origin, through the same `src/features.py` code path production uses. A
+forecast is launched from every day of a test month and rolled five days out,
+and skill is reported **per forecast day** against a persistence baseline.
+That comparison is the report's first block and its verdict — a forecast that
+loses to "nothing changes" has no claim on a user's attention, whatever its
+MAE — and everything else follows it.
 
 Folds are spread across the calendar year rather than evenly along the
 timeline. Even spacing put all three folds in August — dormant for every tree

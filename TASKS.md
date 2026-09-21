@@ -546,8 +546,14 @@ What did change, and is kept:
 - [ ] **E.2 One peak-emphasis mechanism (was 3.2).** Bias is ~0 now, so this
   is tidiness, not accuracy.
 - [ ] **E.3 Log-space probability scaling (was 3.3).**
-- [ ] **E.4 Beat persistence as the headline metric (was 3.4).** Already
-  reported; make it the first line of the benchmark output.
+- [x] **E.4 Beat persistence as the headline metric (was 3.4).** **Done.**
+  The rollout report now opens with skill vs persistence per horizon — MAE
+  and level accuracy against "the last measured window held flat" — and a
+  one-line verdict (beats persistence at every horizon, or loses at some),
+  before any absolute number. Currently +32% at day 1 rising to +45% at
+  day 5, level accuracy 73.5% vs 66.6% at day 1. The report's preamble also
+  stopped claiming the lags are fed from the model's own predictions; they
+  have been measured since the direct model.
 
 ## Suggested order
 

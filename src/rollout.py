@@ -352,16 +352,44 @@ def print_rollout_report(results: pd.DataFrame, history: pd.DataFrame | None = N
     print("\n" + "=" * 70)
     print("AUTOREGRESSIVE ROLLOUT EVALUATION")
     print("=" * 70)
-    print("\nLag features are fed from the model's own predictions, as in production.")
-    print("Weather is actual (not forecast) and the DWD blend is not replayed,")
-    print("so these numbers are, if anything, optimistic.")
+
+    baseline = persistence_baseline(results, history) if history is not None else pd.DataFrame()
+    days = sorted(results["horizon_day"].unique())
+
+    # The headline: a forecast that loses to "nothing changes" has no claim on
+    # a user's attention, whatever its MAE, so skill is the first thing said.
+    if not baseline.empty:
+        print("\nSkill vs persistence (last measured window held flat; positive = model better):")
+        for day in days:
+            m = results[results["horizon_day"] == day]["abs_error"].mean()
+            b = baseline[baseline["horizon_day"] == day]["abs_error"].mean()
+            m_lvl = float((results[results["horizon_day"] == day]["level_actual"]
+                           == results[results["horizon_day"] == day]["level_predicted"]).mean())
+            b_lvl = float((baseline[baseline["horizon_day"] == day]["level_actual"]
+                           == baseline[baseline["horizon_day"] == day]["level_predicted"]).mean())
+            skill = f"{(b - m) / b:+.1%}" if b > 0 else "n/a"
+            print(f"  day {int(day)}: MAE {m:.1f} vs {b:.1f}  ({skill} skill)   "
+                  f"level accuracy {m_lvl:.1%} vs {b_lvl:.1%}")
+        worst = min(
+            ((b - m) / b for day in days
+             for m, b in [(results[results["horizon_day"] == day]["abs_error"].mean(),
+                           baseline[baseline["horizon_day"] == day]["abs_error"].mean())]
+             if b > 0),
+            default=float("nan"),
+        )
+        verdict = "beats persistence at every horizon" if worst > 0 else "LOSES to persistence at some horizon"
+        print(f"  => {verdict} (worst day {worst:+.1%})")
+    else:
+        print("\nNo history given: persistence baseline and skill not computed.")
+
+    print("\nEvery window is predicted directly from the measured block at its origin,")
+    print("as in production. Weather is actual (not forecast) and the DWD blend is")
+    print("not replayed, so these numbers are, if anything, optimistic.")
 
     mae, rmse, lvl, bias = _metrics(results)
     n_origins = results["origin"].nunique()
     print(f"\nOverall ({len(results)} predictions from {n_origins} forecast origins):")
     print(f"  MAE {mae:.1f}   RMSE {rmse:.1f}   Level accuracy {lvl:.1%}   Bias {bias:+.1f}")
-
-    baseline = persistence_baseline(results, history) if history is not None else pd.DataFrame()
 
     print("\nBy forecast day:")
     header = "  {:>10} {:>9} {:>9} {:>9} {:>9} {:>8}"
@@ -383,13 +411,6 @@ def print_rollout_report(results: pd.DataFrame, history: pd.DataFrame | None = N
             print(f"  {'day ' + str(int(day)):>10} {b_mae:>9.1f} {b_rmse:>9.1f} "
                   f"{b_lvl:>8.1%} {b_bias:>+9.1f} {len(sub):>8}")
 
-        print("\n  Skill vs persistence (positive = model better):")
-        for day in sorted(results["horizon_day"].unique()):
-            m = results[results["horizon_day"] == day]["abs_error"].mean()
-            b = baseline[baseline["horizon_day"] == day]["abs_error"].mean()
-            if b > 0:
-                print(f"    day {int(day)}: MAE {m:.1f} vs {b:.1f}  "
-                      f"({(b - m) / b:+.1%} skill)")
 
     print("\nPer-species × horizon (in-season rows only, MAE):")
     in_season = results[results["actual"] > 0]
