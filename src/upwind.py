@@ -57,14 +57,20 @@ _COLUMNS = ["date", "station", "species", "value"]
 
 
 def fetch_upwind(
-    start: date, end: date, stations: list[str] | None = None
+    start: date,
+    end: date,
+    stations: list[str] | None = None,
+    species: list[str] | None = None,
 ) -> pd.DataFrame:
-    """Measurements of every upwind station between *start* and *end*."""
+    """Measurements of every upwind station between *start* and *end*.
+
+    *species* narrows the request to those taxa (default: all of them).
+    """
     from .pollenscience import _fetch_single_location
 
     parts: list[pd.DataFrame] = []
     for code in stations or list(UPWIND_STATIONS):
-        df = _fetch_single_location(start, end, code)
+        df = _fetch_single_location(start, end, code, species)
         if not df.empty:
             df = df.assign(station=code)
             parts.append(df[_COLUMNS])
@@ -76,7 +82,11 @@ def fetch_upwind(
 
 
 def fetch_upwind_chunked(
-    start: date, end: date, stations: list[str] | None = None, delay: float = 5.0
+    start: date,
+    end: date,
+    stations: list[str] | None = None,
+    delay: float = 5.0,
+    species: list[str] | None = None,
 ) -> pd.DataFrame:
     """Backfill: fetch in 28-day chunks with a pause between requests."""
     codes = stations or list(UPWIND_STATIONS)
@@ -87,7 +97,7 @@ def fetch_upwind_chunked(
         print(f"  Fetching {chunk_start} to {chunk_end} ({', '.join(codes)})...")
         for code in codes:
             try:
-                df = fetch_upwind(chunk_start, chunk_end, [code])
+                df = fetch_upwind(chunk_start, chunk_end, [code], species)
             except Exception as exc:  # noqa: BLE001 — one bad chunk must not end the backfill
                 print(f"    {code}: error {exc}, skipping chunk")
                 df = pd.DataFrame(columns=_COLUMNS)

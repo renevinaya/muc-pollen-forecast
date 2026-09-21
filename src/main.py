@@ -5,6 +5,7 @@ Usage:
     python -m src.main collect      # Fetch recent data and append to history
     python -m src.main train        # Train models on accumulated history
     python -m src.main forecast     # Generate forecast and write data/forecast.json
+    python -m src.main backfill-species Fungus  # Add one taxon's history (Munich + upwind)
     python -m src.main run          # Collect + forecast (3-hourly cron)
     python -m src.main run-train    # Collect + train + forecast (monthly cron)
     python -m src.main backfill N   # Backfill N days of historical data
@@ -649,6 +650,80 @@ def cmd_calibrate(rebuild: bool = False) -> None:
     print(f"\nWritten to {TABLE_PATH}")
 
 
+def cmd_backfill_species(species: str, start_year: int = 2019, delay: float = 3.0) -> None:
+    """Add one taxon's full history — Munich and the upwind stations — to the stored data.
+
+    For a taxon added after the history was built (``Fungus``): the Munich
+    values are fetched from pollenscience.eu in chunks and joined to the
+    weather and NDVI columns the history already carries for those windows,
+    then merged into ``data/history.csv``; the upwind stations' values go
+    into ``data/upwind.csv``. Both files are backed up to the data release
+    when a token is present.
+    """
+    from .pollenscience import fetch_pollenscience_chunked
+    from .upwind import fetch_upwind_chunked
+
+    if species not in ALL_SPECIES:
+        print(f"Unknown species {species!r}; known: {', '.join(ALL_SPECIES)}")
+        return
+    start = date(start_year, 1, 1)
+    end = local_today()
+    print("=" * 60)
+    print(f"BACKFILL {species}: {start} to {end}")
+    print("=" * 60)
+
+    history = sync_historical_data(HISTORY_FILE) if not HISTORY_FILE.exists() else pd.read_csv(
+        HISTORY_FILE, parse_dates=["date"]
+    )
+    if history.empty:
+        print("No history to attach the new taxon to; run backfill first.")
+        return
+
+    print("\nMunich station:")
+    fetched = fetch_pollenscience_chunked(start, end, species=[species], delay=delay)
+    if fetched.empty:
+        print(f"  No {species} data returned.")
+    else:
+        # Every non-pollen column of a window is shared by all its species
+        # rows, so the new taxon borrows them from any existing row there.
+        carried = [c for c in history.columns if c not in ("date", "species", "value")]
+        template = history.drop_duplicates("date").set_index("date")[carried]
+        fetched["date"] = pd.to_datetime(fetched["date"])
+        rows = fetched[fetched["date"].isin(template.index)].copy()
+        rows["species"] = species
+        rows = rows.join(template, on="date")
+        print(f"  {len(fetched)} windows fetched, {len(rows)} inside the history's weather coverage")
+        update_history(rows[history.columns])
+        if can_upload():
+            upload_csv(HISTORY_FILE, HISTORY_ASSET)
+
+    if UPWIND_STATIONS:
+        print("\nUpwind stations:")
+        sync_upwind()
+        upwind_rows = fetch_upwind_chunked(start, end, delay=delay, species=[species])
+        if upwind_rows.empty:
+            print(f"  No upwind {species} data returned.")
+        else:
+            upwind = update_upwind(upwind_rows)
+            print(f"  Upwind stations: {_describe_upwind(upwind)}")
+            if can_upload():
+                upload_csv(UPWIND_FILE, UPWIND_ASSET)
+
+
+def cmd_probe_species() -> None:
+    """Diagnostic: every taxon pollenscience.eu reports for the Munich station codes."""
+    from .pollenscience import MUNICH_LOCATIONS, probe_taxa
+
+    print("=" * 60)
+    print("PROBE: taxa reported by pollenscience.eu (last 30 days)")
+    print("=" * 60)
+    for location in MUNICH_LOCATIONS + list(UPWIND_STATIONS):
+        for taxon, info in sorted(probe_taxa(location).items()):
+            if info["max"]:
+                print(f"  {location} {taxon:<16} n={info['n']:<5} last={info['last']} "
+                      f"max={info['max']:.1f} mean={info['mean']:.1f}")
+
+
 def cmd_dwd() -> None:
     """Fetch and display the current DWD pollen forecast for Oberbayern."""
     from .dwd import fetch_dwd_forecast
@@ -891,6 +966,13 @@ def main() -> None:
     elif command == "backfill-ps":
         start_year = int(sys.argv[2]) if len(sys.argv) > 2 else 2019
         cmd_backfill_pollenscience(start_year)
+    elif command == "backfill-species":
+        if len(sys.argv) < 3:
+            print("Usage: backfill-species <species> [start_year]")
+            return
+        cmd_backfill_species(sys.argv[2], int(sys.argv[3]) if len(sys.argv) > 3 else 2019)
+    elif command == "probe-species":
+        cmd_probe_species()
     elif command == "backfill-upwind":
         start_year = int(sys.argv[2]) if len(sys.argv) > 2 else 2019
         cmd_backfill_upwind(start_year)

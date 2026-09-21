@@ -60,10 +60,11 @@ def _fetch_single_location(
     response.raise_for_status()
     data = response.json()
 
+    wanted = set(species) if species else set(ALL_SPECIES)
     rows: list[dict[str, object]] = []
     for measurement in data.get("measurements", []):
         sp = measurement["polle"]
-        if sp not in ALL_SPECIES:
+        if sp not in wanted:
             continue
         for point in measurement.get("data", []):
             rows.append(
@@ -182,3 +183,35 @@ def fetch_pollenscience_chunked(
     combined = pd.concat(all_chunks, ignore_index=True)
     combined = combined.drop_duplicates(subset=["date", "species"], keep="last")
     return combined.sort_values(["date", "species"]).reset_index(drop=True)
+
+
+# --- Diagnostics -------------------------------------------------------------
+
+
+def probe_taxa(location: str, days: int = 30) -> dict[str, dict[str, object]]:
+    """Every taxon the API reports for *location* over the last *days*.
+
+    Asked without a ``pollen`` filter, the API answers with everything the
+    station recognises — pollen and the fungal-spore aggregate ``Fungus``
+    alike. Returns ``{taxon: {"n": rows, "last": time, "max": v, "mean": v}}``.
+    """
+    end = date.today()
+    start = end - timedelta(days=days)
+    from_ts = int(pd.Timestamp(str(start), tz="Europe/Berlin").timestamp())
+    to_ts = int(pd.Timestamp(str(end + timedelta(days=1)), tz="Europe/Berlin").timestamp())
+    response = httpx.get(
+        API_URL, params={"from": from_ts, "to": to_ts, "locations": location}, timeout=60
+    )
+    response.raise_for_status()
+    found: dict[str, dict[str, object]] = {}
+    for measurement in response.json().get("measurements", []):
+        points = measurement.get("data", [])
+        values = [float(p.get("value", 0) or 0) for p in points]
+        found[str(measurement.get("polle"))] = {
+            "n": len(points),
+            "last": pd.Timestamp(max((p["from"] for p in points), default=0), unit="s").isoformat()
+            if points else None,
+            "max": max(values, default=0.0),
+            "mean": (sum(values) / len(values)) if values else 0.0,
+        }
+    return found

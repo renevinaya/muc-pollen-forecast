@@ -23,7 +23,13 @@ ALL_SPECIES = [
     "Quercus",     # Oak
     "Salix",       # Willow
     "Urtica",      # Nettle
+    "Fungus",      # Mould spores — the ePIN samplers' fungal-spore aggregate
 ]
+
+# Taxa that are not pollen. Kept in ALL_SPECIES because the whole pipeline is
+# per taxon and the same model form works, but they have no DWD index to
+# blend with and no flowering season to gate on.
+SPORE_TAXA = {"Fungus"}
 
 # Feature columns used by the model (order matters for training/prediction)
 # Raw weather columns the collector writes and the feature pipeline carries.
@@ -277,6 +283,7 @@ SPECIES_SEASON: dict[str, tuple[int, int]] = {
     "Quercus":   (4, 6),    # April – June
     "Salix":     (3, 5),    # March – May
     "Urtica":    (5, 9),    # May – September
+    "Fungus":    (1, 12),   # Spores are in the air all year; the peak is summer–autumn
 }
 
 
@@ -358,6 +365,9 @@ SPECIES_THRESHOLDS: dict[str, tuple[float, float, float]] = {
     "Quercus":   (10,  50,  200),
     "Salix":     (5,   20,   50),
     "Urtica":    (10,  50,  200),
+    # No DWD index exists for spores; these are quantiles of the Munich
+    # station's own daily means (see TASKS.md, F.1).
+    "Fungus":    (50, 200, 500),
 }
 
 # Default thresholds when species is unknown
