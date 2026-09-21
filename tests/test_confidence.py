@@ -13,6 +13,7 @@ import pandas as pd
 import pytest
 
 from src.confidence import (
+    CALIBRATION_HORIZON_DAYS,
     EMIT_THRESHOLD,
     MAX_CONFIDENCE,
     MIN_CONFIDENCE,
@@ -130,7 +131,9 @@ def test_shipped_table_is_present_and_current() -> None:
     assert table is not None, f"{TABLE_PATH} is missing — run 'calibrate'"
     assert 0.15 < table["overall"]["exact"] < 0.75
     assert table["overall"]["within_one"] > table["overall"]["exact"]
-    assert set(table["horizon_delta"]) == {"1", "2", "3", "4", "5"}
+    # Measured to twice the shipped horizon, so a stale run (D.2) reads the
+    # rate of the horizon it really is instead of guessing.
+    assert set(table["horizon_delta"]) == {str(d) for d in range(1, CALIBRATION_HORIZON_DAYS + 1)}
     assert table["source"]["rows_emitted"] > 1000
 
 

@@ -454,10 +454,56 @@ What did change, and is kept:
   them up whenever it likes; until it does, the numbers are at least there.
   The README's output section now documents the file that is actually
   published (it described `to_dict()`, which nothing publishes).
-- [ ] **D.2 Staleness guard (was 4.2).** If the last observation is older
-  than N windows, cap confidence and say so in the output.
-- [ ] **D.3 Degradation flags (was 4.3).** Emit a per-run list of feature
-  groups that were defaulted (NDVI, DWD, weather forecast fallback).
+- [x] **D.2 Staleness guard (was 4.2).** **Done — a stale run is forecast
+  and published as the longer-range forecast it is.** The live history has
+  231 gaps longer than a window, most of them a day, the longest 13.5 days
+  (June 2026). Before, the forecaster's origin was the first unobserved
+  window of *today*, so after two silent days a window this afternoon was
+  predicted at lead 1 over a lag block that had quietly ended two days
+  earlier, with the day-1 confidence attached and nothing in the file. Now
+  the origin is the window after the newest measurement: `lead_windows`
+  counts from there (the model was trained on exactly that anchoring), and
+  the confidence horizon is counted the way the calibration rollout counts
+  it, eight windows per day from the origin. A run two days stale therefore
+  publishes day-3 rates for tomorrow. So that those rates exist, the
+  calibration rollout now runs to twice the shipped horizon
+  (`CALIBRATION_HORIZON_DAYS = 10`; `calibrate --rebuild`), and a window
+  beyond the furthest measured horizon gets that horizon's rate halved, the
+  same rule as a species without a model. The output's `status.observations`
+  block carries the newest measurement, its age in complete windows and a
+  `stale` flag from eight windows (a day), per species and as a worst-case
+  headline. On a normal run nothing changes: the newest measurement is one
+  window old and the origin is where it always was.
+
+  Measured on the same six folds, rolled out to 10 days (same origins, so
+  days 1–5 are the standard benchmark and are unchanged):
+
+  | | d1 | d2 | d3 | d4 | d5 | d6 | d7 | d8 | d9 | d10 |
+  |---|---|---|---|---|---|---|---|---|---|---|
+  | MAE | 7.1 | 7.0 | 6.7 | 6.5 | 6.6 | 6.4 | 6.5 | 7.0 | 8.0 | 8.6 |
+  | level accuracy | 73.5% | 73.0% | 73.0% | 72.2% | 72.2% | 71.8% | 72.2% | 71.3% | 70.8% | 71.0% |
+  | skill vs persistence | +32% | +36% | +40% | +45% | +42% | +46% | +50% | +49% | +46% | +45% |
+  | Betula in-season MAE | 16.8 | 16.5 | 15.1 | 15.2 | 19.4 | 24.7 | 33.0 | 55.6 | 111.1 | 146.2 |
+  | exact level, emitted rows | 67.6% | 66.5% | 65.8% | 63.8% | 62.6% | 61.6% | 62.2% | 59.9% | 58.7% | 58.9% |
+
+  The pooled numbers barely move because most rows are quiet; the birch row
+  is what a stale run costs, and it is why the guard matters: a forecast
+  built on a block five days old misses the birch ramp by 6–9× more than a
+  fresh one, and before D.2 it was published with the day-1 confidence.
+  `src/confidence.json` is regenerated from this rollout: the overall rate
+  and days 1–5 are unchanged (0.652 / 0.989), days 6–10 are new.
+- [x] **D.3 Degradation flags (was 4.3).** **Done.** `status.defaulted` in
+  the published file names every input group that fell back to a default
+  this run, with the reason: `ndvi` (fetch failed or no composites → zeros),
+  `dwd` (no index → blend skipped), `weather_soil` (Open-Meteo answered
+  without soil variables → zeros), `upwind` (no station readings in the last
+  7 days, for some or all species → zeros), `model` (species with no trained
+  model → persistence) and `confidence` (no calibration table → fallback
+  rates). `status.degraded` is the one-bit summary and the same line goes to
+  the run log. CAMS is deliberately not listed: it has never been active in
+  training or live, so its zero is the norm rather than a fallback. The
+  weather forecast itself has no fallback — the run fails without it, which
+  is the right behaviour and needs no flag.
 - [x] **D.4 Level-threshold semantics (was 4.5).** **Done — levels are
   daily-mean levels.** The DWD/ePIN thresholds are defined on daily means;
   the app applied them to 3 h values. Now a window's level is the level of
@@ -506,7 +552,7 @@ What did change, and is kept:
 ## Suggested order
 
 Phases A and C are done, and B.1–B.6 with them; A.5 and B.8 were tried and
-parked, and so was B.7. D.1 and D.4 are done. Next: D.2/D.3 → E.x → D.5. Nothing left on
+parked, and so was B.7. Phase D is done except D.5. Next: E.x → D.5. Nothing left on
 the list claims the heavy-year ramp; that now needs a data source that sees
 a season before Munich does (B.8, last paragraph).
 

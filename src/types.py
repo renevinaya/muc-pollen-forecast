@@ -465,19 +465,102 @@ class DayForecast:
 
 
 @dataclass
-class ForecastOutput:
-    """Top-level forecast output with metadata and daily forecasts."""
-    generated: str
-    location: str
-    forecast: list[DayForecast] = field(default_factory=list)
+class ObservationStatus:
+    """How current the measurements behind a forecast are.
+
+    ``age_windows`` counts the complete 3 h windows that have passed since the
+    newest measurement without one — 0 or 1 on a normal run, since the station
+    reports with a few hours' delay. ``stale`` is set once that reaches
+    :data:`STALE_AFTER_WINDOWS`; the forecast then rests on data a day or
+    more old, and its confidence is the confidence of the longer horizon it
+    really is (see :func:`src.confidence.confidence_for`).
+    """
+    last: str | None
+    age_windows: int | None
+    stale: bool
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize to a JSON-compatible dict."""
+        return {"last": self.last, "age_windows": self.age_windows, "stale": self.stale}
+
+
+# A forecast whose newest measurement is this many complete windows old (a
+# full day) is marked stale in the output.
+STALE_AFTER_WINDOWS = 8
+
+
+@dataclass
+class RunStatus:
+    """What one forecast run was built from: the inputs it did *not* get.
+
+    ``observations`` is the newest measurement over all species, and
+    ``species`` the same per species. ``defaulted`` names every input group
+    that fell back to a default this run — NDVI, the DWD blend, the soil
+    weather variables, the upwind stations, the calibration table, a species'
+    model — with the reason, so the published forecast says which of its
+    inputs were missing rather than looking the same as one that had them all.
+    """
+    observations: ObservationStatus
+    species: dict[str, ObservationStatus] = field(default_factory=dict)
+    defaulted: dict[str, str] = field(default_factory=dict)
+
+    @property
+    def degraded(self) -> bool:
+        """True when anything was missing: stale observations or a default."""
+        return self.observations.stale or bool(self.defaulted)
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize to a JSON-compatible dict."""
         return {
+            "degraded": self.degraded,
+            "observations": {
+                **self.observations.to_dict(),
+                "species": {name: st.to_dict() for name, st in sorted(self.species.items())},
+            },
+            "defaulted": dict(sorted(self.defaulted.items())),
+        }
+
+    def describe(self) -> str:
+        """One line for the run log."""
+        obs = self.observations
+        if obs.last is None:
+            head = "no observations"
+        else:
+            head = f"newest observation {obs.last}, {obs.age_windows} window(s) old"
+            if obs.stale:
+                head += " (STALE)"
+        if self.defaulted:
+            tail = "; defaulted: " + ", ".join(
+                f"{k} ({v})" for k, v in sorted(self.defaulted.items())
+            )
+        else:
+            tail = "; all inputs present"
+        return head + tail
+
+
+@dataclass
+class ForecastOutput:
+    """Top-level forecast output with metadata and daily forecasts.
+
+    ``status`` (D.2/D.3) says how old the observations were and which input
+    groups were defaulted; it is published beside the forecast so a reader
+    can tell a degraded run from a normal one.
+    """
+    generated: str
+    location: str
+    forecast: list[DayForecast] = field(default_factory=list)
+    status: RunStatus | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize to a JSON-compatible dict."""
+        out: dict[str, Any] = {
             "generated": self.generated,
             "location": self.location,
             "forecast": [d.to_dict() for d in self.forecast],
         }
+        if self.status is not None:
+            out["status"] = self.status.to_dict()
+        return out
 
     def to_web_dict(self) -> dict[str, Any]:
         """Serialize to a webapp-compatible dict matching the LGL measurement format.
@@ -487,7 +570,8 @@ class ForecastOutput:
         matching the format returned by the ePIN LGL Bayern API. Each point
         additionally carries the emitted level and the calibrated confidence
         pair from :class:`SpeciesForecast`, which the measurement format has
-        no slot for; the frontend reads them alongside ``value``.
+        no slot for; the frontend reads them alongside ``value``. The run's
+        ``status`` block (observation age, defaulted inputs) is top-level.
         """
         from datetime import datetime, timedelta
         from .clock import LOCAL_TZ
@@ -529,8 +613,11 @@ class ForecastOutput:
             for name, data in sorted(species_data.items())
         ]
 
-        return {
+        out: dict[str, Any] = {
             "generated": self.generated,
             "location": self.location,
             "measurements": measurements,
         }
+        if self.status is not None:
+            out["status"] = self.status.to_dict()
+        return out

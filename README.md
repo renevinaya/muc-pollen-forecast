@@ -307,6 +307,7 @@ python -m src.main benchmark 5 --folds 3
 | `run-backfill` | Both of the above against the data release (what `mode: backfill` runs in Actions) |
 | `benchmark [days]` | Walk-forward **rollout** of the real autoregressive forecast, scored per forecast day (default: 5). `--folds N` or `--months 2026-02,2026-04`, `--species A,B`, `--classic` |
 | `benchmark-onset` | The shipped rollout over the months containing each measured season start of the last three seasons (default: Corylus, Alnus, Betula): timing, amount and false starts per species-year and horizon. `--species A,B`, `--years N`, `--classic` (old one-window-ahead diagnostic) |
+| `calibrate [--rebuild]` | Regenerate `src/confidence.json` from `data/benchmark_rollout.csv`; `--rebuild` runs the rollout first, over 10 days so stale runs read a measured rate |
 | `dwd` | Display the current DWD pollen danger index for Oberbayern |
 | `phenology` | Download DWD phenology data and show flowering-onset statistics |
 | `run` | Execute collect → forecast in sequence (every 3 hours) |
@@ -566,6 +567,17 @@ of a model that no longer exists.
 Windows with a real measurement (assimilated) publish 1.0; a species with no
 trained model is marked down by half.
 
+The horizon a window's confidence is read at is counted from the newest
+measurement, not from today, because that is what the model's `lead_windows`
+counts from and what the benchmark measured. On a normal run the two agree.
+When the station has been silent for two days, a window "tomorrow" is a
+three-day forecast, and it is published as one. The table is therefore
+measured to twice the shipped horizon (`calibrate --rebuild` runs the rollout
+over 10 days), so a run up to five days stale still reads a measured rate; a
+window beyond the furthest measured horizon gets that horizon's rate halved,
+the same "never measured, so published low" rule as a species without a
+model. The `status` block in the output says when this is happening.
+
 ### What this replaced, and why
 
 The old scheme was `0.90 − 0.08 × day`, clipped, with a +0.05 bonus for
@@ -581,9 +593,10 @@ the slope were wrong:
   day-1 figure of 0.90 overstated reliability by about 2.5× against the
   3-hour rate and by a third against the daily one.
 - **The slope.** Accuracy barely moves across the horizon — 67.5% at day 1
-  to 62.6% at day 5 on daily levels (35.8% to 33.9% on 3-hour ones) — because
-  the model is direct rather than recursive. The old decay dropped 32 points
-  over that span.
+  to 62.6% at day 5 on daily levels (35.8% to 33.9% on 3-hour ones), and
+  58.7% at day 10, the furthest a stale run reads — because the model is
+  direct rather than recursive. The old decay dropped 32 points over the
+  first five days alone.
 
 Scored leave-one-fold-out, expected calibration error falls from **0.393 to
 0.053**, a 7.4× improvement.
@@ -649,3 +662,39 @@ within one level of it), from the calibration table above; a frontend that
 ignores the two extra keys keeps working. `ForecastOutput.to_dict()` is the
 window-centric form of the same forecast (date → window → species), used
 for logging and tests.
+
+Beside `measurements` the file carries a `status` block saying what the run
+was built from — the part of the output that used to be silent:
+
+```json
+"status": {
+  "degraded": true,
+  "observations": {
+    "last": "2026-09-21T06:00:00",
+    "age_windows": 1,
+    "stale": false,
+    "species": { "Alnus": { "last": "...", "age_windows": 1, "stale": false }, "...": {} }
+  },
+  "defaulted": {
+    "dwd": "unavailable (HTTP 503); blend skipped",
+    "ndvi": "fetch failed (timeout); zeros"
+  }
+}
+```
+
+- `observations` is the newest measurement (local time) and how many complete
+  3-hour windows have passed since it without one; the headline is the worst
+  species, and `species` has each one. `stale` is set from eight windows —
+  a day of silence from the station. A stale run is not just flagged: its
+  windows are forecast at the lead they really are, counted from the newest
+  measurement, and their confidence is the confidence of that horizon (see
+  [Forecast Confidence](#forecast-confidence)).
+- `defaulted` names every input group that fell back to a default this run,
+  with the reason: `ndvi` (fetch failed or no composites), `dwd` (no index to
+  blend), `weather_soil` (Open-Meteo answered without soil variables),
+  `upwind` (no station readings in the last 7 days, for some or all species),
+  `model` (a species with no trained model, forecast by persistence), and
+  `confidence` (no calibration table). CAMS is not listed: it has never been
+  active, in training or live, so a zero there is the norm, not a fallback.
+- `degraded` is true when observations are stale or anything was defaulted.
+  The same line is printed in the run log (`Inputs: ...`).

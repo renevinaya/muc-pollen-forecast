@@ -58,6 +58,8 @@ from typing import Any
 
 import pandas as pd
 
+from .types import FORECAST_DAYS
+
 TABLE_PATH = Path(__file__).parent / "confidence.json"
 
 LEVEL_ORDER = ["none", "low", "moderate", "high", "very_high"]
@@ -88,6 +90,19 @@ OBSERVED_CONFIDENCE = {"exact": 1.0, "within_one": 1.0}
 # benchmark never scores. Published low rather than left implicitly high.
 NO_MODEL_SCALE = 0.5
 
+# How far out the calibration rollout looks. The forecast ships FORECAST_DAYS,
+# but a forecast built on stale observations *is* a longer-range forecast — a
+# window one day ahead of a block that ended two days ago sits at lead three
+# days — so the table is measured to twice the shipped horizon and a stale
+# run reads the rate of the horizon it really is (D.2).
+CALIBRATION_HORIZON_DAYS = 2 * FORECAST_DAYS
+
+# A horizon beyond the last one measured has no rate to publish. It gets the
+# furthest measured rate marked down by this factor: "never measured" is
+# published low, like a species without a model, rather than as the last
+# number that happened to exist.
+BEYOND_HORIZON_SCALE = 0.5
+
 
 def _annotate(results: pd.DataFrame) -> pd.DataFrame:
     """Add exact-hit and within-one-level columns."""
@@ -110,9 +125,14 @@ def build_table(results: pd.DataFrame) -> dict[str, Any]:
     if emitted.empty:
         raise ValueError("no emitted rows to calibrate on")
 
+    # The overall rate is the shipped horizon's: rows beyond FORECAST_DAYS are
+    # only reached by a stale run and enter the table as per-horizon offsets.
+    shipped = emitted[emitted["horizon_day"] <= FORECAST_DAYS]
+    if shipped.empty:
+        shipped = emitted
     overall = {
-        "exact": float(emitted["exact"].mean()),
-        "within_one": float(emitted["within_one"].mean()),
+        "exact": float(shipped["exact"].mean()),
+        "within_one": float(shipped["within_one"].mean()),
     }
     horizon_delta = {
         str(int(horizon)): {
@@ -129,6 +149,7 @@ def build_table(results: pd.DataFrame) -> dict[str, Any]:
             "rows_emitted": int(len(emitted)),
             "folds": int(frame["fold"].nunique()) if "fold" in frame else None,
             "origins": int(frame["origin"].nunique()) if "origin" in frame else None,
+            "horizon_days": int(frame["horizon_day"].max()),
         },
         "overall": overall,
         "horizon_delta": horizon_delta,
@@ -178,6 +199,11 @@ def confidence_for(
     them makes calibration worse. They stay in the signature so a future
     re-calibration that *does* find a generalising split has somewhere to put
     it, and so callers do not have to change.
+
+    *horizon_day* is measured from the newest observation, not from today, so
+    a forecast built on stale data asks for the horizon it really is. Beyond
+    the furthest horizon the table measured, the furthest rate is published
+    scaled by :data:`BEYOND_HORIZON_SCALE`.
     """
     if observed:
         return OBSERVED_CONFIDENCE["exact"], OBSERVED_CONFIDENCE["within_one"]
@@ -187,10 +213,15 @@ def confidence_for(
         base = table["overall"]
 
     delta = {"exact": 0.0, "within_one": 0.0}
-    if table:
-        delta = table.get("horizon_delta", {}).get(str(int(horizon_day)), delta)
-
     scale = 1.0 if has_model else NO_MODEL_SCALE
+    deltas = table.get("horizon_delta", {}) if table else {}
+    if deltas:
+        measured = sorted(int(k) for k in deltas)
+        if int(horizon_day) in measured:
+            delta = deltas[str(int(horizon_day))]
+        else:
+            delta = deltas[str(max(measured))]
+            scale *= BEYOND_HORIZON_SCALE
     out = []
     for key in ("exact", "within_one"):
         value = (float(base.get(key, FALLBACK[key])) + float(delta.get(key, 0.0))) * scale
