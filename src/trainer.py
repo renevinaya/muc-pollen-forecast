@@ -11,8 +11,8 @@ The combined prediction is:
 Key design decisions:
   - Log-transform on the target to handle extreme skew
   - Season-active + NDVI + phenology features capture biological timing
-  - Sample weighting up-weights rare peak events
-  - Quantile regression (α = 0.80) biases toward higher predictions
+  - A raised quantile target is the one peak-emphasis mechanism (E.2)
+  - Quantile regression (α = 0.85–0.92 per species) biases toward higher predictions
 """
 
 from __future__ import annotations
@@ -700,12 +700,11 @@ def train_species_model(
     Stage 3: XGBRegressor  — extreme regressor (fitted only to high-pollen
              samples), gated by an XGBClassifier for P(value > threshold)
 
-    Improvements applied:
-    - Stronger sample weighting for extreme events (#1)
-    - Species-specific hyperparameters (#5)
-    - Raised quantile target (#4)
-    - Rows in the first RAMP_DAYS after the year's measured onset weigh
-      (1 + RAMP_BOOST) times more in the regressor and the extreme gate (B.6)
+    Peak emphasis is one mechanism, the raised quantile target (#4, E.2),
+    with species-specific hyperparameters (#5). Rows in the first RAMP_DAYS
+    after the year's measured onset weigh (1 + RAMP_BOOST) times more in the
+    regressor and the extreme gate (B.6); that weight is label-driven, not
+    value-driven, so it does not shift the quantile.
     """
     ramp_weight = 1.0 + RAMP_BOOST * ramp if ramp is not None else None
     hp = _SPECIES_HYPERPARAMS.get(species, _DEFAULT_HYPERPARAMS)
@@ -750,19 +749,15 @@ def train_species_model(
         verbosity=0,
     )
 
-    # (#1) Stronger sample weighting: sqrt-based + tier bonuses for extreme events
-    sample_weight = None
-    if raw_values is not None:
-        rv = raw_values.to_numpy(dtype=float)
-        w = 1.0 + np.sqrt(rv)
-        w += (rv > 100) * 8.0
-        w += (rv > 500) * 20.0
-        w += (rv > 1000) * 40.0
-        if ramp_weight is not None:
-            w = w * ramp_weight
-        sample_weight = w
-
-    regressor.fit(X, y, sample_weight=sample_weight)
+    # One peak-emphasis mechanism (E.2): the raised quantile. The regressor
+    # used to be weighted by 1 + sqrt(value) with tier bonuses on top of the
+    # quantile, and weighting by the target inside a quantile loss shifts the
+    # effective quantile above the nominal one, so the two compounded. A/B on
+    # the same six folds (E.1 baseline MAE 6.9 / level 73.3% / bias -0.1):
+    # quantile alone 6.1 / 74.5% / -1.7, weights alone (median regression)
+    # 6.1 / 74.0% / -3.9, and raising the quantile by 0.03 on top 6.5 / 74.4%
+    # / -0.8. Only the onset-ramp weight (B.6, label-driven) remains.
+    regressor.fit(X, y, sample_weight=ramp_weight)
 
     # --- Stage 3: extreme regressor, plus the gate that decides when to use it ---
     # The regressor is fitted only to samples above extreme_threshold, with

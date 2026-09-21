@@ -48,7 +48,7 @@ ML-based pollen forecast for Munich at 3-hour resolution, using a three-stage XG
 Each species gets a **three-stage pipeline** with species-specific hyperparameters:
 
 1. **Stage 1 — XGBClassifier**: predicts P(pollen > 0). 200 estimators, learning rate 0.08, adaptive `scale_pos_weight`.
-2. **Stage 2 — XGBRegressor**: predicts log1p(pollen count) via quantile regression. Sample-weighted by `1 + √(value)` with tier bonuses (+8 for >100, +20 for >500, +40 for >1000).
+2. **Stage 2 — XGBRegressor**: predicts log1p(pollen count) via quantile regression (α 0.85–0.92 per species). That raised quantile is the one peak-emphasis mechanism; the `1 + √(value)` sample weights with tier bonuses it used to carry as well were removed in E.2 (they shifted the effective quantile above the nominal one, and the A/B without them is MAE 6.9 → 6.1).
 3. **Stage 3 — Extreme Regressor** (optional): fitted only to high-pollen samples (>50), squared error in log space. Blended into Stage 2 in proportion to a **separate gate classifier for P(pollen > 50)**, ramping from 0.5 to 0.9 and capped at 70% weight.
 
    The gate used to be the Stage 1 classifier's P(pollen > 0) at a 0.6 cutoff. In peak season that sits near 1.0 for weeks, so a regressor that has never seen an ordinary window was given its full weight on one: measured over this history the blend fired on **20–28% of all windows**, and at those windows the truth was at or below the threshold ~75% of the time and exactly zero 14–28% of the time. With the dedicated gate it fires on 4–7% of windows, and the truth is above the threshold 97–99% of the time.
@@ -367,19 +367,21 @@ origins, 80 680 scored predictions. Persistence is the same baseline throughout
 
 | Horizon | MAE | RMSE | Level acc. | Bias | Persistence MAE | Skill |
 |---------|-----|------|-----------|------|-----------------|-------|
-| day 1 | **7.1** | 45.8 | 73.5% | **−0.4** | 10.4 | **+32.0%** |
-| day 2 | **7.0** | 45.7 | 73.0% | **−0.5** | 10.9 | **+35.7%** |
-| day 3 | **6.7** | 43.2 | 73.0% | **−0.4** | 11.2 | **+40.5%** |
-| day 4 | **6.5** | 41.5 | 72.2% | **−0.3** | 11.8 | **+44.6%** |
-| day 5 | **6.6** | 41.4 | 72.2% | **−0.0** | 11.4 | **+42.0%** |
+| day 1 | **6.4** | 45.1 | 75.2% | **−1.7** | 10.4 | **+38.3%** |
+| day 2 | **6.3** | 44.9 | 74.8% | **−1.9** | 10.9 | **+42.2%** |
+| day 3 | **6.1** | 42.0 | 74.5% | **−1.8** | 11.2 | **+45.8%** |
+| day 4 | **5.9** | 40.2 | 74.2% | **−1.7** | 11.8 | **+49.5%** |
+| day 5 | **5.9** | 39.6 | 73.6% | **−1.5** | 11.4 | **+48.2%** |
 
-The model beats persistence at every horizon by 32–45%, with a bias near
-zero and no decay across the five days. Level accuracy is measured on
-daily-mean levels (D.4; see *Model*): 72.8% exact and 99.5% within one
-level, against persistence's 66.6% / 64.5% at days 1 / 5. Under the old
-3-hour definition the same predictions scored 76.3% exact — and persistence
-78.7%, because "none at night" was free; the daily definition is the one
-under which the model's level skill is visible at all.
+The model beats persistence at every horizon by 38–50%, with no decay across
+the five days and a bias of about −1.7 grains/m³ (it leans low since E.2
+removed the value weights that were pushing it up; see the stage table).
+Level accuracy is measured on daily-mean levels (D.4; see *Model*): 74.5%
+exact and 99.8% within one level, against persistence's 66.6% / 64.5% at
+days 1 / 5. Under the old 3-hour definition the B.5 predictions scored
+76.3% exact — and persistence 78.7%, because "none at night" was free; the
+daily definition is the one under which the model's level skill is visible
+at all.
 
 These numbers are measured on the **complete** history (see *Data coverage*
 below). Before the backfill the model scored 7.3 / 76.9%; on the complete
@@ -393,7 +395,10 @@ replacement and take the model to 7.0 — better than the artefact — though
 they leave the level accuracy where it was and the season-start amplitude
 untouched (TASKS.md, B.6). The per-species onset rules and the transport-aware
 onset detector (B.2/B.3) take it to 6.9, mostly through hazel, and the four
-upwind stations (B.5) to 6.8.
+upwind stations (B.5) to 6.8. Building the lag block on the time grid
+(E.1) costs 0.1 of that back for half a point of level accuracy, and
+dropping the value weights that compounded with the quantile target (E.2)
+takes it to 6.1.
 
 Three fixes got here, each measured on these same folds:
 
@@ -408,7 +413,9 @@ Three fixes got here, each measured on these same folds:
 | B.2 + B.3 onset calibration | 7.3 | 6.7 | −0.5 | −0.2 | +41.4% |
 | B.4 rule-based readiness | 7.5 | 6.9 | +0.1 | +0.3 | +39.9% |
 | B.6 onset-ramp weighting | 7.3 | 6.8 | +0.1 | +0.5 | +40.3% |
-| B.5 upwind stations | **7.1** | **6.6** | **−0.4** | **−0.0** | **+42.0%** |
+| B.5 upwind stations | 7.1 | 6.6 | −0.4 | −0.0 | +42.0% |
+| E.1 time-based lags | 7.3 | 6.8 | −0.0 | +0.2 | +40.8% |
+| E.2 one peak-emphasis mechanism | **6.4** | **5.9** | **−1.7** | **−1.5** | **+48.2%** |
 
 **3.1** stopped the extreme regressor being consulted about ordinary windows.
 **3.5** removed the feedback loop that let a residual bias compound into the
@@ -416,7 +423,7 @@ horizon. **Phase 2** cut 73 features to 60 — and the smaller model is better a
 every horizon, not merely equal, so those features were adding variance rather
 than signal.
 
-Day-5 MAE has gone 17.1 → 6.6 and day-5 bias +13.2 → −0.0.
+Day-5 MAE has gone 17.1 → 5.9 and day-5 bias +13.2 → −1.5.
 
 > **On fold counts.** An earlier version of this section reported three folds
 > (Sep, Jan, May) and concluded that the model beat persistence from day 3 on
@@ -575,7 +582,7 @@ difference means something. Two numbers are published per prediction, because
 
 | Field | Meaning | Typical range |
 |-------|---------|---------------|
-| `confidence` | P(the emitted level is exactly right) | 0.3 – 0.9 (mean ~0.63) |
+| `confidence` | P(the emitted level is exactly right) | 0.3 – 0.9 (mean ~0.7) |
 | `confidence_within_one` | P(the truth is within one level of it) | ~0.9 – 0.99 |
 | `value_low`, `value_high` | central 80% interval for `value` | ×0.09 – ×2.3 of the value at day 1 |
 

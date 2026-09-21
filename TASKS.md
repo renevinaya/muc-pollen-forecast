@@ -594,8 +594,32 @@ What did change, and is kept:
   change; the serving-side correctness — an outage no longer shifts the
   block — is the point of the task and is pinned by a parity test that
   cuts a three-day gap into the fixture.
-- [ ] **E.2 One peak-emphasis mechanism (was 3.2).** Bias is ~0 now, so this
-  is tidiness, not accuracy.
+- [x] **E.2 One peak-emphasis mechanism (was 3.2).** **Done — the raised
+  quantile survives, the value weights go.** It was not tidiness: the two
+  compounded. Stage 2 was a quantile regressor (α 0.85–0.92 per species)
+  *and* weighted by `1 + √value` plus tier bonuses, and weighting by the
+  target inside a quantile loss shifts the effective quantile above the
+  nominal one. A/B on the same six folds, on E.1:
+
+  | arm | MAE | RMSE | level acc. | bias | onset false starts | birch onset d1 |
+  |---|---|---|---|---|---|---|
+  | E.1 (both mechanisms) | 6.9 | 43.4 | 73.3% | −0.1 | 43 | 11.7 d |
+  | **quantile only** | **6.1** | **42.4** | **74.5%** | −1.7 | **8** | **2.3 d** |
+  | value weights only (median regression) | 6.1 | 45.5 | 74.0% | −3.9 | — | — |
+  | quantile only, α + 0.03 | 6.5 | 43.0 | 74.4% | −0.8 | — | — |
+
+  Quantile-only is adopted: MAE −12%, level accuracy +1.2 points, skill vs
+  persistence +30% → +38% at day 1, onset false starts 43 → 8 run-days and
+  birch's onset timing 11.7 → 2.3 days at day 1. Its cost is a bias of
+  −1.7 (the weights were pushing predictions up, which is what the near-zero
+  bias was made of) and hazel/alder onset timing about two days later
+  (hazel 1.3 → 4.3 d, alder 6.3 → 7.3 d at day 1, cells of three
+  species-years). Tuning the survivor against the bias — every species'
+  quantile up by 0.03 — buys half the bias back at +0.4 MAE, so the
+  quantiles stay where they were. The extreme regressor keeps its own
+  `1 + √value` weight: it is fitted to peak samples only and has no
+  quantile to shift. The onset-ramp weight (B.6) stays too: it is
+  label-driven, not value-driven.
 - [ ] **E.3 Log-space probability scaling (was 3.3).**
 - [x] **E.4 Beat persistence as the headline metric (was 3.4).** **Done.**
   The rollout report now opens with skill vs persistence per horizon — MAE
@@ -609,7 +633,7 @@ What did change, and is kept:
 ## Suggested order
 
 Phases A and C are done, and B.1–B.6 with them; A.5 and B.8 were tried and
-parked, and so was B.7. Phase D is done, and E.1 and E.4. Next: E.2 → E.3. Nothing left on
+parked, and so was B.7. Phase D is done, and E.1, E.2 and E.4. Next: E.3. Nothing left on
 the list claims the heavy-year ramp; that now needs a data source that sees
 a season before Munich does (B.8, last paragraph).
 
