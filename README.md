@@ -36,7 +36,7 @@ ML-based pollen forecast for Munich at 3-hour resolution, using a three-stage XG
 
 | Source | API | What it provides |
 |--------|-----|------------------|
-| [pollenscience.eu](https://pollenscience.eu/api/measurements) | Pollen measurements | Primary source: 3-hour pollen counts for Munich (station DEMUNC, 2019+), plus the four ePIN stations around it (Mindelheim, Altötting, Feucht, Viechtach) as upwind context — see [Upwind stations](#upwind-stations) |
+| [pollenscience.eu](https://pollenscience.eu/api/measurements) | Pollen and spore measurements | Primary source: 3-hour pollen counts and the fungal-spore aggregate (`Fungus`) for Munich (station DEMUNC, 2019+), plus the four ePIN stations around it (Mindelheim, Altötting, Feucht, Viechtach) as upwind context — see [Upwind stations](#upwind-stations) and [Mould spores](#mould-spores) |
 | [LGL Bayern](https://d1ppjuhp1nvtc2.cloudfront.net/measurements) | Pollen measurements | Alternative: real-time 3-hour pollen counts for Munich |
 | [Open-Meteo](https://open-meteo.com/) | Weather forecast + historical archive | Hourly weather aggregated to 3-hour windows: temperature, precipitation, wind, humidity, sunshine, radiation, boundary layer height, dew point, CAPE, direct radiation, soil temperature + moisture (no API key required) |
 | [MODIS (ORNL DAAC)](https://modis.ornl.gov/rst/api/v1) | NDVI / EVI satellite data | MOD13Q1 250 m 16-day vegetation indices, cubic-interpolated to daily resolution |
@@ -256,6 +256,40 @@ model has seen in every year, and it still predicts the average of them. The
 year's *amount* is a property of the season, not of the last day, and no
 feature yet carries it (TASKS.md, B.5).
 
+### Mould spores
+
+`Fungus` is the ePIN samplers' fungal-spore aggregate, reported by
+pollenscience.eu for Munich and the four upwind stations since 2019 and
+forecast here as a twelfth taxon since F.1 (TASKS.md). It runs through the
+same collector, model, benchmark and calibration as the pollen, with three
+differences: it has no flowering season (the gate never zeroes it), there
+is no DWD index to blend with, and its level thresholds — 50 / 150 / 300
+spores/m³ for low / moderate / high — are quantiles of the Munich station's
+own 2024+ daily means (median 46, 85th percentile ~150, 99th ~300), because
+no official classification exists and the sampler's regime changed in 2024
+(the 2019–2023 median is 9). The model's quantile target and stage-3
+threshold were tuned on the rollout benchmark rather than inherited from the
+pollen defaults; the pollen default (α 0.85) would have published a mould
+forecast with a bias of +11 spores/m³ and only 12% skill against
+persistence. On the standard six folds the mould model scores, against persistence:
+
+| Horizon | MAE | Persistence MAE | Skill | Level acc. | Persistence level acc. | Bias |
+|---------|-----|-----------------|-------|------------|------------------------|------|
+| day 1 | 27.8 | 33.2 | +16% | 81.1% | 56.5% | +1.9 |
+| day 3 | 29.5 | 39.4 | +25% | 78.0% | 56.5% | +0.9 |
+| day 5 | 30.3 | 42.3 | +29% | 76.7% | 53.3% | +0.8 |
+
+Spores are a persistent, slowly varying series — tomorrow looks like today
+far more than for any pollen — so the skill is smaller than the pollen's
+but the level is right four days in five. Of the emitted mould points the
+level is exactly right 79% of the time and within one level 98.5%. The
+residuals have the same spread as the pollen's (log-space standard
+deviation 0.80 against 0.83), and the conformal confidence stays pooled
+across all twelve taxa: a table split into pollen and spores calibrates
+worse held-out (ECE 0.052 against 0.042). The pollen models are untouched
+by the addition — their per-species benchmark rows are identical before
+and after.
+
 ## Setup
 
 ```bash
@@ -376,6 +410,9 @@ origins, 80 680 scored predictions. Persistence is the same baseline throughout
 The model beats persistence at every horizon by 38–50%, with no decay across
 the five days and a bias of about −1.7 grains/m³ (it leans low since E.2
 removed the value weights that were pushing it up; see the stage table).
+These are the eleven pollen taxa; the mould-spore taxon added in F.1 is
+scored in its own section below, and a pooled figure that includes it
+(MAE 8.2 at day 1) is not comparable with this table.
 Level accuracy is measured on daily-mean levels (D.4; see *Model*): 74.5%
 exact and 99.8% within one level, against persistence's 66.6% / 64.5% at
 days 1 / 5. Under the old 3-hour definition the B.5 predictions scored

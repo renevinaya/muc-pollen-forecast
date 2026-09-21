@@ -650,10 +650,90 @@ What did change, and is kept:
   stopped claiming the lags are fed from the model's own predictions; they
   have been measured since the direct model.
 
+## Phase F — Mould spores
+
+- [x] **F.1 Mould forecast.** **Done.** Munich has had a lot of mould in the
+  air (September 2026 daily means of 110–375 spores/m³ against a 2024+
+  median of 46), and the data was there all along: pollenscience.eu reports
+  the ePIN samplers' fungal-spore aggregate as the taxon `Fungus`, for the
+  Munich station and all four upwind stations, back to 2019 (asked without
+  a `pollen` filter, the API lists every taxon a station recognises; a
+  `probe-species` diagnostic prints them). `Fungus` is now a twelfth taxon
+  in `ALL_SPECIES`, so it goes through the same collector, trainer,
+  forecaster, benchmark and calibration as the pollen — with the
+  differences that matter made explicit:
+
+  - **History.** `backfill-species Fungus` (Actions mode
+    `backfill-species`) fetched the Munich series and joined it to the
+    weather and NDVI columns the history already carried for those windows
+    (20 854 windows, 2019-01-01 to 2026-09-21), and the four upwind
+    stations' series into `upwind.csv`.
+  - **Levels.** No DWD index exists for spores. The thresholds (50 / 150 /
+    300) are quantiles of the Munich station's own daily means in the 2024+
+    sampler regime — median 46, 85th percentile ~150, 99th ~300 — because
+    the regime changed: 2019–2023 has a median of 9 and a 99th percentile
+    of 116, 2024–2026 a median of 46. "Moderate" is an above-average day,
+    "very high" a top-1% one; September 2026 reads high to very high.
+  - **Season.** All year (`(1, 12)`); the gate never zeroes it. The monthly
+    means run 6 in December–January to 87 in July, and the diurnal shape is
+    a midday peak (100 at 12:00 against 46 at 03:00, 2024+).
+  - **No DWD blend, no phenology.** The onset machinery runs (it finds a
+    "season start" in January and the rules are calibrated against it), but
+    the features it produces carry nothing for a taxon without a flowering
+    season; they are left in rather than special-cased.
+  - **Hyperparameters, tuned on the benchmark** (six folds, the standard
+    months, `Fungus` alone; persistence MAE 38.1, level 58.9%):
+
+    | stage | setting | MAE | level acc. | bias | skill vs persistence |
+    |---|---|---|---|---|---|
+    | quantile α (depth 5, 300 trees, stage 3 at 50) | 0.50 | 27.6 | — | −5.8 | +27.5% |
+    | | 0.60 | 28.2 | — | −2.4 | +26.0% |
+    | | **0.70** | 28.6 | — | +0.8 | +25.1% |
+    | | 0.80 | 31.3 | — | +7.4 | +17.9% |
+    | | 0.85 (pollen default) | 33.4 | — | +11.5 | +12.3% |
+    | | 0.90 | 37.3 | — | +18.2 | +2.3% |
+    | | 0.95 | 43.1 | — | +27.1 | −13.1% |
+    | stage-3 threshold (α 0.70) | none / **50** / 100 / 200 / 400 | 28.9 / 28.6 / 29.0 / 28.9 / 28.9 | 0.789 / 0.792 / 0.783 / 0.784 / 0.789 | −0.5 / +0.8 / +0.5 / −0.4 / −0.5 | +24.4% / +25.1% / +23.9% / +24.1% / +24.4% |
+    | tree shape (α 0.70, stage 3 at 50, with the upwind series) | depth 3 / 300 | 29.6 | 0.778 | +2.7 | +22.4% |
+    | | depth 4 / 300 | 29.4 | 0.781 | +2.1 | +23.0% |
+    | | depth 5 / 300 | 29.3 | 0.783 | +2.3 | +23.1% |
+    | | **depth 5 / 600** | 29.1 | **0.791** | +1.4 | +23.6% |
+    | | depth 6 / 400 | 29.4 | 0.782 | +0.9 | +23.0% |
+    | | depth 7 / 500 | **28.8** | 0.776 | −0.8 | +24.5% |
+
+    The quantile is the parameter that matters: MAE rises monotonically
+    with α and the pollen default is a +11 bias, because a taxon that is
+    present all year has none of the zero-inflated, peaky distribution the
+    high quantile was chosen for. Everything else moves the score by less
+    than a point, which is the size of the swing between two retrains. The
+    classifier depth (4 vs 5) was tied throughout. Adopted: α 0.70, stage 3
+    at the default 50, depth 5 with 600 trees — the best level accuracy, and
+    a slightly positive bias is the right side for a warning. The upwind
+    stations' `Fungus` series is in the block (the level-accuracy rows are
+    with it; MAE 28.6 → 29.3 for the same shape without and with it, inside
+    the noise). Level accuracy is on the (50 / 150 / 300) thresholds;
+    persistence scores 58.9%.
+
+  Final, on the standard six folds with all twelve taxa (the pollen rows
+  are identical to E.2's): mould MAE 27.8 / 29.5 / 30.3 at days 1 / 3 / 5
+  against persistence 33.2 / 39.4 / 42.3 (+16% / +25% / +29% skill), level
+  accuracy 81.1% / 78.0% / 76.7% against 56.5% / 56.5% / 53.3%, bias
+  +0.8 to +1.9. Emitted mould points: level exactly right 79%, within one
+  98.5%. `confidence.json` recalibrated on the 12-taxon 10-day rollout; the
+  spore residuals have the pollen's spread (log-space std 0.80 vs 0.83)
+  and a table split into pollen and spores calibrates worse held-out (ECE
+  0.052 vs 0.042 pooled), so it stays pooled. What is left open: the
+  upwind stations' spore series did not measurably help (MAE 28.6 → 29.3
+  for the same shape without and with it, inside the noise), and the 2024
+  regime change in the sampler means the model trains on two different
+  scales of the same thing; a year-regime feature or a 2024+ training
+  window is the obvious next experiment if the level accuracy is not
+  enough.
+
 ## Suggested order
 
 Phases A and C are done, and B.1–B.6 with them; A.5 and B.8 were tried and
-parked, and so was B.7. Phases D and E are done; E.3 was benchmarked and the existing form kept. Nothing left on
+parked, and so was B.7. Phases D and E are done; E.3 was benchmarked and the existing form kept. F.1 added the mould forecast. Nothing left on
 the list claims the heavy-year ramp; that now needs a data source that sees
 a season before Munich does (B.8, last paragraph).
 

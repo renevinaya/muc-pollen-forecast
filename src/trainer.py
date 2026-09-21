@@ -691,8 +691,25 @@ _SPECIES_HYPERPARAMS: dict[str, dict[str, int | float]] = {
     "Poaceae": {"clf_depth": 5, "reg_depth": 6, "reg_n": 400, "quantile": 0.90},
     "Quercus": {"clf_depth": 5, "reg_depth": 6, "reg_n": 400, "quantile": 0.88},
     "Populus": {"clf_depth": 4, "reg_depth": 6, "reg_n": 400, "quantile": 0.88},
+    # Mould spores (F.1): tuned on the rollout benchmark rather than inherited.
+    # The pollen default (quantile 0.85) gives a bias of +11 spores/m3 and 12%
+    # skill against persistence; 0.7 is unbiased at 24%, and the tree shape
+    # barely matters (MAE 28.8-29.8 across depths 3-7). Stage 3 stays at the
+    # default threshold: None, 100, 200 and 400 were all within 0.4 MAE.
+    "Fungus":  {"clf_depth": 4, "reg_depth": 5, "reg_n": 600, "quantile": 0.70},
 }
 _DEFAULT_HYPERPARAMS: dict[str, int | float] = {"clf_depth": 4, "reg_depth": 5, "reg_n": 300, "quantile": 0.85}
+
+# Value above which a window counts as extreme for the stage-3 regressor and
+# its gate. 50 grains/m3 for pollen; a taxon whose ordinary level is far
+# above that (mould spores) gets its own, or None to run without stage 3.
+DEFAULT_EXTREME_THRESHOLD = 50.0
+_EXTREME_THRESHOLDS: dict[str, float | None] = {}
+
+
+def extreme_threshold_for(species: str) -> float | None:
+    """The stage-3 threshold for *species*; None disables the stage."""
+    return _EXTREME_THRESHOLDS.get(species, DEFAULT_EXTREME_THRESHOLD)
 
 
 def train_species_model(
@@ -782,8 +799,8 @@ def train_species_model(
     # meaningful if 0.5 really means "more likely than not".
     extreme_regressor = None
     extreme_classifier = None
-    extreme_threshold = 50.0
-    if raw_values is not None:
+    extreme_threshold = extreme_threshold_for(species)
+    if raw_values is not None and extreme_threshold is not None:
         rv_arr = raw_values.to_numpy(dtype=float)
         extreme_mask = rv_arr > extreme_threshold
         n_extreme = int(extreme_mask.sum())
@@ -825,7 +842,7 @@ def train_species_model(
         regressor=regressor,
         extreme_regressor=extreme_regressor,
         species=species,
-        extreme_threshold=extreme_threshold,
+        extreme_threshold=extreme_threshold if extreme_threshold is not None else DEFAULT_EXTREME_THRESHOLD,
         extreme_classifier=extreme_classifier,
         feature_names=list(X.columns),
     )

@@ -365,9 +365,11 @@ SPECIES_THRESHOLDS: dict[str, tuple[float, float, float]] = {
     "Quercus":   (10,  50,  200),
     "Salix":     (5,   20,   50),
     "Urtica":    (10,  50,  200),
-    # No DWD index exists for spores; these are quantiles of the Munich
-    # station's own daily means (see TASKS.md, F.1).
-    "Fungus":    (50, 200, 500),
+    # No DWD index exists for spores. These are quantiles of the Munich
+    # station's own daily means in the 2024+ sampler regime (median 46,
+    # 85th percentile ~150, 99th ~300; see TASKS.md, F.1), so "moderate" is
+    # an above-average day and "very high" a top-1% one.
+    "Fungus":    (50, 150, 300),
 }
 
 # Default thresholds when species is unknown
