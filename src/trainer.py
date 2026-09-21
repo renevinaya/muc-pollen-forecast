@@ -82,11 +82,85 @@ def inv_log_transform(values: np.ndarray[Any, Any]) -> np.ndarray[Any, Any]:
 
 # --- Feature engineering ---
 
+WINDOW = pd.Timedelta(hours=3)
+
+
+def grid_series(values: pd.Series, end: pd.Timestamp | None = None) -> tuple[pd.Series, pd.Series]:
+    """A species' log values on the full 3 h grid, raw and gap-filled.
+
+    *values* is indexed by measurement time. The raw series is NaN wherever a
+    window was not measured. The filled one is "the state of the world as
+    last known" at a window inside an outage: the same time of day one day
+    earlier when that was measured (pollen is diurnal, so yesterday's noon
+    is a better stand-in for a missing noon than this morning's 03:00), and
+    the last measurement of any kind otherwise. The grid runs to *end* when
+    that lies past the last measurement.
+    """
+    index = pd.DatetimeIndex(values.index)
+    if len(index) == 0:
+        empty = pd.Series(dtype=float)
+        return empty, empty
+    stop = index.max() if end is None else max(index.max(), pd.Timestamp(end))
+    grid = pd.date_range(index.min(), stop, freq=WINDOW)
+    raw = pd.Series(log_transform(values), index=index)
+    # A window measured twice (a re-collected day) keeps its latest value,
+    # as the collector's own de-duplication does.
+    raw = raw[~raw.index.duplicated(keep="last")].reindex(grid)
+    same_slot = raw.groupby(raw.index.hour).ffill(limit=1)
+    return raw, same_slot.ffill()
+
+
+def lag_block_on_grid(values: pd.Series, lead: int = 1) -> pd.DataFrame:
+    """The lag block for every window of the 3 h grid spanned by *values*.
+
+    Time-based (E.1): a lag of 8 is the window 24 h earlier whether or not
+    the station reported in between, and ``days_since_active`` counts
+    windows of time, not rows. The block at grid window *t* describes the
+    state as of ``lead`` windows before *t*.
+    """
+    raw, s = grid_series(values)
+    out = pd.DataFrame(index=s.index)
+    if s.empty:
+        return out.reindex(columns=LAG_FEATURES)
+    out["pollen_lag_1"] = s.shift(1)           # previous 3h window
+    out["pollen_lag_2"] = s.shift(2)           # 6h ago
+    out["pollen_lag_3"] = s.shift(3)           # 9h ago
+    out["pollen_lag_8"] = s.shift(8)           # same time yesterday (24h)
+    out["pollen_lag_16"] = s.shift(16)         # 48h ago (#3)
+    out["pollen_lag_24"] = s.shift(24)         # same time 3 days ago (72h)
+    out["pollen_lag_56"] = s.shift(56)         # 7 days ago (#3)
+    out["pollen_rolling_8"] = s.rolling(8, min_periods=1).mean().shift(1)    # 24h mean
+    out["pollen_rolling_56"] = s.rolling(56, min_periods=1).mean().shift(1)  # 7-day mean
+    out["pollen_max_8"] = s.rolling(8, min_periods=1).max().shift(1)         # 24h max (#3)
+    out["pollen_max_56"] = s.rolling(56, min_periods=1).max().shift(1)       # 7-day max (#3)
+    # Mean of the day's earlier windows (intra-day trend signal).
+    day_groups = s.index.normalize()
+    out["pollen_morning_avg"] = (
+        s.groupby(day_groups).transform(lambda g: g.expanding(min_periods=1).mean().shift(1))
+        .fillna(0.0)
+    )
+    # Windows since pollen was last *measured* above 0: a gap does not count
+    # as activity, and the distance is in time. The cumsum formulation this
+    # replaces was degenerate (constant 0 after the first active row).
+    positions = pd.Series(np.arange(len(s), dtype=float), index=s.index)
+    last_active = positions.where(raw > 0).ffill()
+    out["days_since_active"] = (positions - last_active).shift(1).fillna(999).astype(float)
+
+    # Move the finished block back to the forecast origin. Every column above
+    # describes the state as of one window before its row, so shifting by
+    # lead - 1 makes it describe the state as of `lead` windows before instead.
+    if lead > 1:
+        out[LAG_FEATURES] = out[LAG_FEATURES].shift(lead - 1)
+    return out
+
+
 def _add_lag_features(df: pd.DataFrame, lead: int = 1) -> pd.DataFrame:
     """
     Add lag and rolling features for a single species' time series.
-    Lag features are computed in log-space. Each row is a 3h window.
-    Expects df sorted by date with a 'value' column.
+    Lag features are computed in log-space on the full 3 h time grid
+    (:func:`lag_block_on_grid`), so a station outage leaves a gap in time
+    rather than silently shortening "24 h ago" to "8 rows ago". Expects a
+    'value' column and a 'date' column.
 
     *lead* is how many windows ahead of the last known measurement each row is
     being predicted. At ``lead=1`` the block is the state of the world one
@@ -107,46 +181,10 @@ def _add_lag_features(df: pd.DataFrame, lead: int = 1) -> pd.DataFrame:
     there, ...) and simply moves the whole thing back to the origin.
     """
     df = df.copy().sort_values("date")
-    log_val = log_transform(df["value"])
-    s = pd.Series(log_val, index=df.index)
-    df["pollen_lag_1"] = s.shift(1)           # previous 3h window
-    df["pollen_lag_2"] = s.shift(2)           # 6h ago
-    df["pollen_lag_3"] = s.shift(3)           # 9h ago
-    df["pollen_lag_8"] = s.shift(8)           # same time yesterday (24h)
-    df["pollen_lag_16"] = s.shift(16)         # 48h ago (#3)
-    df["pollen_lag_24"] = s.shift(24)         # same time 3 days ago (72h)
-    df["pollen_lag_56"] = s.shift(56)         # 7 days ago (#3)
-    df["pollen_rolling_8"] = s.rolling(8, min_periods=1).mean().shift(1)    # 24h mean
-    df["pollen_rolling_56"] = s.rolling(56, min_periods=1).mean().shift(1)  # 7-day mean
-    df["pollen_max_8"] = s.rolling(8, min_periods=1).max().shift(1)         # 24h max (#3)
-    df["pollen_max_56"] = s.rolling(56, min_periods=1).max().shift(1)       # 7-day max (#3)
-    # Mean of today's earlier windows (intra-day trend signal)
-    # Group by calendar day, use expanding mean of log-values within the day, shifted
-    day_groups = pd.to_datetime(df["date"]).dt.normalize()
-    morning_avg = s.groupby(day_groups.values).apply(
-        lambda g: g.expanding(min_periods=1).mean().shift(1)
-    )
-    if hasattr(morning_avg.index, 'droplevel'):
-        try:
-            morning_avg = morning_avg.droplevel(0)
-        except (ValueError, IndexError):
-            pass
-    df["pollen_morning_avg"] = morning_avg.reindex(df.index).fillna(0).values
-    # Windows since pollen was last > 0.
-    # The cumsum formulation this replaces was degenerate: cumsum does not
-    # advance while a species is inactive, so ``cumactive - last_active`` was 0
-    # on every row after the first active one — the model trained on a constant
-    # while the forecaster served it a real count. Position arithmetic gives
-    # the distance the feature was always meant to carry (0–980 windows here).
-    positions = pd.Series(np.arange(len(s), dtype=float), index=s.index)
-    last_active = positions.where(s > 0).ffill()
-    df["days_since_active"] = (positions - last_active).shift(1).fillna(999).astype(float)
-
-    # Move the finished block back to the forecast origin. Every column above
-    # describes the state as of one window before its row, so shifting by
-    # lead - 1 makes it describe the state as of `lead` windows before instead.
-    if lead > 1:
-        df[LAG_FEATURES] = df[LAG_FEATURES].shift(lead - 1)
+    dates = pd.DatetimeIndex(pd.to_datetime(df["date"]))
+    block = lag_block_on_grid(pd.Series(df["value"].to_numpy(dtype=float), index=dates), lead)
+    for col in LAG_FEATURES:
+        df[col] = block[col].reindex(dates).to_numpy()
     df["lead_windows"] = float(lead)
     return df
 

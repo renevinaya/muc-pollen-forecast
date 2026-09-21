@@ -568,9 +568,32 @@ What did change, and is kept:
 
 ## Phase E — Model correctness leftovers
 
-- [ ] **E.1 Time-based lag alignment (was 4.1).** Row-based `shift(n)` turns
-  a station outage into "8 rows ago, whenever that was". Reindex each species
-  frame to the full 3 h grid before shifting.
+- [x] **E.1 Time-based lag alignment (was 4.1).** **Done.** The lag block
+  is built on the full 3 h grid (`trainer.lag_block_on_grid`) and
+  `LagState.from_history` builds the same block the same way, so a lag of 8
+  is the window 24 h earlier through an outage and `days_since_active` is
+  a distance in time. The history has 231 gaps longer than a window — 184
+  whole days in 2019–2020 when the source reported once a day, the longest
+  13.5 days in June 2026 — and every one of them used to compact the block.
+  Three fills were benchmarked on the same six folds (D.5 baseline 6.8 /
+  43.6 / 72.8% / −0.3):
+
+  | fill of a window inside a gap | MAE | RMSE | level acc. | bias | onset false starts |
+  |---|---|---|---|---|---|
+  | last measurement carried forward | 7.0 | 43.5 | 73.0% | +0.1 | 49 |
+  | **same hour of the previous day, then carry-forward** | **6.9** | **43.4** | **73.3%** | **−0.1** | **43** |
+  | as above, but training drops every block that spans a gap (−10% rows) | 6.9 | 43.8 | 72.7% | −0.3 | — |
+
+  The diurnal fill is adopted: level accuracy +0.5 points at every horizon,
+  bias at zero, false starts 46 → 43, for +0.1 MAE. Onset timing moved by
+  one to three days in either direction on cells of three species-years
+  (hazel d2 1.3 → 3.0, alder d1 2.0 → 6.3, birch d1 7.3 → 11.7 — see the
+  E.2 entry, which then takes birch's d1 timing to 2.3), which is the size
+  of the swing between two retrains of the same code. The benchmark's test
+  months barely touch a gap, so what it measures is the training-set
+  change; the serving-side correctness — an outage no longer shifts the
+  block — is the point of the task and is pinned by a parity test that
+  cuts a three-day gap into the fixture.
 - [ ] **E.2 One peak-emphasis mechanism (was 3.2).** Bias is ~0 now, so this
   is tidiness, not accuracy.
 - [ ] **E.3 Log-space probability scaling (was 3.3).**
@@ -586,7 +609,7 @@ What did change, and is kept:
 ## Suggested order
 
 Phases A and C are done, and B.1–B.6 with them; A.5 and B.8 were tried and
-parked, and so was B.7. Phase D is done. Next: E.1 → E.2 → E.3. Nothing left on
+parked, and so was B.7. Phase D is done, and E.1 and E.4. Next: E.2 → E.3. Nothing left on
 the list claims the heavy-year ramp; that now needs a data source that sees
 a season before Munich does (B.8, last paragraph).
 

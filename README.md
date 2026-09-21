@@ -156,6 +156,23 @@ sum that does not advance while a species is inactive, so training saw a
 served a live count. The feature is worth 6.5% of model gain once it actually
 varies (0–980 windows).
 
+The lag block is built on the **3-hour time grid**, not by row (E.1). The
+history has 231 gaps longer than a window — 184 of them whole days in
+2019–2020, when the source reported once a day, the longest 13.5 days in
+June 2026 — and a row-based `shift(8)` turned "24 h ago" into "8 rows ago,
+whenever that was" through every one of them, in training and at forecast
+time alike. Now `trainer.lag_block_on_grid` and `LagState.from_history`
+both put the species' values on the full grid first: a lag of 8 is the
+window 24 h earlier whether or not the station reported in between, and
+`days_since_active` is a distance in time from the last window measured
+above zero. A window inside an outage carries the same time of day one day
+earlier when that was measured (pollen is diurnal, so yesterday's noon is a
+better stand-in for a missing noon than this morning's 03:00), and the last
+measurement of any kind otherwise; plain carry-forward was benchmarked too
+and was worse (MAE 7.0 against 6.9, and hazel's onset timing 1.3→6.0 days
+at day 2). The parity test cuts a gap into its fixture and requires both
+paths to agree through it.
+
 ### Season onset
 
 Three features are parameterised by when the season is expected to start:
