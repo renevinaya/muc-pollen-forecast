@@ -76,9 +76,23 @@ MIN_CALIBRATION_YEARS = 2
 # projected: the (start date, base) pair with the smallest LOO error wins, and
 # if none beats the climatology, the climatology is used on its own.
 
-FORCING_STARTS: tuple[tuple[int, int], ...] = ((1, 1), (1, 15), (2, 1), (2, 15), (3, 1))
+# Start dates in November and December are the *previous* year's: a hazel
+# season that opens in a warm December is invisible to a rule that starts
+# counting on 1 January, so those rules accumulate from the autumn before
+# the season (B.7). Whether a species is better served by one is decided by
+# the same leave-one-out as every other rule.
+FORCING_STARTS: tuple[tuple[int, int], ...] = (
+    (1, 1), (1, 15), (2, 1), (2, 15), (3, 1), (11, 1), (12, 1)
+)
 FORCING_BASES: tuple[float, ...] = (0.0, 3.0, 5.0)
 ForcingRule = tuple[tuple[int, int], float]
+
+# Days from this month on belong to the *coming* season: their rule,
+# threshold and climatology are the next year's, so that the readiness and
+# the onset estimate run continuously from November into the new year
+# instead of reading last season's total in December and resetting on
+# 1 January.
+SEASON_TURN_MONTH = 11
 
 # What ran before there was a choice, and what still runs when there are too
 # few seasons to choose on: leave-one-out over three seasons is a coin toss.
@@ -299,16 +313,40 @@ def _static_onset_doy(species: str) -> float:
     )
 
 
-def forcing_series(daily_temp: pd.Series, rule: ForcingRule) -> pd.Series:
-    """Forcing accumulated per year from the rule's start date at its base.
+def _starts_in_previous_year(rule: ForcingRule) -> bool:
+    return rule[0][0] >= 7
 
-    Zero before the start date within each year, so a crossing can never be
-    found before the rule says accumulation begins.
+
+def rule_year(idx: pd.DatetimeIndex) -> np.ndarray:
+    """The season year each day is projected for: the next one from November."""
+    years = idx.year.to_numpy()
+    return np.where(idx.month.to_numpy() >= SEASON_TURN_MONTH, years + 1, years)
+
+
+def rule_start(rule: ForcingRule, year: int) -> pd.Timestamp:
+    """The day the rule starts accumulating towards the season of *year*."""
+    (month, day), _ = rule
+    start_year = year - 1 if _starts_in_previous_year(rule) else year
+    return pd.Timestamp(year=start_year, month=month, day=day)
+
+
+def forcing_series(daily_temp: pd.Series, rule: ForcingRule) -> pd.Series:
+    """Forcing accumulated towards each season from the rule's start date at
+    its base.
+
+    A rule starting in January or later counts within the calendar year and
+    is zero before its start date, so a crossing can never be found before
+    the rule says accumulation begins. A rule starting in the autumn counts
+    from that date across the year boundary: the value on 1 January carries
+    December's warmth.
     """
     (month, day), base = rule
     idx = pd.DatetimeIndex(daily_temp.index)
     contrib = (daily_temp - base).clip(lower=0)
     started = (idx.month > month) | ((idx.month == month) & (idx.day >= day))
+    if _starts_in_previous_year(rule):
+        season = np.where(started, idx.year.to_numpy() + 1, idx.year.to_numpy())
+        return contrib.groupby(season).cumsum()
     contrib = contrib.where(started, 0.0)
     return contrib.groupby(idx.year).cumsum()
 
@@ -449,7 +487,8 @@ def readiness_by_day(
         return pd.DataFrame(columns=["forcing", "threshold"])
 
     idx = pd.DatetimeIndex(daily_temp.index)
-    years = sorted(set(idx.year))
+    season_years = rule_year(idx)
+    years = sorted(set(season_years))
     rules = rules_by_year(history, species, years)
     forcing = pd.Series(np.nan, index=idx, dtype=float)
     threshold = pd.Series(np.nan, index=idx, dtype=float)
@@ -458,7 +497,7 @@ def readiness_by_day(
         rule, thr = rules[year]
         if rule not in cache:
             cache[rule] = forcing_series(daily_temp, rule)
-        mask = idx.year == year
+        mask = season_years == year
         forcing[mask] = cache[rule][mask].to_numpy()
         if thr is not None:
             threshold[mask] = thr
@@ -487,10 +526,11 @@ def onset_doy_by_day(history: pd.DataFrame, species: str) -> pd.Series:
 
     onsets = {y: float(d) for y, d in observed_onsets(history, species).items()}
     idx = pd.DatetimeIndex(daily_temp.index)
+    season_years = rule_year(idx)
     estimate = pd.Series(np.nan, index=idx, dtype=float)
 
-    for year in sorted(set(idx.year)):
-        mask = idx.year == year
+    for year in sorted(set(season_years)):
+        mask = season_years == year
         climatology = _median_before(onsets, year)
         if climatology is None:
             climatology = _static_onset_doy(species)
@@ -499,13 +539,28 @@ def onset_doy_by_day(history: pd.DataFrame, species: str) -> pd.Series:
         rule, threshold, _ = select_forcing_rule(history, species, before_year=year)
         if rule is not None and threshold is not None:
             year_forcing = forcing_series(daily_temp, rule)[mask]
-            crossed = (year_forcing >= threshold).to_numpy()
+            # A crossing counts only once the rule has started counting
+            # towards this season: an autumn day under a January rule still
+            # holds last season's total.
+            counting = pd.DatetimeIndex(year_forcing.index) >= rule_start(rule, int(year))
+            crossed = (year_forcing >= threshold).to_numpy() & counting
             if crossed.any():
                 crossing_day = pd.Timestamp(year_forcing.index[int(np.argmax(crossed))])
                 # Only from the crossing onwards — before it, we did not know.
-                year_est[crossed] = float(crossing_day.dayofyear)
+                # Day-of-year relative to the season's year: negative for a
+                # December crossing, so days-since stays continuous.
+                jan1 = pd.Timestamp(year=int(year), month=1, day=1)
+                year_est[crossed] = float((crossing_day - jan1).days + 1)
 
-        estimate[mask] = year_est
+        # November and December carry next season's estimate, expressed in
+        # their own year's day-of-year frame (past the year's end), so that
+        # ``doy - estimate`` counts down to the coming onset without a reset.
+        days_in_prev = np.where(
+            pd.DatetimeIndex(idx[mask]).year < year,
+            np.array([pd.Timestamp(year=int(year) - 1, month=12, day=31).dayofyear]),
+            0,
+        )
+        estimate[mask] = year_est + days_in_prev
 
     return estimate
 

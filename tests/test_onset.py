@@ -210,11 +210,15 @@ def test_rule_selection_is_walk_forward():
 
 
 def test_projection_switches_off_for_a_climatology_species():
-    """With the calendar winning, the per-day estimate is flat all year."""
+    """With the calendar winning, the per-day estimate is flat all season."""
     history = build_history({2019: 40, 2020: 40, 2021: 40, 2022: 40, 2023: 40, 2024: 40})
     estimates = onset_doy_by_day(history, SPECIES)
-    year = estimates[pd.DatetimeIndex(estimates.index).year == 2024]
-    assert year.nunique() == 1 and float(year.iloc[0]) == 40.0
+    idx = pd.DatetimeIndex(estimates.index)
+    season = estimates[(idx.year == 2024) & (idx.month < 11)]
+    assert season.nunique() == 1 and float(season.iloc[0]) == 40.0
+    # From November the estimate is next season's, past the year's end.
+    winter = estimates[(idx.year == 2024) & (idx.month >= 11)]
+    assert winter.nunique() == 1 and float(winter.iloc[0]) == 366.0 + 40.0
 
 
 def test_a_run_with_implausibly_little_forcing_is_not_the_onset():
@@ -267,3 +271,92 @@ def test_readiness_threshold_is_walk_forward():
     before = readiness_by_day(build_history(base), SPECIES).loc["2024-03-01", "threshold"]
     after = readiness_by_day(build_history(shifted), SPECIES).loc["2024-03-01", "threshold"]
     assert before == pytest.approx(after)
+
+
+# --- December continuity (B.7) ----------------------------------------------
+
+
+def build_winter_history(december_temp: dict[int, float], threshold: float = 700.0) -> pd.DataFrame:
+    """Seasons whose onset is fixed by the forcing accumulated *from 1 November*.
+
+    Every day is 8 °C except November and December, whose temperature is set
+    per year; each season opens on the day the forcing since 1 November of
+    the year before reaches *threshold*. A rule that starts on 1 January sees
+    only ``8 × doy`` at those onsets, which varies with the winter, so the
+    November rule is the only one that projects them.
+    """
+    years = sorted(december_temp)
+    rows = []
+    for year in [years[0] - 1] + years:
+        winter_before = december_temp.get(year - 1, 6.0)
+        onset = int(round((threshold - 61 * winter_before) / 8.0)) if year in years else 999
+        day = pd.Timestamp(year=year, month=1, day=1)
+        while day.year == year:
+            doy = day.dayofyear
+            rows.append({
+                "date": day,
+                "species": SPECIES,
+                "value": float(LOW_MAX * 3) if onset <= doy < onset + 40 else 0.0,
+                "temperature_mean": december_temp.get(year, 6.0) if day.month >= 11 else 8.0,
+            })
+            day += pd.Timedelta(days=1)
+    return pd.DataFrame(rows)
+
+
+def test_autumn_rule_accumulates_across_the_year_boundary():
+    from src.onset import daily_temperature, forcing_series
+
+    history = build_winter_history({2019: 4.0, 2020: 6.0, 2021: 8.0})
+    temp = daily_temperature(history)
+    november = forcing_series(temp, ((11, 1), 0.0))
+    january = forcing_series(temp, ((1, 1), 0.0))
+    assert november.loc["2020-01-01"] == pytest.approx(61 * 4.0 + 8.0)
+    assert january.loc["2020-01-01"] == pytest.approx(8.0)
+    assert november.loc["2020-11-01"] == pytest.approx(6.0), "the next season restarts on 1 November"
+    assert november.loc["2020-10-31"] > 2000, "and the old one keeps counting until then"
+
+
+def test_a_warm_december_season_selects_the_november_rule():
+    from src.onset import select_forcing_rule
+
+    history = build_winter_history(
+        {2018: 6.0, 2019: 4.0, 2020: 8.0, 2021: 5.0, 2022: 7.0, 2023: 3.0, 2024: 6.0}
+    )
+    rule, threshold, loo = select_forcing_rule(history, SPECIES, before_year=2025)
+    assert rule == ((11, 1), 0.0), rule
+    assert loo < 2.0
+    assert threshold == pytest.approx(700.0, abs=8.0)
+
+
+def test_the_estimate_counts_down_through_december_without_a_reset():
+    """days-since-onset must step by one from 31 December to 1 January."""
+    history = build_winter_history(
+        {2018: 6.0, 2019: 4.0, 2020: 8.0, 2021: 5.0, 2022: 7.0, 2023: 3.0, 2024: 6.0, 2025: 5.0}
+    )
+    estimates = onset_doy_by_day(history, SPECIES)
+    dec31 = pd.Timestamp("2024-12-31")
+    jan1 = pd.Timestamp("2025-01-01")
+    since_dec31 = dec31.dayofyear - estimates.loc[dec31]
+    since_jan1 = jan1.dayofyear - estimates.loc[jan1]
+    assert since_jan1 - since_dec31 == pytest.approx(1.0)
+    assert since_dec31 < 0, "December sits before the coming season, not 300 days after the last"
+    # A January rule species gets the same continuity from the climatology.
+    plain = build_history({2019: 40, 2020: 42, 2021: 44, 2022: 46, 2023: 41, 2024: 43})
+    est = onset_doy_by_day(plain, SPECIES)
+    d, j = pd.Timestamp("2024-12-30"), pd.Timestamp("2024-12-29")
+    assert est.loc[d] == pytest.approx(est.loc[j])
+    assert est.loc[d] > 365
+
+
+def test_readiness_in_december_is_the_coming_seasons():
+    from src.onset import readiness_by_day, rules_by_year
+
+    history = build_winter_history(
+        {2018: 6.0, 2019: 4.0, 2020: 8.0, 2021: 5.0, 2022: 7.0, 2023: 3.0, 2024: 6.0, 2025: 5.0}
+    )
+    table = readiness_by_day(history, SPECIES)
+    (_, thr_2025), = rules_by_year(history, SPECIES, [2025]).values()
+    assert table.loc["2024-12-15", "threshold"] == pytest.approx(thr_2025)
+    dec = table.loc["2024-11-01":"2024-12-31", "forcing"].to_numpy()
+    assert dec[0] == pytest.approx(6.0) and np.all(np.diff(dec) > 0)
+    assert table.loc["2025-01-01", "forcing"] == pytest.approx(dec[-1] + 8.0)
