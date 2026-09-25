@@ -16,6 +16,31 @@ Two rules carried over from the first list still hold:
 * Feature changes are edits to the lists in `src/types.py` plus a retrain;
   data changes are a backfill plus a retrain. Both are cheap to A/B.
 
+## Open points (2026-09-25)
+
+Everything on the list below has been done, tried, or benchmarked and kept
+as it was. What remains open is what none of it could settle:
+
+1. **The heavy-year ramp.** Betula 2024 and 2026 still get 6–18% of what
+   arrives in days 5–9 of the season (B.6, B.8). The season's *amount* is
+   not visible in any feature the model has; it needs a source that sees
+   the season before Munich does — a station far to the south-west, or a
+   CAMS backfill (the CAMS feature exists but has never had data). This
+   is the one item with real product value left, and it is blocked on
+   data, not modelling.
+2. **Mould, sampler regime.** The Munich station's spore counts changed
+   scale in 2024 (2019–2023 median 9, 2024+ median 46) and the model trains
+   across both. A regime feature or a 2024+ training window is the next
+   experiment if the level accuracy (81% at day 1) is not enough (F.1). The
+   upwind stations' spore series is in the block but did not measurably
+   help.
+3. **Mould, frontend.** `forecast.json` now carries a `Fungus` series; the
+   Vue app has no label or thresholds for it. That is the other repository.
+4. **Parked variants** on `claude/forecast-app-review-xwisqv`: A.5 (NaN
+   passthrough), B.8 (upwind season load), B.7 (autumn forcing starts).
+   B.7 is worth re-running once twelve seasons exist; the other two lost
+   on the benchmark and are kept only as a record.
+
 ## What the second review found
 
 **The feature list is fine. The data behind ten of the sixty features is not.**
