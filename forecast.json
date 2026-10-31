@@ -1,0 +1,473 @@
+{
+  "generated": "2026-10-31T20:24:01.647944Z",
+  "location": "DEMUNC",
+  "measurements": [
+    {
+      "polle": "Fungus",
+      "location": "DEMUNC",
+      "data": [
+        {
+          "from": 1793401200,
+          "to": 1793412000,
+          "value": 116.3,
+          "level": "low",
+          "confidence": 1.0,
+          "confidence_within_one": 1.0,
+          "value_low": 116.3,
+          "value_high": 116.3
+        },
+        {
+          "from": 1793412000,
+          "to": 1793422800,
+          "value": 80.6,
+          "level": "low",
+          "confidence": 1.0,
+          "confidence_within_one": 1.0,
+          "value_low": 80.6,
+          "value_high": 80.6
+        },
+        {
+          "from": 1793422800,
+          "to": 1793433600,
+          "value": 52.5,
+          "level": "low",
+          "confidence": 1.0,
+          "confidence_within_one": 1.0,
+          "value_low": 52.5,
+          "value_high": 52.5
+        },
+        {
+          "from": 1793433600,
+          "to": 1793444400,
+          "value": 16.9,
+          "level": "low",
+          "confidence": 1.0,
+          "confidence_within_one": 1.0,
+          "value_low": 16.9,
+          "value_high": 16.9
+        },
+        {
+          "from": 1793444400,
+          "to": 1793455200,
+          "value": 69.4,
+          "level": "low",
+          "confidence": 1.0,
+          "confidence_within_one": 1.0,
+          "value_low": 69.4,
+          "value_high": 69.4
+        },
+        {
+          "from": 1793466000,
+          "to": 1793476800,
+          "value": 30.1,
+          "level": "low",
+          "confidence": 0.579,
+          "confidence_within_one": 0.918,
+          "value_low": 4.0,
+          "value_high": 91.9
+        },
+        {
+          "from": 1793476800,
+          "to": 1793487600,
+          "value": 16.5,
+          "level": "low",
+          "confidence": 0.579,
+          "confidence_within_one": 0.918,
+          "value_low": 1.8,
+          "value_high": 51.3
+        },
+        {
+          "from": 1793487600,
+          "to": 1793498400,
+          "value": 11.5,
+          "level": "low",
+          "confidence": 0.867,
+          "confidence_within_one": 0.99,
+          "value_low": 1.0,
+          "value_high": 36.4
+        },
+        {
+          "from": 1793498400,
+          "to": 1793509200,
+          "value": 9.7,
+          "level": "low",
+          "confidence": 0.867,
+          "confidence_within_one": 0.99,
+          "value_low": 0.7,
+          "value_high": 31.0
+        },
+        {
+          "from": 1793509200,
+          "to": 1793520000,
+          "value": 10.9,
+          "level": "low",
+          "confidence": 0.867,
+          "confidence_within_one": 0.99,
+          "value_low": 0.9,
+          "value_high": 34.4
+        },
+        {
+          "from": 1793520000,
+          "to": 1793530800,
+          "value": 22.5,
+          "level": "low",
+          "confidence": 0.867,
+          "confidence_within_one": 0.99,
+          "value_low": 2.8,
+          "value_high": 69.2
+        },
+        {
+          "from": 1793530800,
+          "to": 1793541600,
+          "value": 49.7,
+          "level": "low",
+          "confidence": 0.867,
+          "confidence_within_one": 0.99,
+          "value_low": 7.1,
+          "value_high": 150.4
+        },
+        {
+          "from": 1793541600,
+          "to": 1793552400,
+          "value": 38.1,
+          "level": "low",
+          "confidence": 0.867,
+          "confidence_within_one": 0.99,
+          "value_low": 5.2,
+          "value_high": 115.7
+        },
+        {
+          "from": 1793552400,
+          "to": 1793563200,
+          "value": 26.7,
+          "level": "low",
+          "confidence": 0.868,
+          "confidence_within_one": 0.988,
+          "value_low": 3.3,
+          "value_high": 82.3
+        },
+        {
+          "from": 1793563200,
+          "to": 1793574000,
+          "value": 18.0,
+          "level": "low",
+          "confidence": 0.868,
+          "confidence_within_one": 0.988,
+          "value_low": 2.0,
+          "value_high": 56.2
+        },
+        {
+          "from": 1793574000,
+          "to": 1793584800,
+          "value": 10.8,
+          "level": "low",
+          "confidence": 0.902,
+          "confidence_within_one": 0.99,
+          "value_low": 0.8,
+          "value_high": 34.6
+        },
+        {
+          "from": 1793584800,
+          "to": 1793595600,
+          "value": 9.7,
+          "level": "low",
+          "confidence": 0.902,
+          "confidence_within_one": 0.99,
+          "value_low": 0.7,
+          "value_high": 31.1
+        },
+        {
+          "from": 1793595600,
+          "to": 1793606400,
+          "value": 8.4,
+          "level": "low",
+          "confidence": 0.902,
+          "confidence_within_one": 0.99,
+          "value_low": 0.5,
+          "value_high": 27.3
+        },
+        {
+          "from": 1793606400,
+          "to": 1793617200,
+          "value": 19.4,
+          "level": "low",
+          "confidence": 0.902,
+          "confidence_within_one": 0.99,
+          "value_low": 2.2,
+          "value_high": 60.4
+        },
+        {
+          "from": 1793617200,
+          "to": 1793628000,
+          "value": 31.3,
+          "level": "low",
+          "confidence": 0.902,
+          "confidence_within_one": 0.99,
+          "value_low": 4.0,
+          "value_high": 96.0
+        },
+        {
+          "from": 1793628000,
+          "to": 1793638800,
+          "value": 31.6,
+          "level": "low",
+          "confidence": 0.902,
+          "confidence_within_one": 0.99,
+          "value_low": 4.1,
+          "value_high": 97.0
+        },
+        {
+          "from": 1793638800,
+          "to": 1793649600,
+          "value": 22.9,
+          "level": "low",
+          "confidence": 0.898,
+          "confidence_within_one": 0.99,
+          "value_low": 2.6,
+          "value_high": 72.1
+        },
+        {
+          "from": 1793649600,
+          "to": 1793660400,
+          "value": 13.6,
+          "level": "low",
+          "confidence": 0.898,
+          "confidence_within_one": 0.99,
+          "value_low": 1.2,
+          "value_high": 43.8
+        },
+        {
+          "from": 1793660400,
+          "to": 1793671200,
+          "value": 8.4,
+          "level": "low",
+          "confidence": 0.864,
+          "confidence_within_one": 0.989,
+          "value_low": 0.4,
+          "value_high": 27.8
+        },
+        {
+          "from": 1793671200,
+          "to": 1793682000,
+          "value": 10.9,
+          "level": "low",
+          "confidence": 0.864,
+          "confidence_within_one": 0.989,
+          "value_low": 0.8,
+          "value_high": 35.4
+        },
+        {
+          "from": 1793682000,
+          "to": 1793692800,
+          "value": 8.9,
+          "level": "low",
+          "confidence": 0.864,
+          "confidence_within_one": 0.989,
+          "value_low": 0.5,
+          "value_high": 29.3
+        },
+        {
+          "from": 1793692800,
+          "to": 1793703600,
+          "value": 28.3,
+          "level": "low",
+          "confidence": 0.864,
+          "confidence_within_one": 0.989,
+          "value_low": 3.5,
+          "value_high": 88.7
+        },
+        {
+          "from": 1793703600,
+          "to": 1793714400,
+          "value": 43.8,
+          "level": "low",
+          "confidence": 0.864,
+          "confidence_within_one": 0.989,
+          "value_low": 5.8,
+          "value_high": 136.3
+        },
+        {
+          "from": 1793714400,
+          "to": 1793725200,
+          "value": 40.5,
+          "level": "low",
+          "confidence": 0.864,
+          "confidence_within_one": 0.989,
+          "value_low": 5.3,
+          "value_high": 126.2
+        },
+        {
+          "from": 1793725200,
+          "to": 1793736000,
+          "value": 26.2,
+          "level": "low",
+          "confidence": 0.87,
+          "confidence_within_one": 0.987,
+          "value_low": 3.1,
+          "value_high": 82.4
+        },
+        {
+          "from": 1793736000,
+          "to": 1793746800,
+          "value": 17.6,
+          "level": "low",
+          "confidence": 0.87,
+          "confidence_within_one": 0.987,
+          "value_low": 1.8,
+          "value_high": 56.0
+        },
+        {
+          "from": 1793746800,
+          "to": 1793757600,
+          "value": 9.5,
+          "level": "low",
+          "confidence": 0.857,
+          "confidence_within_one": 0.984,
+          "value_low": 0.6,
+          "value_high": 31.3
+        },
+        {
+          "from": 1793757600,
+          "to": 1793768400,
+          "value": 9.7,
+          "level": "low",
+          "confidence": 0.857,
+          "confidence_within_one": 0.984,
+          "value_low": 0.6,
+          "value_high": 31.9
+        },
+        {
+          "from": 1793768400,
+          "to": 1793779200,
+          "value": 15.5,
+          "level": "low",
+          "confidence": 0.857,
+          "confidence_within_one": 0.984,
+          "value_low": 1.5,
+          "value_high": 49.6
+        },
+        {
+          "from": 1793779200,
+          "to": 1793790000,
+          "value": 28.2,
+          "level": "low",
+          "confidence": 0.857,
+          "confidence_within_one": 0.984,
+          "value_low": 3.4,
+          "value_high": 88.6
+        },
+        {
+          "from": 1793790000,
+          "to": 1793800800,
+          "value": 46.0,
+          "level": "low",
+          "confidence": 0.857,
+          "confidence_within_one": 0.984,
+          "value_low": 6.1,
+          "value_high": 143.1
+        },
+        {
+          "from": 1793800800,
+          "to": 1793811600,
+          "value": 40.8,
+          "level": "low",
+          "confidence": 0.857,
+          "confidence_within_one": 0.984,
+          "value_low": 5.3,
+          "value_high": 127.4
+        },
+        {
+          "from": 1793811600,
+          "to": 1793822400,
+          "value": 28.1,
+          "level": "low",
+          "confidence": 0.858,
+          "confidence_within_one": 0.989,
+          "value_low": 3.3,
+          "value_high": 88.1
+        },
+        {
+          "from": 1793822400,
+          "to": 1793833200,
+          "value": 17.3,
+          "level": "low",
+          "confidence": 0.858,
+          "confidence_within_one": 0.989,
+          "value_low": 1.7,
+          "value_high": 55.2
+        }
+      ]
+    }
+  ],
+  "status": {
+    "degraded": false,
+    "observations": {
+      "last": "2026-10-31T15:00:00",
+      "age_windows": 1,
+      "stale": false,
+      "species": {
+        "Alnus": {
+          "last": "2026-10-31T15:00:00",
+          "age_windows": 1,
+          "stale": false
+        },
+        "Ambrosia": {
+          "last": "2026-10-31T15:00:00",
+          "age_windows": 1,
+          "stale": false
+        },
+        "Artemisia": {
+          "last": "2026-10-31T15:00:00",
+          "age_windows": 1,
+          "stale": false
+        },
+        "Betula": {
+          "last": "2026-10-31T15:00:00",
+          "age_windows": 1,
+          "stale": false
+        },
+        "Corylus": {
+          "last": "2026-10-31T15:00:00",
+          "age_windows": 1,
+          "stale": false
+        },
+        "Fraxinus": {
+          "last": "2026-10-31T15:00:00",
+          "age_windows": 1,
+          "stale": false
+        },
+        "Fungus": {
+          "last": "2026-10-31T15:00:00",
+          "age_windows": 1,
+          "stale": false
+        },
+        "Poaceae": {
+          "last": "2026-10-31T15:00:00",
+          "age_windows": 1,
+          "stale": false
+        },
+        "Populus": {
+          "last": "2026-10-31T15:00:00",
+          "age_windows": 1,
+          "stale": false
+        },
+        "Quercus": {
+          "last": "2026-10-31T15:00:00",
+          "age_windows": 1,
+          "stale": false
+        },
+        "Salix": {
+          "last": "2026-10-31T15:00:00",
+          "age_windows": 1,
+          "stale": false
+        },
+        "Urtica": {
+          "last": "2026-10-31T15:00:00",
+          "age_windows": 1,
+          "stale": false
+        }
+      }
+    },
+    "defaulted": {}
+  }
+}
