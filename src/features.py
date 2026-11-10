@@ -258,11 +258,14 @@ def build_context(
 
     combined = combined_weather(history, weather)
 
-    # Onset estimates and thresholds come from the real measurements.
-    onset_by_species = {sp: onset_doy_by_day(history, sp) for sp in species_list}
-    onset_fallback = {sp: _static_onset_doy(sp) for sp in species_list}
-    # Readiness must keep accumulating through the forecast days, so the
-    # temperature it is built on is the combined frame's, not the history's.
+    # The onset calibration comes from the real measurements; the forcing it
+    # is read against must keep accumulating through the forecast days, so
+    # the temperature is the combined frame's, not the history's. The onset
+    # estimate used to be read off the history alone: a crossing the forecast
+    # already contained was not seen, and `days_since_typical_onset` kept
+    # counting from the calendar date on the very days the season started —
+    # 16 where a training row of the same day reads 0 (hazel, forecast
+    # issued 2026-02-11).
     combined_daily_temp = (
         combined["temperature_mean"]
         .groupby(pd.DatetimeIndex(combined.index).normalize())
@@ -270,6 +273,10 @@ def build_context(
         .dropna()
         .sort_index()
     )
+    onset_by_species = {
+        sp: onset_doy_by_day(history, sp, daily_temp=combined_daily_temp) for sp in species_list
+    }
+    onset_fallback = {sp: _static_onset_doy(sp) for sp in species_list}
     readiness_by_species = {
         sp: readiness_by_day(history, sp, daily_temp=combined_daily_temp) for sp in species_list
     }

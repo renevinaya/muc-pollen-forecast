@@ -332,3 +332,49 @@ def test_days_since_active_counts_gap_windows(history: pd.DataFrame) -> None:
     assert batch.loc[origin, "days_since_active"] == expected
     # Row-based counting would have been shorter by the gap's 32 windows.
     assert expected > 32
+
+
+# --- The onset estimate through the forecast (G.2d) ---------------------------
+
+
+def test_a_crossing_inside_the_forecast_is_served_as_it_is_trained() -> None:
+    """Forecast windows after a forcing crossing read the crossing, not the calendar.
+
+    The fixture above is one year long and never calibrates a threshold, so
+    it cannot see this. Here three seasons calibrate one, and the forecast is
+    issued ten days before the fourth year's forcing reaches it. The trainer
+    switches ``days_since_typical_onset`` to count from the crossing on the
+    day it happens; the forecaster has to do the same on a day that lies in
+    its weather forecast, not in its history.
+    """
+    from src.onset import onset_doy_by_day
+
+    history = build_history(days=1203, species_list=[SPECIES])  # to mid-April of year four
+    estimate = onset_doy_by_day(history, SPECIES)
+    year = estimate[estimate.index.year == 2024]
+    crossing = year[year != year.iloc[0]]
+    assert not crossing.empty, "the fixture's fourth year must reach its threshold"
+    crossing_day = crossing.index[0]
+
+    batch = trainer_features(history, SPECIES, lead=8)
+    origin = crossing_day - pd.Timedelta(days=4)
+    windows = pd.DatetimeIndex(batch.index)
+    windows = windows[(windows >= origin) & (windows < crossing_day + pd.Timedelta(days=3))]
+    assert windows.min() < crossing_day < windows.max()
+
+    served = serving_features(history, SPECIES, windows, lead=8)
+    for col in ("days_since_typical_onset", "onset_anomaly", "gdd_above_threshold"):
+        expected = batch.loc[windows, col].to_numpy(dtype=float)
+        actual = served[col].to_numpy(dtype=float)
+        assert np.allclose(expected, actual, atol=1e-6), (
+            f"{col}: train {expected[[0, -1]]}, serve {actual[[0, -1]]}"
+        )
+    # And the test is not vacuous: after the crossing the feature counts from
+    # the crossing day, which is not the calendar date it counted from before
+    # — the value the forecaster used to keep serving.
+    last = windows.max()
+    from_crossing = float(last.dayofyear - crossing_day.dayofyear)
+    from_calendar = float(last.dayofyear - year.iloc[0])
+    assert from_crossing != from_calendar
+    assert served.loc[last, "days_since_typical_onset"] == pytest.approx(from_crossing)
+

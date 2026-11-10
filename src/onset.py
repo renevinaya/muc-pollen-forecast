@@ -584,8 +584,16 @@ def readiness_by_day(
     return pd.DataFrame({"forcing": forcing, "threshold": threshold})
 
 
-def onset_doy_by_day(history: pd.DataFrame, species: str) -> pd.Series:
+def onset_doy_by_day(
+    history: pd.DataFrame, species: str, daily_temp: pd.Series | None = None
+) -> pd.Series:
     """Causal onset estimate for every day in *history*, indexed by day.
+
+    *history* is what the candidates are calibrated on; *daily_temp* is where
+    their crossings are read, and may run past the history — the forecaster
+    passes the combined measured-plus-forecast temperature, so a crossing the
+    weather forecast already contains is seen on the forecast day it falls
+    on, exactly as a training row of that day sees it.
 
     For each day the answer is the best estimate available *on that day*:
 
@@ -601,7 +609,8 @@ def onset_doy_by_day(history: pd.DataFrame, species: str) -> pd.Series:
     season is running early or late as soon as the warmth confirms it, and it
     is the same rule the forecaster applies, so there is no train/serve skew.
     """
-    daily_temp = daily_temperature(history)
+    if daily_temp is None:
+        daily_temp = daily_temperature(history)
     if daily_temp.empty:
         return pd.Series(dtype=float)
 
