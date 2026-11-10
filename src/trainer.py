@@ -742,12 +742,16 @@ _SPECIES_HYPERPARAMS: dict[str, dict[str, int | float]] = {
     "Poaceae": {"clf_depth": 5, "reg_depth": 6, "reg_n": 400, "quantile": 0.90},
     "Quercus": {"clf_depth": 5, "reg_depth": 6, "reg_n": 400, "quantile": 0.88},
     "Populus": {"clf_depth": 4, "reg_depth": 6, "reg_n": 400, "quantile": 0.88},
-    # Mould spores (F.1): tuned on the rollout benchmark rather than inherited.
-    # The pollen default (quantile 0.85) gives a bias of +11 spores/m3 and 12%
-    # skill against persistence; 0.7 is unbiased at 24%, and the tree shape
-    # barely matters (MAE 28.8-29.8 across depths 3-7). Stage 3 stays at the
-    # default threshold: None, 100, 200 and 400 were all within 0.4 MAE.
-    "Fungus":  {"clf_depth": 4, "reg_depth": 5, "reg_n": 600, "quantile": 0.70},
+    # Mould spores: tuned on the rollout benchmark rather than inherited. On
+    # the official station series the quantile moves the bias and the level
+    # accuracy and hardly the error (0.70: MAE 22.8, bias -13.8, level 75.6%;
+    # 0.80: 22.5 / -10.7 / 77.2%; 0.85: 22.7 / -7.9 / 78.9%; 0.90: 22.8 /
+    # -4.9 / 78.8%), so it is the pollen default's 0.85. It was 0.70 (F.1) on
+    # the merged series, where the second instrument's spore counts ran two
+    # to eight times the official ones and 0.85 was a +11 bias. The tree
+    # shape barely matters (MAE within a point across depths 3-7), and
+    # stage 3 stays at the default threshold.
+    "Fungus":  {"clf_depth": 4, "reg_depth": 5, "reg_n": 600, "quantile": 0.85},
 }
 _DEFAULT_HYPERPARAMS: dict[str, int | float] = {"clf_depth": 4, "reg_depth": 5, "reg_n": 300, "quantile": 0.85}
 
