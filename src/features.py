@@ -182,10 +182,8 @@ def calendar_features(dt: pd.Timestamp) -> dict[str, float]:
     doy = dt.day_of_year
     hour = dt.hour
     return {
-        "day_of_year": float(doy),
         "day_of_year_sin": float(np.sin(2 * np.pi * doy / 365.25)),
         "day_of_year_cos": float(np.cos(2 * np.pi * doy / 365.25)),
-        "month": float(dt.month),
         "hour_of_day": float(hour),
         "hour_sin": float(np.sin(2 * np.pi * hour / 24)),
         "hour_cos": float(np.cos(2 * np.pi * hour / 24)),

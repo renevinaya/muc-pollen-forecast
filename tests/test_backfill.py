@@ -28,7 +28,6 @@ def build_history(days: int = 30, start: str = "2024-01-01") -> pd.DataFrame:
             row["boundary_layer_height"] = np.nan
             row["soil_temperature_mean"] = np.nan
             row["ndvi"] = 0.0
-            row["evi"] = 0.0
             row["ndvi_delta"] = 0.0
             rows.append(row)
     return pd.DataFrame(rows)
@@ -124,7 +123,7 @@ def test_weather_refresh_chunks_long_spans():
 
 def fake_composites(dates: list[str]):
     def fetch(start, end):
-        return pd.DataFrame({"date": pd.to_datetime(dates), "ndvi": 0.4, "evi": 0.3})
+        return pd.DataFrame({"date": pd.to_datetime(dates), "ndvi": 0.4})
 
     return fetch
 
@@ -135,7 +134,6 @@ def test_ndvi_refresh_fills_the_zero_placeholder():
     assert len(out) == len(history)
     pd.testing.assert_series_equal(out["value"], history["value"])
     assert np.allclose(out["ndvi"], 0.4)
-    assert np.allclose(out["evi"], 0.3)
     for col in WEATHER_COLUMNS:
         pd.testing.assert_series_equal(out[col], history[col])
 

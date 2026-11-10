@@ -321,9 +321,28 @@ def _add_ndvi_features(df: pd.DataFrame) -> pd.DataFrame:
     """Add NDVI features from cached satellite data."""
     df = df.copy()
     # Default to 0 — will be populated by collector; if columns already present, skip
-    for col in ("ndvi", "evi", "ndvi_delta"):
+    for col in NDVI_FEATURES:
         if col not in df.columns:
             df[col] = 0.0
+    return df
+
+
+def _add_calendar_features(df: pd.DataFrame) -> pd.DataFrame:
+    """Calendar and time-of-day features, from the row's timestamp.
+
+    The same definitions as :func:`src.features.calendar_features`, which
+    builds them for one forecast window. They used to be read from columns
+    the collector stored; a function of the timestamp needs no storing.
+    """
+    df = df.copy()
+    dates = pd.DatetimeIndex(pd.to_datetime(df["date"]))
+    doy = dates.dayofyear.to_numpy()
+    hour = dates.hour.to_numpy()
+    df["day_of_year_sin"] = np.sin(2 * np.pi * doy / 365.25)
+    df["day_of_year_cos"] = np.cos(2 * np.pi * doy / 365.25)
+    df["hour_of_day"] = hour.astype(float)
+    df["hour_sin"] = np.sin(2 * np.pi * hour / 24)
+    df["hour_cos"] = np.cos(2 * np.pi * hour / 24)
     return df
 
 
@@ -600,6 +619,7 @@ def prepare_training_data(
     for col in tables.columns:
         species_df[col] = species_df["date"].map(tables[col]).fillna(0.0)
     species_df = _add_ndvi_features(species_df)
+    species_df = _add_calendar_features(species_df)
     species_df = _add_season_feature(species_df, species)
     # The onset calibration reads the temperature of every window of the
     # history, not only of the windows this species was measured in.

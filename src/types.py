@@ -48,19 +48,14 @@ WEATHER_ONLY = "_weather"
 # silently fall back to a constant 0, which turns wind_dir_sin/cos and both
 # transport features into constants without any error.
 WEATHER_COLUMNS = [
-    "temperature_max",
-    "temperature_min",
     "temperature_mean",
     "precipitation_sum",
     "wind_speed_max",
     "wind_direction",
     "humidity_mean",
     "sunshine_duration",
-    "shortwave_radiation_sum",
     "boundary_layer_height",
     "dew_point_mean",
-    "cape_max",
-    "direct_radiation_sum",
     "is_day",
     "temp_slope_3h",
     "humidity_slope_3h",
@@ -69,8 +64,31 @@ WEATHER_COLUMNS = [
     "soil_moisture_mean",
 ]
 
-# The weather columns the model actually reads. Six of WEATHER_COLUMNS are
-# deliberately absent — see the pruning note at FEATURE_COLS.
+# Columns the history stored until November 2026 that nothing read: three
+# weather aggregates and the window's temperature extremes, a second
+# vegetation index, a pollen forecast that was never populated, and calendar
+# values that are functions of the timestamp (the trainer derives the ones it
+# needs, as the forecaster always has). The collector no longer writes them
+# and drops them from the stored file — a third of its columns.
+RETIRED_COLUMNS = [
+    "temperature_max",
+    "temperature_min",
+    "shortwave_radiation_sum",
+    "cape_max",
+    "direct_radiation_sum",
+    "evi",
+    "cams_pollen",
+    "day_of_year",
+    "month",
+    "day_of_year_sin",
+    "day_of_year_cos",
+    "hour_of_day",
+    "hour_sin",
+    "hour_cos",
+]
+
+# The weather columns the model actually reads. `wind_direction` is the one
+# carried column that is absent — see the pruning note at FEATURE_COLS.
 WEATHER_FEATURES = [
     "temperature_mean",
     "precipitation_sum",

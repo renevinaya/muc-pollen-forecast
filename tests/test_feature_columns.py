@@ -104,3 +104,41 @@ def test_gain_report_covers_every_feature() -> None:
 
 def test_model_features_are_a_subset_of_carried_columns() -> None:
     assert not set(WEATHER_FEATURES) - set(WEATHER_COLUMNS)
+
+
+def test_retired_columns_are_not_model_inputs_or_derivation_inputs() -> None:
+    """A column may only be retired if nothing reads it."""
+    from src.types import RETIRED_COLUMNS
+
+    assert not set(RETIRED_COLUMNS) & set(WEATHER_COLUMNS)
+    assert not set(RETIRED_COLUMNS) & set(DERIVATION_INPUTS)
+    # The calendar features are still model inputs — derived, not stored.
+    stored_inputs = set(RETIRED_COLUMNS) & set(FEATURE_COLS)
+    assert stored_inputs == {
+        "day_of_year_sin", "day_of_year_cos", "hour_of_day", "hour_sin", "hour_cos",
+    }
+
+
+def test_writing_the_history_drops_the_retired_columns(tmp_path, monkeypatch) -> None:
+    import src.collector as collector
+    from src.types import RETIRED_COLUMNS
+
+    monkeypatch.setattr(collector, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(collector, "HISTORY_FILE", tmp_path / "history.csv")
+    frame = pd.DataFrame({
+        "date": pd.to_datetime(["2026-11-10 03:00"]), "species": ["Betula"], "value": [0.0],
+        "temperature_mean": [4.2], "cape_max": [float("nan")], "evi": [0.3],
+        "hour_sin": [0.7], "cams_pollen": [0.0],
+    })
+    written = collector.write_history(frame)
+    assert list(written.columns) == ["date", "species", "value", "temperature_mean"]
+    stored = pd.read_csv(tmp_path / "history.csv")
+    assert not set(stored.columns) & set(RETIRED_COLUMNS)
+
+
+def test_calendar_features_do_not_depend_on_stored_columns(history: pd.DataFrame) -> None:
+    """Training derives them from the timestamp, whatever the history carries."""
+    poisoned = history.assign(hour_of_day=-1.0, hour_sin=9.0, day_of_year_sin=9.0)
+    x, _, _ = prepare_training_data(poisoned, SPECIES, leads=(1,))
+    assert set(x["hour_of_day"].unique()) == {0.0, 3.0, 6.0, 9.0, 12.0, 15.0, 18.0, 21.0}
+    assert x["hour_sin"].abs().max() <= 1.0 and x["day_of_year_sin"].abs().max() <= 1.0

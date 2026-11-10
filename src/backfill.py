@@ -43,7 +43,7 @@ WEATHER_CHUNK_DAYS = 366
 # and two are not.
 NDVI_MAX_GAP_DAYS = 32
 
-NDVI_COLUMNS = ["ndvi", "evi", "ndvi_delta"]
+NDVI_COLUMNS = ["ndvi", "ndvi_delta"]
 
 
 def _history_dates(history: pd.DataFrame) -> pd.DatetimeIndex:

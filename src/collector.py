@@ -19,30 +19,11 @@ from .upwind import UPWIND_STATIONS, fetch_upwind, update_upwind
 from .pollen import fetch_measurements_chunked, fetch_pollen, pivot_pollen
 from .weather import fetch_historical_weather, fetch_weather_forecast
 from .ndvi import fetch_ndvi, interpolate_ndvi, set_composites_cache
-from .types import ALL_SPECIES, LOCATION, WEATHER_ONLY
+from .types import ALL_SPECIES, LOCATION, RETIRED_COLUMNS, WEATHER_ONLY
 from .clock import local_now, local_today
 
 DATA_DIR = Path(__file__).parent.parent / "data"
 HISTORY_FILE = DATA_DIR / "history.csv"
-
-
-def _add_calendar_features(df: pd.DataFrame) -> pd.DataFrame:
-    """Add cyclical calendar and time-of-day features from the datetime index."""
-    import numpy as np
-
-    df = df.copy()
-    dt_index = pd.DatetimeIndex(df.index)
-    doy = dt_index.dayofyear
-    df["day_of_year"] = doy
-    df["day_of_year_sin"] = np.sin(2 * np.pi * doy / 365.25)
-    df["day_of_year_cos"] = np.cos(2 * np.pi * doy / 365.25)
-    df["month"] = dt_index.month
-    # Time-of-day features (3h window)
-    hour = dt_index.hour
-    df["hour_of_day"] = hour
-    df["hour_sin"] = np.sin(2 * np.pi * hour / 24)
-    df["hour_cos"] = np.cos(2 * np.pi * hour / 24)
-    return df
 
 
 def _upwind_result(future) -> pd.DataFrame:
@@ -138,9 +119,6 @@ def collect(days: int = 14) -> pd.DataFrame:
     weather = weather[~weather.index.duplicated(keep="first")]
     weather = weather.sort_index()
 
-    # 3. Add calendar features to weather
-    weather = _add_calendar_features(weather)
-
     # 4. Windows the station reported get one row per species; windows it
     #    did not (an outage, or the last few hours it has not published yet)
     #    get one weather-only row. Only windows inside the span the station
@@ -190,7 +168,6 @@ def collect(days: int = 14) -> pd.DataFrame:
                     row[col] = float(ndvi_df.loc[day, col])
             else:
                 row["ndvi"] = 0.0
-                row["evi"] = 0.0
                 row["ndvi_delta"] = 0.0
             rows.append(row)
 
@@ -211,6 +188,19 @@ def drop_superseded_weather_rows(history: pd.DataFrame) -> pd.DataFrame:
         return history
     measured = set(history.loc[~placeholder, "date"])
     return history[~(placeholder & history["date"].isin(measured))]
+
+
+def write_history(history: pd.DataFrame) -> pd.DataFrame:
+    """Write *history* to the history file, without the retired columns.
+
+    Every writer of the file goes through here, so a column nothing reads
+    (:data:`src.types.RETIRED_COLUMNS`) leaves the stored file the first
+    time it is written after being retired.
+    """
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    history = history.drop(columns=[c for c in RETIRED_COLUMNS if c in history.columns])
+    history.to_csv(HISTORY_FILE, index=False)
+    return history
 
 
 def update_history(new_data: pd.DataFrame) -> pd.DataFrame:
@@ -236,6 +226,6 @@ def update_history(new_data: pd.DataFrame) -> pd.DataFrame:
     combined = drop_superseded_weather_rows(combined)
     combined = combined.sort_values(["date", "species"]).reset_index(drop=True)
 
-    combined.to_csv(HISTORY_FILE, index=False)
+    combined = write_history(combined)
     print(f"Updated history: {len(combined)} rows -> {HISTORY_FILE}")
     return combined

@@ -23,10 +23,6 @@ def history() -> pd.DataFrame:
     first = build_history(days=400, seed=3, species_list=[SPECIES])
     second = first.copy()
     second["date"] = second["date"] + pd.DateOffset(years=1)
-    for col in ("day_of_year", "month", "hour_of_day"):
-        second[col] = getattr(pd.DatetimeIndex(second["date"]), {
-            "day_of_year": "dayofyear", "month": "month", "hour_of_day": "hour",
-        }[col]).astype(float)
     return pd.concat([first, second], ignore_index=True)
 
 

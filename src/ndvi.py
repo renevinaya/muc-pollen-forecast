@@ -15,7 +15,6 @@ from __future__ import annotations
 from datetime import date, timedelta
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
 
 from .types import LAT, LON
@@ -24,7 +23,6 @@ from .clock import local_today
 MODIS_API = "https://modis.ornl.gov/rst/api/v1"
 PRODUCT = "MOD13Q1"  # 250m 16-day NDVI
 NDVI_BAND = "250m_16_days_NDVI"
-EVI_BAND = "250m_16_days_EVI"
 SCALE_FACTOR = 10_000.0  # MODIS stores NDVI as int × 10000
 
 DATA_DIR = Path(__file__).parent.parent / "data"
@@ -81,10 +79,10 @@ def fetch_ndvi(
     end: date | None = None,
 ) -> pd.DataFrame:
     """
-    Download MODIS NDVI & EVI composites for Munich from the ORNL DAAC API.
+    Download MODIS NDVI composites for Munich from the ORNL DAAC API.
 
     Returns a DataFrame with columns:
-        date, ndvi, evi
+        date, ndvi
 
     Results are cached locally.  On subsequent calls only the missing
     tail is fetched and appended.
@@ -142,23 +140,17 @@ def fetch_ndvi(
                 by_date[cal] = {}
             if band == NDVI_BAND and val is not None:
                 by_date[cal]["ndvi"] = val / SCALE_FACTOR
-            elif band == EVI_BAND and val is not None:
-                by_date[cal]["evi"] = val / SCALE_FACTOR
 
         for cal, vals in by_date.items():
             if "ndvi" in vals:
                 all_records.append(
-                    {
-                        "date": pd.Timestamp(cal),
-                        "ndvi": vals["ndvi"],
-                        "evi": vals.get("evi", np.nan),
-                    }
+                    {"date": pd.Timestamp(cal), "ndvi": vals["ndvi"]}
                 )
 
         current_start = chunk_end + timedelta(days=1)
 
     if not all_records:
-        return cached if not cached.empty else pd.DataFrame(columns=["date", "ndvi", "evi"])
+        return cached if not cached.empty else pd.DataFrame(columns=["date", "ndvi"])
 
     new_df = pd.DataFrame(all_records).sort_values("date").reset_index(drop=True)
 
@@ -187,15 +179,12 @@ def interpolate_ndvi(composites: pd.DataFrame, dates: pd.DatetimeIndex) -> pd.Da
     Uses cubic interpolation for smooth green-up/senescence curves.
 
     Returns a DataFrame indexed by the requested dates with columns:
-        ndvi, evi, ndvi_delta  (change rate)
+        ndvi, ndvi_delta  (change rate)
     """
     if composites.empty:
-        return pd.DataFrame(
-            {"ndvi": 0.0, "evi": 0.0, "ndvi_delta": 0.0},
-            index=dates,
-        )
+        return pd.DataFrame({"ndvi": 0.0, "ndvi_delta": 0.0}, index=dates)
 
-    comp = composites.set_index("date").sort_index()
+    comp = composites.set_index("date").sort_index()[["ndvi"]]
 
     # Filter out clearly bad values (MODIS fill values)
     comp = comp[(comp["ndvi"] > -0.2) & (comp["ndvi"] < 1.0)]
@@ -208,18 +197,16 @@ def interpolate_ndvi(composites: pd.DataFrame, dates: pd.DatetimeIndex) -> pd.Da
     method: str = "cubic" if comp["ndvi"].notna().sum() >= 4 else "linear"
     try:
         daily["ndvi"] = daily["ndvi"].interpolate(method=method).ffill().bfill()  # type: ignore[arg-type]
-        daily["evi"] = daily["evi"].interpolate(method=method).ffill().bfill()  # type: ignore[arg-type]
     except (ValueError, TypeError):
         # Fall back to linear if cubic fails (e.g., boundary issues)
         daily["ndvi"] = daily["ndvi"].interpolate(method="linear").ffill().bfill()
-        daily["evi"] = daily["evi"].interpolate(method="linear").ffill().bfill()
 
     # NDVI change rate (green-up speed)
     daily["ndvi_delta"] = daily["ndvi"].diff().fillna(0)
 
     # Return only requested dates
     result = daily.reindex(dates).ffill().fillna(0)
-    return result[["ndvi", "evi", "ndvi_delta"]]
+    return result[["ndvi", "ndvi_delta"]]
 
 
 _composites_cache: pd.DataFrame | None = None

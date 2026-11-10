@@ -24,14 +24,16 @@ HOURLY_PARAMS = [
     "wind_direction_10m",
     "relative_humidity_2m",
     "sunshine_duration",
-    "shortwave_radiation",
     # Diurnal pollen-relevant parameters
     "boundary_layer_height",
     "dew_point_2m",
-    "cape",
-    "direct_radiation",
     "is_day",
 ]
+
+# Shortwave and direct radiation and CAPE were requested, aggregated and
+# stored until November 2026, and so were the window's temperature maximum
+# and minimum. Nothing read them: none is a model input and none feeds a
+# derived feature (`cape_max` was NaN on 99.7% of the history's rows).
 
 # Soil parameters — root-zone temperature/moisture drive grass & herbaceous
 # flowering onset better than air temperature alone. The forecast model and the
@@ -50,9 +52,7 @@ def _parse_hourly_response(data: dict[str, Any]) -> pd.DataFrame:
     """Parse an Open-Meteo hourly response and aggregate to 3-hour windows.
 
     Returns a DataFrame indexed by window-start datetime (naive, local time)
-    with the same canonical feature columns as before:
-    temperature_max, temperature_min, temperature_mean, precipitation_sum,
-    wind_speed_max, humidity_mean, sunshine_duration, shortwave_radiation_sum.
+    with the canonical columns of :data:`src.types.WEATHER_COLUMNS`.
     """
     hourly = data["hourly"]
     times = pd.to_datetime(hourly["time"])
@@ -70,14 +70,11 @@ def _parse_hourly_response(data: dict[str, Any]) -> pd.DataFrame:
     grouped = df.groupby("window")
 
     result = pd.DataFrame(index=sorted(grouped.groups.keys(), key=str))
-    result["temperature_max"] = grouped["temperature_2m"].max()
-    result["temperature_min"] = grouped["temperature_2m"].min()
     result["temperature_mean"] = grouped["temperature_2m"].mean()
     result["precipitation_sum"] = grouped["precipitation"].sum()
     result["wind_speed_max"] = grouped["wind_speed_10m"].max()
     result["humidity_mean"] = grouped["relative_humidity_2m"].mean()
     result["sunshine_duration"] = grouped["sunshine_duration"].sum()
-    result["shortwave_radiation_sum"] = grouped["shortwave_radiation"].sum()
 
     # Wind direction: circular mean (can't just average degrees)
     dir_rad = np.radians(df["wind_direction_10m"].fillna(0).astype(float))
@@ -91,8 +88,6 @@ def _parse_hourly_response(data: dict[str, Any]) -> pd.DataFrame:
     # Diurnal weather features (aggregated to 3h windows)
     result["boundary_layer_height"] = grouped["boundary_layer_height"].mean()
     result["dew_point_mean"] = grouped["dew_point_2m"].mean()
-    result["cape_max"] = grouped["cape"].max()
-    result["direct_radiation_sum"] = grouped["direct_radiation"].sum()
     result["is_day"] = grouped["is_day"].max()  # 1.0 if any hour in window is daytime
 
     # Finer resolution features: slopes within each 3h window

@@ -22,7 +22,7 @@ def build_history(days: int = 20) -> pd.DataFrame:
         row = {"date": dt, "species": "Betula", "value": 1.0}
         for col in WEATHER_COLUMNS:
             row[col] = 3.0
-        row.update({"ndvi": 0.5, "evi": 0.4, "ndvi_delta": 0.01})
+        row.update({"ndvi": 0.5, "ndvi_delta": 0.01})
         rows.append(row)
     return pd.DataFrame(rows)
 

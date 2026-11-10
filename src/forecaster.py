@@ -130,9 +130,7 @@ def _fetch_ndvi(days: pd.DatetimeIndex, defaulted: dict[str, str]) -> pd.DataFra
     except Exception as exc:
         print(f"  NDVI fetch failed ({exc}), using defaults")
         defaulted["ndvi"] = f"fetch failed ({exc}); zeros"
-        return pd.DataFrame(
-            {"ndvi": 0.0, "evi": 0.0, "ndvi_delta": 0.0}, index=days
-        )
+        return pd.DataFrame({"ndvi": 0.0, "ndvi_delta": 0.0}, index=days)
     if table.empty or not (table["ndvi"] != 0).any():
         defaulted["ndvi"] = "no composites; zeros"
     return table

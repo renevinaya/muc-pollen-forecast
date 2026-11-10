@@ -37,8 +37,8 @@ ML-based pollen forecast for Munich at 3-hour resolution, using a three-stage XG
 | Source | API | What it provides |
 |--------|-----|------------------|
 | [LGL Bayern ePIN](https://d1ppjuhp1nvtc2.cloudfront.net/measurements) | Pollen and spore measurements | The official station series: 3-hour pollen counts and the fungal-spore aggregate (`Fungus`) for Munich (station DEMUNC, 2019+), plus the four ePIN stations around it (Mindelheim, Altötting, Feucht, Viechtach) as upwind context — see [One station, one series](#one-station-one-series), [Upwind stations](#upwind-stations) and [Mould spores](#mould-spores) |
-| [Open-Meteo](https://open-meteo.com/) | Weather forecast + historical archive | Hourly weather aggregated to 3-hour windows: temperature, precipitation, wind, humidity, sunshine, radiation, boundary layer height, dew point, CAPE, direct radiation, soil temperature + moisture (no API key required) |
-| [MODIS (ORNL DAAC)](https://modis.ornl.gov/rst/api/v1) | NDVI / EVI satellite data | MOD13Q1 250 m 16-day vegetation indices, cubic-interpolated to daily resolution |
+| [Open-Meteo](https://open-meteo.com/) | Weather forecast + historical archive | Hourly weather aggregated to 3-hour windows: temperature, precipitation, wind speed and direction, humidity, sunshine, boundary layer height, dew point, day/night, soil temperature + moisture (no API key required) |
+| [MODIS (ORNL DAAC)](https://modis.ornl.gov/rst/api/v1) | NDVI satellite data | MOD13Q1 250 m 16-day vegetation index, cubic-interpolated to daily resolution |
 | [DWD Open Data](https://opendata.dwd.de/) | Pollenflug-Gefahrenindex | Official pollen danger levels for Oberbayern (partregion 121) — used both for benchmarking and an inference-time level blend |
 
 ## Model
@@ -104,11 +104,19 @@ They accounted for 13.3% of measured gain, and dropping them made the model
 slightly *better* at every horizon — gain share counts how often trees could
 split on a feature, not whether it helped.
 
-Note `WEATHER_COLUMNS` (what the pipeline carries) is deliberately larger than
-`WEATHER_FEATURES` (what the model reads): `wind_direction`, for one, is no
-longer a model input but is still needed to derive `wind_dir_sin/cos` and
-`transport_south`. Removing it from the carried set would silently turn those
-into constants, which is what `tests/test_feature_columns.py` guards.
+`WEATHER_COLUMNS` (what the pipeline carries) is `WEATHER_FEATURES` (what the
+model reads) plus `wind_direction`, which is no longer a model input but is
+still needed to derive `wind_dir_sin/cos` and `transport_south`. Removing it
+from the carried set would silently turn those into constants, which is what
+`tests/test_feature_columns.py` guards.
+
+Everything else the pipeline used to fetch and store without reading is gone
+since November 2026 (`RETIRED_COLUMNS` in `src/types.py`): shortwave and
+direct radiation, CAPE (NaN on 99.7% of rows), the window's temperature
+extremes, EVI, the never-populated `cams_pollen`, and seven calendar columns
+that are functions of the timestamp — the trainer derives the five the model
+uses, as the forecaster always has. That is fourteen of the stored file's
+thirty-three columns.
 
 ### Direct forecasting
 

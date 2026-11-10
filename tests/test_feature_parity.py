@@ -18,6 +18,7 @@ import pytest
 
 from src.features import LagState, build_context, build_feature_row, ndvi_from_history
 from src.trainer import (
+    _add_calendar_features,
     _add_intraday_features,
     _add_lag_features,
     _add_load_features,
@@ -82,19 +83,14 @@ def build_history(
         # species row for one window carries identical columns, which is what
         # the collector writes and what the derived features assume.
         window = {
-            "temperature_max": temp[i] + 1.0,
-            "temperature_min": temp[i] - 1.0,
             "temperature_mean": temp[i],
             "precipitation_sum": float(rng.random() < 0.2) * rng.random() * 3,
             "wind_speed_max": 5 + rng.random() * 15,
             "wind_direction": rng.random() * 360,
             "humidity_mean": 50 + rng.random() * 40,
             "sunshine_duration": daylight * 3600,
-            "shortwave_radiation_sum": daylight * 800,
             "boundary_layer_height": 200 + daylight * 1200,
             "dew_point_mean": temp[i] - 4,
-            "cape_max": rng.random() * 50,
-            "direct_radiation_sum": daylight * 600,
             "is_day": float(6 <= dt.hour <= 18),
             "temp_slope_3h": rng.normal(0, 1),
             "humidity_slope_3h": rng.normal(0, 4),
@@ -104,19 +100,10 @@ def build_history(
             # NDVI is a daily product: the collector writes one value across
             # all eight windows of a day, so it must not vary within a day.
             "ndvi": _ndvi(dt.dayofyear),
-            "evi": 0.2 + 0.3 * max(0.0, np.sin(np.pi * dt.dayofyear / 365)),
             "ndvi_delta": _ndvi(dt.dayofyear) - _ndvi(dt.dayofyear - 1),
-            # Calendar features live in history.csv: the collector writes them
-            # at fetch time, so the trainer reads rather than derives them. The
-            # forecaster derives them from the timestamp, and that pair is
-            # exactly what this test has to compare.
-            "day_of_year": float(dt.dayofyear),
-            "day_of_year_sin": float(np.sin(2 * np.pi * dt.dayofyear / 365.25)),
-            "day_of_year_cos": float(np.cos(2 * np.pi * dt.dayofyear / 365.25)),
-            "month": float(dt.month),
-            "hour_of_day": float(dt.hour),
-            "hour_sin": float(np.sin(2 * np.pi * dt.hour / 24)),
-            "hour_cos": float(np.cos(2 * np.pi * dt.hour / 24)),
+            # No calendar columns: they are functions of the timestamp. The
+            # trainer derives them in batch and the forecaster per window,
+            # and that pair is exactly what this test has to compare.
         }
 
         for species in species_names:
@@ -136,6 +123,7 @@ def trainer_features(
     df = history[history["species"] == species].sort_values("date").reset_index(drop=True)
     df = _add_weather_derived_features(df, species)
     df = _add_ndvi_features(df)
+    df = _add_calendar_features(df)
     df = _add_intraday_features(df)
     df = _add_season_feature(df, species)
     df = _add_phenology_features(df, species)
@@ -349,6 +337,10 @@ def test_a_crossing_inside_the_forecast_is_served_as_it_is_trained() -> None:
     from src.onset import onset_doy_by_day
 
     history = build_history(days=1203, species_list=[SPECIES])  # to mid-April of year four
+    # A warm fourth year, so its forcing reaches the threshold of the first
+    # three well before their calendar date, whatever the fixture's noise.
+    fourth = pd.to_datetime(history["date"]).dt.year == 2024
+    history.loc[fourth, "temperature_mean"] += 4.0
     estimate = onset_doy_by_day(history, SPECIES)
     year = estimate[estimate.index.year == 2024]
     crossing = year[year != year.iloc[0]]

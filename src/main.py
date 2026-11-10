@@ -28,7 +28,7 @@ from typing import Any
 
 import pandas as pd
 
-from .collector import collect, update_history, HISTORY_FILE, DATA_DIR
+from .collector import collect, update_history, write_history, HISTORY_FILE, DATA_DIR
 from .trainer import train_all, MODELS_DIR
 from .forecaster import generate_forecast
 from .store import (
@@ -560,7 +560,7 @@ def cmd_backfill_labels(start_year: int = 2019) -> None:
         history[pd.to_datetime(history["date"]) >= pd.Timestamp(start)], munich
     )
     history = pd.concat([untouched, relabelled], ignore_index=True)
-    history.to_csv(HISTORY_FILE, index=False)
+    history = write_history(history)
     print(f"History: {report['windows_reported']} windows relabelled "
           f"({report['values_changed']} of {report['values_compared']} values changed), "
           f"{report['windows_weather_only']} windows kept as weather only, "
@@ -655,7 +655,7 @@ def cmd_backfill_weather(start: date | None = None, end: date | None = None) -> 
         print("No history to refresh.")
         return history
     history = refresh_weather(history, start, end)
-    history.to_csv(HISTORY_FILE, index=False)
+    history = write_history(history)
     print(f"Wrote {len(history)} rows -> {HISTORY_FILE}")
     return history
 
@@ -672,7 +672,7 @@ def cmd_backfill_ndvi(start: date | None = None, end: date | None = None) -> pd.
         print("No history to refresh.")
         return history
     history = refresh_ndvi(history, start, end)
-    history.to_csv(HISTORY_FILE, index=False)
+    history = write_history(history)
     print(f"Wrote {len(history)} rows -> {HISTORY_FILE}")
     return history
 
