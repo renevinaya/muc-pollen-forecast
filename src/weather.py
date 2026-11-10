@@ -215,38 +215,45 @@ def _get_weather(
     return _parse_hourly_response(payload)
 
 
-_forecast_cache: tuple[pd.DataFrame, int] | None = None
+_forecast_cache: tuple[pd.DataFrame, int, int] | None = None
 
 
-def fetch_weather_forecast(days: int = 5) -> pd.DataFrame:
+def fetch_weather_forecast(days: int = 5, past_days: int = 0) -> pd.DataFrame:
     """
     Fetch weather forecast from Open-Meteo at 3-hour resolution.
 
+    *days* forecast days starting today, preceded by *past_days* days of the
+    forecast model's own analysis. The archive lags real time by about five
+    days, so those past days are the only weather there is for the windows
+    in between.
+
     Results are cached in memory so that collect() and generate_forecast()
-    don't make duplicate API calls within the same process.
+    don't make duplicate API calls within the same process: a request the
+    cached one covers is cut out of it.
 
     Returns a DataFrame indexed by window-start datetime with weather feature columns.
     """
     global _forecast_cache
-    if _forecast_cache is not None:
-        cached_df, cached_days = _forecast_cache
-        if cached_days >= days:
-            cutoff = cached_df.index.min() + pd.Timedelta(days=days)
-            return cached_df[cached_df.index < cutoff]
-
-    result = _get_weather(
-        FORECAST_URL,
-        {
+    if _forecast_cache is None or _forecast_cache[1] < days or _forecast_cache[2] < past_days:
+        params: dict[str, Any] = {
             "latitude": LAT,
             "longitude": LON,
             "timezone": "Europe/Berlin",
             "forecast_days": days,
-        },
-        FORECAST_SOIL_PARAMS,
-        timeout=30,
-    )
-    _forecast_cache = (result, days)
-    return result
+        }
+        if past_days:
+            params["past_days"] = past_days
+        result = _get_weather(FORECAST_URL, params, FORECAST_SOIL_PARAMS, timeout=30)
+        result.index = pd.DatetimeIndex(result.index)
+        _forecast_cache = (result, days, past_days)
+
+    frame, _, cached_past = _forecast_cache
+    # The response starts *cached_past* days before today, on the API's own
+    # (Munich) calendar; today is counted from there rather than from this
+    # machine's clock, which may already be a day ahead of the response.
+    today = frame.index.min().normalize() + pd.Timedelta(days=cached_past)
+    start = today - pd.Timedelta(days=past_days)
+    return frame[(frame.index >= start) & (frame.index < today + pd.Timedelta(days=days))]
 
 
 def fetch_historical_weather(start: date, end: date) -> pd.DataFrame:

@@ -37,6 +37,32 @@ def _upwind_result(future) -> pd.DataFrame:
         return pd.DataFrame()
 
 
+# Days before today the collector asks the forecast endpoint for. The archive
+# ends about five days back and the forecast used to start today, so the days
+# in between had no weather to attach a measurement to: a window measured on
+# such a day could only be written while that day was still "today". The
+# station publishes with a few hours' delay, so each evening's last two
+# windows arrived after midnight and were dropped — to be picked up five
+# days later, when the archive reached them. Every night's forecast was
+# therefore built without the previous evening.
+RECENT_PAST_DAYS = 5
+
+
+def _archive_result(future) -> pd.DataFrame | None:
+    """The archive's frame, or None — the forecast endpoint covers the recent days.
+
+    A failed archive request costs the refresh of windows 5-14 days old with
+    archive values, which the next run repeats. It must not cost the run.
+    """
+    if future is None:
+        return None
+    try:
+        return future.result()
+    except Exception as exc:  # noqa: BLE001 — optional refresh, never fatal
+        print(f"  Weather archive failed ({exc}), continuing on the forecast endpoint alone.")
+        return None
+
+
 def _fetch_station(start, end) -> pd.DataFrame:
     """The Munich station's values: one request, or quarterly ones for a long span."""
     if (end - start).days <= 90:
@@ -71,12 +97,12 @@ def collect(days: int = 14) -> pd.DataFrame:
             if archive_start <= archive_end
             else None
         )
-        fut_forecast = pool.submit(fetch_weather_forecast, 7)
+        fut_forecast = pool.submit(fetch_weather_forecast, 7, RECENT_PAST_DAYS)
         fut_ndvi = pool.submit(fetch_ndvi)
 
         pollen_raw = fut_pollen.result()
         upwind_raw = _upwind_result(fut_upwind)
-        archive_weather = fut_archive.result() if fut_archive else None
+        archive_weather = _archive_result(fut_archive)
         recent_weather_full = fut_forecast.result()
         ndvi_composites = fut_ndvi.result()
 

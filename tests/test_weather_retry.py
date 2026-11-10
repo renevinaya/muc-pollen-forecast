@@ -7,6 +7,7 @@ taking the whole scheduled run down.
 """
 
 import httpx
+import pandas as pd
 import pytest
 
 import src.weather as weather
@@ -179,3 +180,41 @@ def test_a_rate_limit_does_not_trigger_the_soil_fallback(monkeypatch):
     assert len(seen) == weather._MAX_ATTEMPTS
     assert all("soil_temperature_6cm" in hourly for hourly in seen)
     assert "429" in str(excinfo.value) and "Daily API request limit" in str(excinfo.value)
+
+
+# --- The forecast request and its cache ----------------------------------------
+
+
+def _hourly_payload(start: str, days: int) -> dict:
+    hours = pd.date_range(start, periods=days * 24, freq="h")
+    hourly = {"time": [h.isoformat() for h in hours]}
+    for name in weather.HOURLY_PARAMS + weather.FORECAST_SOIL_PARAMS:
+        hourly[name] = [1.0] * len(hours)
+    return {"hourly": hourly}
+
+
+def test_past_days_are_served_from_one_request_and_cut_per_caller(monkeypatch):
+    """The collector asks for the last five days too; the forecaster gets today onwards."""
+    requests = []
+
+    def fake_fetch(url, params, timeout):
+        requests.append(dict(params))
+        days = params["forecast_days"] + params.get("past_days", 0)
+        return _hourly_payload("2026-11-05", days)  # today is 2026-11-10
+
+    monkeypatch.setattr(weather, "_fetch_json", fake_fetch)
+    monkeypatch.setattr(weather, "_forecast_cache", None)
+
+    recent = weather.fetch_weather_forecast(7, past_days=5)
+    assert requests[0]["past_days"] == 5 and requests[0]["forecast_days"] == 7
+    assert recent.index.min() == pd.Timestamp("2026-11-05 00:00")
+    assert recent.index.max() == pd.Timestamp("2026-11-16 21:00")
+
+    forecast = weather.fetch_weather_forecast(7)
+    assert len(requests) == 1, "the second call is cut out of the first"
+    assert forecast.index.min() == pd.Timestamp("2026-11-10 00:00")
+    assert len(forecast) == 7 * 8
+
+    shorter = weather.fetch_weather_forecast(5)
+    assert shorter.index.max() == pd.Timestamp("2026-11-14 21:00")
+

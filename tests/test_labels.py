@@ -276,7 +276,7 @@ def test_collect_writes_weather_only_rows_for_unreported_windows(monkeypatch) ->
     monkeypatch.setattr(collector, "_fetch_station", lambda s, e: station)
     monkeypatch.setattr(collector, "fetch_upwind", lambda s, e: pd.DataFrame())
     monkeypatch.setattr(collector, "fetch_historical_weather", lambda s, e: weather.iloc[:0])
-    monkeypatch.setattr(collector, "fetch_weather_forecast", lambda days: weather)
+    monkeypatch.setattr(collector, "fetch_weather_forecast", lambda days, past_days=0: weather)
     monkeypatch.setattr(collector, "fetch_ndvi", lambda: pd.DataFrame(columns=["date", "ndvi", "evi"]))
     monkeypatch.setattr(collector, "set_composites_cache", lambda composites: None)
 
@@ -296,3 +296,29 @@ def test_collect_writes_weather_only_rows_for_unreported_windows(monkeypatch) ->
     expected = pd.date_range(start + pd.Timedelta(hours=6), "2026-11-10 09:00", freq="3h")
     assert list(placeholders["date"]) == list(expected)
     assert placeholders["temperature_mean"].notna().all()
+
+
+def test_collect_survives_an_archive_failure(monkeypatch) -> None:
+    """The archive only refreshes old windows; the run goes on without it."""
+    today = date(2026, 11, 10)
+    start = pd.Timestamp("2026-11-08 00:00")
+    windows = pd.date_range(start, "2026-11-10 09:00", freq="3h")
+    weather = pd.DataFrame({"temperature_mean": 4.0, "precipitation_sum": 0.0}, index=windows)
+    station = pd.DataFrame({"date": [start], "species": ["Fungus"], "value": [12.0]})
+
+    def failing_archive(s, e):
+        raise RuntimeError("HTTP 429 (rate limit): Daily API request limit exceeded.")
+
+    monkeypatch.setattr(collector, "local_today", lambda: today)
+    monkeypatch.setattr(collector, "local_now", lambda: pd.Timestamp("2026-11-10 10:30"))
+    monkeypatch.setattr(collector, "_fetch_station", lambda s, e: station)
+    monkeypatch.setattr(collector, "fetch_upwind", lambda s, e: pd.DataFrame())
+    monkeypatch.setattr(collector, "fetch_historical_weather", failing_archive)
+    monkeypatch.setattr(collector, "fetch_weather_forecast", lambda days, past_days=0: weather)
+    monkeypatch.setattr(collector, "fetch_ndvi", lambda: pd.DataFrame(columns=["date", "ndvi"]))
+    monkeypatch.setattr(collector, "set_composites_cache", lambda composites: None)
+
+    frame = collector.collect(days=14)
+    assert not frame.empty
+    assert frame[frame["species"] == "Fungus"]["value"].iloc[0] == 12.0
+
