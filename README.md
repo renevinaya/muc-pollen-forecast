@@ -39,7 +39,7 @@ ML-based pollen forecast for Munich at 3-hour resolution, using a three-stage XG
 | [LGL Bayern ePIN](https://d1ppjuhp1nvtc2.cloudfront.net/measurements) | Pollen and spore measurements | The official station series: 3-hour pollen counts and the fungal-spore aggregate (`Fungus`) for Munich (station DEMUNC, 2019+), plus the four ePIN stations around it (Mindelheim, Altötting, Feucht, Viechtach) as upwind context — see [One station, one series](#one-station-one-series), [Upwind stations](#upwind-stations) and [Mould spores](#mould-spores) |
 | [Open-Meteo](https://open-meteo.com/) | Weather forecast + historical archive | Hourly weather aggregated to 3-hour windows: temperature, precipitation, wind, humidity, sunshine, radiation, boundary layer height, dew point, CAPE, direct radiation, soil temperature + moisture (no API key required) |
 | [MODIS (ORNL DAAC)](https://modis.ornl.gov/rst/api/v1) | NDVI / EVI satellite data | MOD13Q1 250 m 16-day vegetation indices, cubic-interpolated to daily resolution |
-| [DWD Open Data](https://opendata.dwd.de/) | Pollenflug-Gefahrenindex + CDC Phenology | Official pollen danger levels for Oberbayern (partregion 121) — used both for benchmarking and an inference-time level blend; the phenology archive is fetched for reference but no longer feeds the model — see [Season onset](#season-onset) |
+| [DWD Open Data](https://opendata.dwd.de/) | Pollenflug-Gefahrenindex | Official pollen danger levels for Oberbayern (partregion 121) — used both for benchmarking and an inference-time level blend |
 | [Copernicus CAMS](https://ads.atmosphere.copernicus.eu/) (optional) | European pollen forecast | Physics-based ensemble forecast for alder, birch, grass, mugwort, ragweed. **Off by default** — see [Optional: CAMS pollen feature](#optional-cams-pollen-feature) |
 
 ## Model
@@ -232,10 +232,6 @@ constants:
 Every estimate for year *Y* is calibrated only on seasons before *Y*, so a
 backtest never sees its own answer. `tests/test_onset.py` pins both properties
 down; they are invisible in the output when they break.
-
-The DWD phenology fetch (`python -m src.main phenology`) is unrelated to these
-features now. It returns a single year of Munich observations with no Alnus at
-all, which put Corylus 24 days and Alnus 17 days off their measured medians.
 
 ### Season outlook
 
@@ -465,7 +461,6 @@ python -m src.main benchmark
 | `outlook` | Print the season outlook as the forecast publishes it, and its start-date error by lead on the measured seasons (thermal only, runs in seconds) |
 | `calibrate [--rebuild]` | Regenerate `src/confidence.json` from `data/benchmark_rollout.csv`; `--rebuild` runs the rollout first, over 10 days so stale runs read a measured rate |
 | `dwd` | Display the current DWD pollen danger index for Oberbayern |
-| `phenology` | Download DWD phenology data and show flowering-onset statistics |
 | `run` | Execute collect → forecast in sequence (every 3 hours) |
 | `run-train` | Execute collect → train → forecast in sequence (monthly retraining); a refused retrain falls back to the released models |
 
@@ -659,7 +654,6 @@ Runners are ephemeral, so accumulated state lives on a GitHub release tagged
 | Asset | Contents |
 |-------|----------|
 | `history.csv.gz` | Accumulated 3h pollen + weather + NDVI observations, one weather-only row per window the station did not report |
-| `phenology.csv.gz` | DWD flowering-onset records |
 | `upwind.csv.gz` | 3h measurements of the four upwind stations (date, station, species, value) |
 | `models.tar.gz` | All trained `*.joblib` models |
 | `history_merged.csv.gz`, `upwind_merged.csv.gz` | The two files as they were before `backfill-labels`, written once |

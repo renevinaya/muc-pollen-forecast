@@ -161,7 +161,8 @@ NDVI_FEATURES = [
     "ndvi_delta",   # Daily NDVI change rate (green-up speed)
 ]
 
-# Phenology features (from DWD multi-year flowering onset data)
+# Phenology features: the season's onset, calibrated on the station's own
+# measured seasons (src/onset.py)
 PHENOLOGY_FEATURES = [
     "days_since_typical_onset",  # days since this year's causal onset estimate
     "onset_anomaly",             # (forcing − threshold) / threshold under the species' rule

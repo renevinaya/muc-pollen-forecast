@@ -1,25 +1,27 @@
 """
 Client for DWD (Deutscher Wetterdienst) pollen data.
 
-Provides:
-  - fetch_dwd_forecast()  — today/tomorrow/day-after categorical pollen forecast
-    for the Oberbayern region (partregion_id 121).
-  - fetch_dwd_phenology() — multi-decade flowering-onset dates from DWD/CDC
-    phenology observations for Munich-area stations.
+fetch_dwd_forecast() — today/tomorrow/day-after categorical pollen forecast
+for the Oberbayern region (partregion_id 121).
+
+A fetch of DWD's phenology observations lived here until November 2026. It
+fed nothing: the onset features have been calibrated on the station's own
+seasons since B.2, while the file was still downloaded from the release on
+every run, uploaded again on every run and refetched from DWD monthly. The
+fetch itself could only ever match the oldest archive file of each plant
+(``..._1930_2018_hist.txt``), never the current one, and did not map alder
+— which is why it looked like one year of data. TASKS.md notes what the
+source could be used for.
 """
 
 from __future__ import annotations
 
 from datetime import timedelta
-from io import StringIO
-from pathlib import Path
 
 import httpx
 import pandas as pd
 
 from .clock import local_today
-
-DATA_DIR = Path(__file__).parent.parent / "data"
 
 # ── DWD Pollenflug-Gefahrenindex (categorical forecast, updated ~daily) ──────
 
@@ -104,160 +106,3 @@ def fetch_dwd_forecast() -> pd.DataFrame:
     # If Roggen and Graeser both map to Poaceae, take the max per day
     agg = df.groupby(["date", "species"], as_index=False)["dwd_level"].max()
     return agg if isinstance(agg, pd.DataFrame) else agg.to_frame()
-
-
-# ── DWD CDC Phenology – flowering onset observations ────────────────────────
-
-# Base URL for annual reporters, wild plants, historical + recent
-_PHENO_BASE = (
-    "https://opendata.dwd.de/climate_environment/CDC/"
-    "observations_germany/phenology/annual_reporters/wild"
-)
-
-# Phase_id 5 = "Beginn der Blüte" (beginning of flowering)
-_PHASE_FLOWERING = 5
-
-# DWD phenology file stems → our species.  Only species that produce
-# allergenic wind-dispersed pollen are included.
-_PHENO_FILES: dict[str, str] = {
-    "Hasel": "Corylus",            # 1930–2023
-    "Haenge-Birke": "Betula",      # 1930–2023
-    "Esche": "Fraxinus",           # 1940–2023
-    "Beifuss": "Artemisia",        # 1991–2023
-}
-
-# Munich & nearby station IDs (from PH station catalogue)
-_MUNICH_STATIONS: set[int] = {
-    10952,  # Freising
-    10955,  # München-Freimann
-    10956,  # München-Trudering
-    10957,  # München-Ludwigsvorstadt
-    10958,  # München-Schwabing
-    10959,  # München-Neufriedenheim
-    10960,  # München-Feldmoching
-    10961,  # München-Pasing
-    10992,  # Karlsfeld
-    11006,  # Zorneding
-}
-
-
-def _parse_pheno_file(text: str) -> pd.DataFrame:
-    """Parse a semicolon-delimited DWD phenology file."""
-    # Clean header — strip whitespace from column names
-    lines = text.splitlines()
-    header = [h.strip() for h in lines[0].split(";")]
-    data_lines = "\n".join(lines[1:])
-    df = pd.read_csv(
-        StringIO(data_lines),
-        sep=";",
-        header=None,
-        names=header,
-        skipinitialspace=True,
-    )
-    # Trim whitespace from string columns
-    for col in df.select_dtypes(include="object").columns:
-        df[col] = df[col].str.strip()
-    return df
-
-
-def fetch_dwd_phenology() -> pd.DataFrame:
-    """
-    Download flowering-onset dates for Munich-area stations from DWD CDC.
-
-    Returns a DataFrame:
-        species, year, onset_doy  (day-of-year when flowering begins)
-
-    This covers decades of data (1930–2023 for some species) and is used
-    to learn typical season-start timing and year-to-year variability.
-    """
-    all_rows: list[dict[str, object]] = []
-
-    for plant_name, species in _PHENO_FILES.items():
-        for period in ("historical", "recent"):
-            # Try to discover the file name via directory listing
-            dir_url = f"{_PHENO_BASE}/{period}/"
-            try:
-                listing = httpx.get(dir_url, timeout=15, follow_redirects=True)
-                listing.raise_for_status()
-            except httpx.HTTPError:
-                continue
-
-            # Find the matching file (name pattern includes year range)
-            import re
-
-            pattern = (
-                rf'href="(PH_Jahresmelder_Wildwachsende_Pflanze_{plant_name}'
-                r'_\d+_\d+_\w+\.txt)"'
-            )
-            match = re.search(pattern, listing.text)
-            if not match:
-                continue
-
-            file_url = f"{dir_url}{match.group(1)}"
-            try:
-                print(f"    Downloading {match.group(1)}...")
-                resp = httpx.get(file_url, timeout=120, follow_redirects=True)
-                resp.raise_for_status()
-            except httpx.HTTPError as exc:
-                print(f"  Warning: could not download {file_url}: {exc}")
-                continue
-
-            df = _parse_pheno_file(resp.text)
-
-            # Filter to Munich stations and flowering phase
-            df["Stations_id"] = pd.to_numeric(df["Stations_id"], errors="coerce")
-            df["Phase_id"] = pd.to_numeric(df["Phase_id"], errors="coerce")
-            df["Jultag"] = pd.to_numeric(df["Jultag"], errors="coerce")
-
-            mask = (
-                df["Stations_id"].isin(_MUNICH_STATIONS)
-                & (df["Phase_id"] == _PHASE_FLOWERING)
-                & df["Jultag"].notna()
-            )
-            filtered = df[mask]
-
-            for _, row in filtered.iterrows():
-                all_rows.append(
-                    {
-                        "species": species,
-                        "year": int(row["Referenzjahr"]),
-                        "onset_doy": int(row["Jultag"]),
-                        "station_id": int(row["Stations_id"]),
-                    }
-                )
-
-            n = len(filtered)
-            if n > 0:
-                print(f"  {species} ({period}): {n} flowering-onset records")
-
-    result = pd.DataFrame(all_rows)
-    if not result.empty:
-        # Average across Munich stations per year → one onset_doy per (species, year)
-        agg_df = result.groupby(["species", "year"], as_index=False).agg(
-            onset_doy=("onset_doy", "mean")
-        )
-        agg_df["onset_doy"] = agg_df["onset_doy"].round().astype(int)
-        result = agg_df
-    return result
-
-
-def phenology_season_stats(phenology: pd.DataFrame) -> dict[str, dict[str, float | int]]:
-    """
-    Compute per-species flowering statistics from multi-year phenology data.
-
-    Returns dict[species] → {
-        "mean_onset_doy": float,
-        "std_onset_doy": float,
-        "earliest_onset_doy": int,
-        "latest_onset_doy": int,
-    }
-    """
-    stats: dict[str, dict[str, float | int]] = {}
-    for species, grp in phenology.groupby("species"):
-        stats[str(species)] = {
-            "mean_onset_doy": grp["onset_doy"].mean(),
-            "std_onset_doy": grp["onset_doy"].std(),
-            "earliest_onset_doy": int(grp["onset_doy"].min()),
-            "latest_onset_doy": int(grp["onset_doy"].max()),
-        }
-    return stats

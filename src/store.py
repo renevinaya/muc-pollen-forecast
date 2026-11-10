@@ -1,7 +1,7 @@
 """
-GitHub-backed persistence for history, phenology and model artifacts.
+GitHub-backed persistence for the history, the upwind file and the models.
 
-Large but regenerable state — history.csv, phenology.csv and models/*.joblib —
+Large but regenerable state — history.csv, upwind.csv and models/*.joblib —
 is stored as compressed assets on a single GitHub release (tag: ``data``).
 Releases are free, allow 2 GB per file and, unlike committing the files, do not
 grow the git history on every run.
@@ -33,7 +33,6 @@ DEFAULT_REPO = "renevinaya/muc-pollen-forecast"
 RELEASE_TAG = os.environ.get("DATA_RELEASE_TAG", "data")
 
 HISTORY_ASSET = "history.csv.gz"
-PHENOLOGY_ASSET = "phenology.csv.gz"
 MODELS_ASSET = "models.tar.gz"
 
 _TIMEOUT = httpx.Timeout(30.0, read=600.0, write=600.0)
@@ -106,7 +105,7 @@ def _ensure_release() -> dict:
             "tag_name": RELEASE_TAG,
             "name": "Pipeline data",
             "body": (
-                "Accumulated history, phenology and trained models for the forecast "
+                "Accumulated history, upwind measurements and trained models for the forecast "
                 "pipeline. Updated automatically — not a software release."
             ),
             "make_latest": "false",

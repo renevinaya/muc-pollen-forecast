@@ -19,7 +19,6 @@ Usage:
     python -m src.main outlook      # The season outlook and its start-date error by lead
     python -m src.main calibrate    # Regenerate the confidence table
     python -m src.main dwd          # Show DWD pollen forecast for Oberbayern
-    python -m src.main phenology    # Download DWD phenology data for Munich
 """
 
 import json
@@ -34,13 +33,11 @@ from .trainer import train_all, MODELS_DIR
 from .forecaster import generate_forecast
 from .store import (
     upload_csv,
-    download_csv,
     upload_models,
     download_models,
     sync_historical_data,
     can_upload,
     HISTORY_ASSET,
-    PHENOLOGY_ASSET,
     asset_exists,
 )
 from .pollen import fetch_measurements_chunked
@@ -135,10 +132,6 @@ def cmd_forecast(history: pd.DataFrame | None = None) -> None:
     if can_upload():
         if HISTORY_FILE.exists():
             upload_csv(HISTORY_FILE, HISTORY_ASSET)
-        # Back up phenology data so the live onset features have it next run
-        pheno_file = DATA_DIR / "phenology.csv"
-        if pheno_file.exists():
-            upload_csv(pheno_file, PHENOLOGY_ASSET)
         if UPWIND_FILE.exists():
             upload_csv(UPWIND_FILE, UPWIND_ASSET)
 
@@ -660,58 +653,12 @@ def cmd_dwd() -> None:
             print(f"    {row['species']:<12} {level_bar}  ({level}/3)")
 
 
-def cmd_phenology() -> None:
-    """Download DWD phenology data for Munich and show season statistics."""
-    from .dwd import fetch_dwd_phenology, phenology_season_stats
-
-    print("=" * 60)
-    print("DWD PHENOLOGY DATA — Munich")
-    print("=" * 60)
-
-    pheno = fetch_dwd_phenology()
-    if pheno.empty:
-        print("No phenology data available.")
-        return
-
-    print(f"\nDownloaded {len(pheno)} records")
-    for sp in sorted(pheno["species"].unique()):
-        sp_data = pheno[pheno["species"] == sp]
-        years = sp_data["year"]
-        print(f"  {sp}: {len(sp_data)} years ({int(years.min())}-{int(years.max())})")
-
-    stats = phenology_season_stats(pheno)
-    print("\nFlowering onset statistics (day of year):")
-    hdr = "  {:<12}  {:>6}  {:>6}  {:>6}  {:>6}"  # pylint: disable=consider-using-f-string
-    print(hdr.format("Species", "Mean", "Std", "Min", "Max"))
-    print(f"  {'-'*12}  {'-'*6}  {'-'*6}  {'-'*6}  {'-'*6}")
-    for sp, s in sorted(stats.items()):
-        print(f"  {sp:<12}  {s['mean_onset_doy']:>6.0f}  "
-              f"{s['std_onset_doy']:>6.1f}  {s['earliest_onset_doy']:>6}  "
-              f"{s['latest_onset_doy']:>6}")
-
-    # Save phenology data
-    pheno_path = DATA_DIR / "phenology.csv"
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    pheno.to_csv(pheno_path, index=False)
-    print(f"\nSaved to {pheno_path}")
-
-
-def _sync_phenology() -> None:
-    """Download phenology.csv from the data release if absent locally (best-effort)."""
-    pheno_file = DATA_DIR / "phenology.csv"
-    if pheno_file.exists():
-        return
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    download_csv(PHENOLOGY_ASSET, pheno_file)
-
-
 def cmd_run() -> None:
     """Run forecast pipeline: collect -> forecast (every 3 hours)."""
-    # Runners start empty: restore history, models and phenology first.
+    # Runners start empty: restore history, models and the upwind file first.
     if not HISTORY_FILE.exists():
         sync_historical_data(HISTORY_FILE)
     download_models(MODELS_DIR)
-    _sync_phenology()
     sync_upwind()
     history = cmd_collect()
     cmd_forecast(history)
@@ -726,14 +673,7 @@ def cmd_run_train() -> None:
     """
     if not HISTORY_FILE.exists():
         sync_historical_data(HISTORY_FILE)
-    _sync_phenology()
     sync_upwind()
-    # Monthly: refresh phenology onset data so the onset features stay current
-    # (best-effort — failures are non-fatal; cmd_forecast backs it up to the release).
-    try:
-        cmd_phenology()
-    except Exception as exc:
-        print(f"Phenology refresh failed ({exc}); continuing with existing data.")
     history = cmd_collect()
     try:
         cmd_train(history)
@@ -898,8 +838,6 @@ def main() -> None:
         cmd_calibrate(rebuild="--rebuild" in sys.argv[2:])
     elif command == "dwd":
         cmd_dwd()
-    elif command == "phenology":
-        cmd_phenology()
     elif command == "run":
         cmd_run()
     elif command == "run-train":
