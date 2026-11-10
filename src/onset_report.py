@@ -215,3 +215,33 @@ def print_onset_rollout_report(
         heavy = ratios.dropna(subset=["5-9"])
         print(f"\n  Mean ratio in days 5-9 across species-years: {heavy['5-9'].mean():.2f}"
               f"  (1.00 = right on average; the heavy-year problem is ratios of 0.1-0.3)")
+
+
+def onset_focus_months(
+    history: pd.DataFrame,
+    species: list[str],
+    window_days: int = 21,
+    years: int | None = None,
+) -> list[pd.Period]:
+    """Test months that fully cover each species' season start.
+
+    The onset-timing diagnostic needs contiguous daily coverage across the whole
+    window, which evenly-spaced sample folds never give it. This returns every
+    month those windows touch, newest *years* seasons only when asked.
+    """
+    windows: list[tuple[pd.Timestamp, pd.Timestamp]] = []
+    for name in species:
+        onsets = observed_onsets(history, name)
+        chosen = sorted(onsets)[-years:] if years else sorted(onsets)
+        for year in chosen:
+            onset = pd.Timestamp(year=year, month=1, day=1) + pd.Timedelta(
+                days=onsets[year] - 1
+            )
+            windows.append(
+                (onset - pd.Timedelta(days=window_days), onset + pd.Timedelta(days=window_days))
+            )
+
+    periods: set[pd.Period] = set()
+    for start, end in windows:
+        periods.update(pd.period_range(start, end, freq="M"))
+    return sorted(periods)

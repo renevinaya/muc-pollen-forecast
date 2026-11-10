@@ -432,8 +432,8 @@ python -m src.main benchmark
 | `backfill-weather [start] [end]` | Rewrite every weather column of the existing history from the Open-Meteo archive; pollen values untouched |
 | `backfill-ndvi [start] [end]` | Rewrite the NDVI columns of the existing history from MODIS composites |
 | `run-backfill` | Both of the above against the data release (what `mode: backfill` runs in Actions) |
-| `benchmark [days]` | Walk-forward **rollout** of the shipped forecast, scored per forecast day (default: 5), over the six record months (`RECORD_MONTHS` in `src/rollout.py`). `--months 2026-02,2026-04` names other months, `--folds N` samples N across the year; `--species A,B`, `--classic` |
-| `benchmark-onset` | The shipped rollout over the months containing each measured season start of the last three seasons (default: Corylus, Alnus, Betula): timing, amount and false starts per species-year and horizon. `--species A,B`, `--years N`, `--classic` (old one-window-ahead diagnostic) |
+| `benchmark [days]` | Walk-forward **rollout** of the shipped forecast, scored per forecast day (default: 5), over the six record months (`RECORD_MONTHS` in `src/rollout.py`). `--months 2026-02,2026-04` names other months, `--folds N` samples N across the year; `--species A,B` |
+| `benchmark-onset` | The shipped rollout over the months containing each measured season start of the last three seasons (default: Corylus, Alnus, Betula): timing, amount and false starts per species-year and horizon. `--species A,B`, `--years N`. Ends with the season outlook's start-date error by lead |
 | `outlook` | Print the season outlook as the forecast publishes it, and its start-date error by lead on the measured seasons (thermal only, runs in seconds) |
 | `calibrate [--rebuild]` | Regenerate `src/confidence.json` from `data/benchmark_rollout.csv`; `--rebuild` runs the rollout first, over 10 days so stale runs read a measured rate |
 | `dwd` | Display the current DWD pollen danger index for Oberbayern |
@@ -562,16 +562,6 @@ in training (B.6) improved the general benchmark and alder's timing and did
 not move the heavy-year ramp: nothing the model reads precedes the local
 count, so it cannot tell a 25,000-grain year from a 3,000-grain one on day
 one. TASKS.md tracks the numbers per change.
-
-### `benchmark --classic` — one window ahead (diagnostic only)
-
-`temporal_split_evaluate` hands every test row the *measured* recent counts.
-That is the right diagnostic for "are the weather and phenology features doing
-anything", and the wrong one for "how good is the forecast": on the same fold
-and species it reported MAE 76 / 37% level accuracy where the real day-1
-forecast delivers MAE 121 / 22.5%, and day 5 delivers MAE 172 / 16.7%. The DWD
-comparison and onset-timing diagnostics only make sense in this mode, so they
-live here.
 
 ### Feature gain
 

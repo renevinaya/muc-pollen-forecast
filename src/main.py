@@ -15,7 +15,7 @@ Usage:
     python -m src.main backfill-ndvi [START]           # Rewrite NDVI columns from MODIS
     python -m src.main run-backfill # Both of the above against the data release (Actions)
     python -m src.main benchmark [--folds N | --months YYYY-MM,...]  # Walk-forward rollout of the 5-day forecast
-    python -m src.main benchmark-onset [--species A,B] [--years N] [--classic]  # The shipped forecast around the season starts
+    python -m src.main benchmark-onset [--species A,B] [--years N]  # The shipped forecast around the season starts
     python -m src.main outlook      # The season outlook and its start-date error by lead
     python -m src.main calibrate    # Regenerate the confidence table
     python -m src.main dwd          # Show DWD pollen forecast for Oberbayern
@@ -41,15 +41,8 @@ from .store import (
     asset_exists,
 )
 from .pollen import fetch_measurements_chunked
-from .evaluate import (
-    temporal_split_evaluate,
-    print_evaluation_report,
-    print_onset_window_report,
-    onset_focus_months,
-    compare_with_dwd,
-)
 from .rollout import rollout_evaluate, print_rollout_report, record_months
-from .onset_report import WINDOW_DAYS
+from .onset_report import WINDOW_DAYS, onset_focus_months
 from .types import ALL_SPECIES, FORECAST_DAYS, LOCATION
 from .clock import local_now, local_today
 from .upwind import (
@@ -245,7 +238,6 @@ def cmd_backfill_upwind(start_year: int = 2019) -> pd.DataFrame:
 def cmd_benchmark(
     horizon: int = FORECAST_DAYS,
     folds: int | None = None,
-    classic: bool = False,
     species: list[str] | None = None,
     months: list[pd.Period] | None = None,
 ) -> None:
@@ -255,10 +247,6 @@ def cmd_benchmark(
     the thing this reports skill for, per day. It used to be passed straight in
     as the fold count, so asking for a longer horizon silently just changed how
     many months were sampled; *folds* is now its own argument.
-
-    *classic* additionally runs the one-window-ahead evaluation with measured
-    lag features, which is the only mode the DWD comparison and the onset-timing
-    diagnostic make sense in.
 
     By default the six months the record is measured on
     (:data:`src.rollout.RECORD_MONTHS`), so the default command reproduces
@@ -311,27 +299,9 @@ def cmd_benchmark(
         print_rollout_report(results, history)
     (DATA_DIR / "benchmark_rollout.txt").write_text(buf.getvalue())
 
-    if not classic:
-        return
-
-    print("\n" + "=" * 60)
-    print("BENCHMARK: One Window Ahead (measured lag features)")
-    print("=" * 60)
-    print("Not the shipped forecast — every row is handed the true recent counts.")
-    lagged = temporal_split_evaluate(
-        history, n_folds=folds, species=species, months=months, upwind=upwind
-    )
-    if lagged.empty:
-        return
-    print_evaluation_report(lagged)
-    print_onset_window_report(lagged, history)
-    compare_with_dwd(lagged)
-    lagged.to_csv(DATA_DIR / "benchmark_results.csv", index=False)
-    print(f"\nDetailed results saved to {DATA_DIR / 'benchmark_results.csv'}")
-
 
 def _parse_onset_args(argv: list[str]) -> dict[str, Any]:
-    """Parse ``benchmark-onset [--species A,B] [--years N] [--classic]``.
+    """Parse ``benchmark-onset [--species A,B] [--years N]``.
 
     Bare words are species names, for compatibility with the old form.
     """
@@ -340,9 +310,7 @@ def _parse_onset_args(argv: list[str]) -> dict[str, Any]:
     bare: list[str] = []
     while rest:
         flag = rest.pop(0)
-        if flag == "--classic":
-            args["classic"] = True
-        elif flag == "--years":
+        if flag == "--years":
             args["years"] = int(rest.pop(0))
         elif flag == "--species":
             args["species"] = [s.strip() for s in rest.pop(0).split(",") if s.strip()]
@@ -355,9 +323,7 @@ def _parse_onset_args(argv: list[str]) -> dict[str, Any]:
     return args
 
 
-def cmd_benchmark_onset(
-    species: list[str] | None = None, years: int = 3, classic: bool = False
-) -> None:
+def cmd_benchmark_onset(species: list[str] | None = None, years: int = 3) -> None:
     """Score the shipped forecast around the season starts.
 
     The full benchmark samples months evenly across the history and almost
@@ -365,11 +331,8 @@ def cmd_benchmark_onset(
     season begins or how hard. This runs the same direct rollout over the
     months containing each measured onset of the last *years* seasons and
     reports timing, amount and false starts per species-year and horizon
-    (:mod:`src.onset_report`).
-
-    *classic* runs the older one-window-ahead evaluation with measured lag
-    features instead — a diagnostic for the phenology features, not the
-    product.
+    (:mod:`src.onset_report`), followed by the season outlook's start-date
+    error by lead (:mod:`src.outlook`).
     """
     from .onset_report import ONSET_SPECIES, print_onset_rollout_report
 
@@ -396,18 +359,6 @@ def cmd_benchmark_onset(
     print(f"Months: {', '.join(str(m) for m in months)} "
           f"(±{WINDOW_DAYS} d around each onset of the last {years} season(s))\n")
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-
-    if classic:
-        results = temporal_split_evaluate(history, species=targets, months=months, upwind=upwind)
-        if results.empty:
-            print("No evaluation results.")
-            return
-        print_evaluation_report(results)
-        print_onset_window_report(results, history)
-        results_path = DATA_DIR / "benchmark_onset_results.csv"
-        results.to_csv(results_path, index=False)
-        print(f"\nDetailed results saved to {results_path}")
-        return
 
     results = rollout_evaluate(
         history, horizon_days=FORECAST_DAYS, species=targets, months=months, upwind=upwind
@@ -763,7 +714,7 @@ def cmd_run_backfill() -> None:
 
 
 def _parse_benchmark_args(argv: list[str]) -> dict[str, Any]:
-    """Parse ``benchmark [horizon] [--folds N] [--months 2026-02,2026-04] [--species A,B] [--classic]``.
+    """Parse ``benchmark [horizon] [--folds N] [--months 2026-02,2026-04] [--species A,B]``.
 
     The bare positional stays the horizon in days, which is what the flag was
     always documented to mean. ``--months`` names the test months explicitly
@@ -777,9 +728,7 @@ def _parse_benchmark_args(argv: list[str]) -> dict[str, Any]:
         args["horizon"] = int(rest.pop(0))
     while rest:
         flag = rest.pop(0)
-        if flag == "--classic":
-            args["classic"] = True
-        elif flag == "--folds":
+        if flag == "--folds":
             args["folds"] = int(rest.pop(0))
         elif flag == "--months":
             args["months"] = [

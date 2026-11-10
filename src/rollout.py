@@ -1,12 +1,15 @@
 """
 Autoregressive rollout backtest — the benchmark that scores what ships.
 
-``evaluate.temporal_split_evaluate`` builds every test row's lag features from
-*measured* pollen at the target window, so it answers "given yesterday's true
+The first benchmark this project had built every test row's lag features from
+*measured* pollen at the target window, so it answered "given yesterday's true
 counts, how good is the next window?". The product answers something else: a
-5-day forecast in which only the first window is close to its lag data. Lags
-carry about half of all model gain, so the two questions can have very
-different answers — and only the first one was ever measured.
+multi-day forecast in which only the first window is close to its lag data.
+Lags carry a third of all model gain, so the two questions can have very
+different answers — and only the first one was ever measured. (That
+one-window-ahead evaluation, ``--classic``, was removed in November 2026: it
+had been failing on a missing feature group since C.1 without anyone
+noticing, which says how much it was used.)
 
 This module runs the forecast exactly as :func:`forecaster.generate_forecast`
 does, through the same :mod:`src.features` code path, and reports skill per
@@ -81,7 +84,6 @@ def eligible_months(
 ) -> list[pd.Period]:
     """Monthly test blocks that have enough history behind them to train on.
 
-    Shared with the classic benchmark so both score the same folds.
     """
     windows = pd.DatetimeIndex(sorted(history["date"].unique()))
     if len(windows) == 0:
