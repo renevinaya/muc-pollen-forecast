@@ -224,8 +224,6 @@ to the weeks after a detected start.
   and retries without them; Open-Meteo's daily-limit answer is a 429. On a
   shared address that is a dead run, or a forecast without soil features
   flagged for the wrong reason. Retry it like a 5xx.
-* The six default folds have moved to Jan–Nov 2026, the current partial
-  month among them. Pin the months the record was measured on.
 
 ## G.4 Unnecessary or inefficient
 

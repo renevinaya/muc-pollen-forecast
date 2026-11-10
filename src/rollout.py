@@ -59,6 +59,21 @@ from .trainer import finalize_features, prepare_training_data, train_species_mod
 
 WINDOW = pd.Timedelta(hours=3)
 
+# The six test months the record in TASKS.md and the README is measured on:
+# one in each part of the pollen year. They are named rather than sampled
+# because "the most recent instance of each" moves as the history grows —
+# by November 2026 the sample had become Jan–Nov 2026, the running month
+# among them, and no figure in the record could be reproduced by the default
+# command. Change them deliberately, with the record.
+RECORD_MONTHS: tuple[str, ...] = (
+    "2025-09", "2025-11", "2026-01", "2026-03", "2026-05", "2026-07",
+)
+
+
+def record_months() -> list[pd.Period]:
+    """:data:`RECORD_MONTHS` as monthly periods."""
+    return [pd.Period(m, "M") for m in RECORD_MONTHS]
+
 
 def eligible_months(
     history: pd.DataFrame, n_folds: int | None = None, months: list[pd.Period] | None = None
@@ -67,19 +82,20 @@ def eligible_months(
 
     Shared with the classic benchmark so both score the same folds.
     """
-    dates = sorted(history["date"].unique())
-    if not dates:
+    windows = pd.DatetimeIndex(sorted(history["date"].unique()))
+    if len(windows) == 0:
         return []
-    unique_days = len({pd.Timestamp(d).date() for d in dates})
-    min_train_days = max(60, unique_days // 5)
+    days = windows.normalize().unique()
+    min_train_days = max(60, len(days) // 5)
 
-    periods = pd.DatetimeIndex(dates).to_period("M").unique().sort_values()
-    eligible: list[pd.Period] = []
-    for period in periods:
-        first = min(d for d in dates if pd.Timestamp(d).to_period("M") == period)
-        train_days = len({pd.Timestamp(d).date() for d in dates if d < first})
-        if train_days >= min_train_days:
-            eligible.append(period)
+    # A month is eligible when enough days of history lie before its first
+    # window. Those are exactly the days before that window's own day.
+    first_day = pd.Series(windows.normalize(), index=windows.to_period("M")).groupby(level=0).min()
+    eligible: list[pd.Period] = [
+        period
+        for period, first in first_day.items()
+        if int(days.searchsorted(first)) >= min_train_days
+    ]
 
     if months is not None:
         wanted = set(months)

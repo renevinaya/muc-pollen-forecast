@@ -51,7 +51,7 @@ from .evaluate import (
     onset_focus_months,
     compare_with_dwd,
 )
-from .rollout import rollout_evaluate, print_rollout_report
+from .rollout import rollout_evaluate, print_rollout_report, record_months
 from .onset_report import WINDOW_DAYS
 from .types import ALL_SPECIES, FORECAST_DAYS
 from .clock import local_now, local_today
@@ -406,7 +406,7 @@ def cmd_backfill_upwind(start_year: int = 2019) -> pd.DataFrame:
 
 def cmd_benchmark(
     horizon: int = FORECAST_DAYS,
-    folds: int = 6,
+    folds: int | None = None,
     classic: bool = False,
     species: list[str] | None = None,
     months: list[pd.Period] | None = None,
@@ -422,12 +422,17 @@ def cmd_benchmark(
     lag features, which is the only mode the DWD comparison and the onset-timing
     diagnostic make sense in.
 
-    Six folds by default. Three — the previous default — picked Sep, Jan and May
-    out of this history, all quiet months, and reported the model beating
-    persistence from day 3 on; adding Nov, Mar and Jul reversed that. A fold
-    count small enough to miss the season is worse than no benchmark, because it
-    reads as evidence.
+    By default the six months the record is measured on
+    (:data:`src.rollout.RECORD_MONTHS`), so the default command reproduces
+    it. ``--folds N`` samples N months spread across the year instead, and
+    ``--months`` names them. Six because three — an earlier default — picked
+    Sep, Jan and May out of this history, all quiet months, and reported the
+    model beating persistence from day 3 on; adding Nov, Mar and Jul reversed
+    that. A fold count small enough to miss the season is worse than no
+    benchmark, because it reads as evidence.
     """
+    if months is None and folds is None:
+        months = record_months()
     print("=" * 60)
     print("BENCHMARK: Autoregressive Rollout")
     print("=" * 60)
@@ -475,7 +480,9 @@ def cmd_benchmark(
     print("BENCHMARK: One Window Ahead (measured lag features)")
     print("=" * 60)
     print("Not the shipped forecast — every row is handed the true recent counts.")
-    lagged = temporal_split_evaluate(history, n_folds=folds, species=species, upwind=upwind)
+    lagged = temporal_split_evaluate(
+        history, n_folds=folds, species=species, months=months, upwind=upwind
+    )
     if lagged.empty:
         return
     print_evaluation_report(lagged)
@@ -604,7 +611,8 @@ def cmd_calibrate(rebuild: bool = False) -> None:
         # Twice the shipped horizon: a stale run publishes the rate of the
         # horizon it really is, which can lie beyond FORECAST_DAYS.
         results = rollout_evaluate(
-            history, horizon_days=CALIBRATION_HORIZON_DAYS, n_folds=6, upwind=load_upwind()
+            history, horizon_days=CALIBRATION_HORIZON_DAYS, months=record_months(),
+            upwind=load_upwind(),
         )
         if results.empty:
             print("Benchmark produced no results.")

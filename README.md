@@ -340,7 +340,7 @@ python -m src.main run
 python -m src.main run-train
 
 # Backtest the 5-day forecast the way it actually runs
-python -m src.main benchmark 5 --folds 3
+python -m src.main benchmark
 ```
 
 ## Commands
@@ -356,7 +356,7 @@ python -m src.main benchmark 5 --folds 3
 | `backfill-weather [start] [end]` | Rewrite every weather column of the existing history from the Open-Meteo archive; pollen values untouched |
 | `backfill-ndvi [start] [end]` | Rewrite the NDVI columns of the existing history from MODIS composites |
 | `run-backfill` | Both of the above against the data release (what `mode: backfill` runs in Actions) |
-| `benchmark [days]` | Walk-forward **rollout** of the real autoregressive forecast, scored per forecast day (default: 5). `--folds N` or `--months 2026-02,2026-04`, `--species A,B`, `--classic` |
+| `benchmark [days]` | Walk-forward **rollout** of the shipped forecast, scored per forecast day (default: 5), over the six record months (`RECORD_MONTHS` in `src/rollout.py`). `--months 2026-02,2026-04` names other months, `--folds N` samples N across the year; `--species A,B`, `--classic` |
 | `benchmark-onset` | The shipped rollout over the months containing each measured season start of the last three seasons (default: Corylus, Alnus, Betula): timing, amount and false starts per species-year and horizon. `--species A,B`, `--years N`, `--classic` (old one-window-ahead diagnostic) |
 | `calibrate [--rebuild]` | Regenerate `src/confidence.json` from `data/benchmark_rollout.csv`; `--rebuild` runs the rollout first, over 10 days so stale runs read a measured rate |
 | `dwd` | Display the current DWD pollen danger index for Oberbayern |
