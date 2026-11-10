@@ -39,7 +39,7 @@ from .types import (
     is_season_active,
 )
 from .upwind import upwind_state
-from .trainer import WINDOW, grid_series
+from .trainer import WINDOW, grid_series, intraday_table, weather_derived_table, window_weather
 from .season_load import load_features_for_years, season_totals, season_year
 from .onset import (
     onset_doy_by_day,
@@ -224,35 +224,12 @@ def combined_weather(history: pd.DataFrame, weather: pd.DataFrame) -> pd.DataFra
     from the forecast window alone. Where the two overlap the forecast wins,
     which is what the collector would have written anyway.
     """
-    cols = [c for c in WEATHER_COLUMNS if c in history.columns]
-    hist_weather = (
-        history.groupby("date")[cols].first()
-        if not history.empty and cols
-        else pd.DataFrame(columns=WEATHER_COLUMNS)
-    )
+    hist_weather = window_weather(history)
+    if hist_weather.empty:
+        hist_weather = pd.DataFrame(columns=WEATHER_COLUMNS)
     combined = pd.concat([hist_weather, weather])
     combined = combined[~combined.index.duplicated(keep="last")]
     return combined.sort_index()
-
-
-def intraday_features(weather: pd.DataFrame) -> pd.DataFrame:
-    """Intra-day relative features, mirroring ``trainer._add_intraday_features``.
-
-    Derived on the *combined* frame rather than the forecast window, so the
-    first forecast window has a real predecessor to difference against and the
-    first (partial) day has its true daily maximum.
-    """
-    temp = weather["temperature_mean"].fillna(0)
-    days = pd.to_datetime(weather.index).normalize()
-    daily_max = temp.groupby(days).transform("max")
-
-    out = pd.DataFrame(index=weather.index)
-    out["temp_vs_daily_max"] = np.where(daily_max > 0, temp / daily_max, 0.0)
-    out["precip_in_prior_window"] = (
-        (weather["precipitation_sum"].fillna(0).shift(1) > 0.1).astype(float).fillna(0)
-    )
-    out["temp_rate_of_change"] = temp.diff(1).fillna(0)
-    return out
 
 
 def ndvi_from_history(history: pd.DataFrame, days: pd.DatetimeIndex) -> pd.DataFrame:
@@ -270,7 +247,6 @@ def build_context(
     ndvi: pd.DataFrame,
     cams: pd.DataFrame | None = None,
     species: list[str] | None = None,
-    parallel: bool = True,
 ) -> FeatureContext:
     """Precompute every per-run lookup table the row builder needs.
 
@@ -279,15 +255,10 @@ def build_context(
     derived from.
     """
     species_list = list(species) if species else list(ALL_SPECIES)
-    from .trainer import _add_weather_derived_features
 
     combined = combined_weather(history, weather)
-    base = combined.reset_index().rename(columns={"index": "date"})
-    base["species"] = "__dummy__"
-    base["value"] = 0.0
 
-    # Onset estimates and GDD thresholds come from the real measurements: the
-    # weather-only frame above carries a dummy species and cannot derive them.
+    # Onset estimates and thresholds come from the real measurements.
     onset_by_species = {sp: onset_doy_by_day(history, sp) for sp in species_list}
     onset_fallback = {sp: _static_onset_doy(sp) for sp in species_list}
     # Readiness must keep accumulating through the forecast days, so the
@@ -304,24 +275,13 @@ def build_context(
     }
     totals = {sp: season_totals(history, sp) for sp in species_list}
 
-    def derive(sp: str) -> tuple[str, pd.DataFrame]:
-        frame = _add_weather_derived_features(base.copy(), sp)
-        return sp, frame.set_index("date")
-
-    if parallel and len(species_list) > 1:
-        from concurrent.futures import ThreadPoolExecutor
-
-        with ThreadPoolExecutor(max_workers=len(species_list)) as pool:
-            futures = [pool.submit(derive, sp) for sp in species_list]
-            weather_derived = dict(f.result() for f in futures)
-    else:
-        weather_derived = dict(derive(sp) for sp in species_list)
+    weather_derived = {sp: weather_derived_table(combined, sp) for sp in species_list}
 
     return FeatureContext(
         weather=combined,
         weather_derived=weather_derived,
         ndvi=ndvi,
-        intraday=intraday_features(combined),
+        intraday=intraday_table(combined),
         cams=cams if cams is not None else pd.DataFrame(),
         onset_by_species=onset_by_species,
         readiness_by_species=readiness_by_species,

@@ -161,7 +161,6 @@ def _fold_context(
         weather,
         ndvi=ndvi_from_history(history, days),
         species=species,
-        parallel=False,
     )
     return ctx, weather
 

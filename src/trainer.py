@@ -41,6 +41,7 @@ from .types import (
     SEASON_FEATURE,
     WEATHER_DERIVED_FEATURES,
     LEAD_FEATURES,
+    WEATHER_COLUMNS,
     WEATHER_FEATURES,
     WINDOW_FEATURES,
     GDD_T_BASE,
@@ -327,160 +328,179 @@ def _add_ndvi_features(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def _add_intraday_features(df: pd.DataFrame) -> pd.DataFrame:
-    """Add intra-day relative features that capture diurnal position.
+def window_weather(history: pd.DataFrame) -> pd.DataFrame:
+    """The raw weather columns of *history*, one row per 3h window, sorted.
+
+    Weather is a property of the window, not of the species: every species
+    row of a window carries the same columns. Everything derived from weather
+    alone is therefore computed on this frame once and attached to the
+    species rows by date, rather than recomputed on each species' rows.
+    """
+    cols = [c for c in WEATHER_COLUMNS if c in history.columns]
+    if history.empty or not cols:
+        return pd.DataFrame(columns=cols)
+    return history.groupby("date")[cols].first().sort_index()
+
+
+def intraday_table(weather: pd.DataFrame) -> pd.DataFrame:
+    """Intra-day relative features per window, from a window-indexed weather frame.
 
     - temp_vs_daily_max: ratio of window temperature to the day's max
     - precip_in_prior_window: binary flag for rain in the previous 3h window
     - temp_rate_of_change: temperature difference from the previous 3h window
+
+    One definition for the trainer and the forecaster: the forecaster calls
+    it on the combined measured-plus-forecast frame, so the first forecast
+    window has a real predecessor to difference against and the first
+    (partial) day has its true daily maximum.
     """
-    df = df.copy().sort_values("date")
+    temp = weather["temperature_mean"].fillna(0)
+    days = pd.DatetimeIndex(pd.to_datetime(weather.index)).normalize()
+    daily_max = temp.groupby(days).transform("max")
 
-    temp_mean = df["temperature_mean"].fillna(0)
-
-    # Daily max temperature (group by calendar day)
-    day_col = pd.to_datetime(df["date"]).dt.normalize()
-    daily_max = temp_mean.groupby(day_col.values).transform("max")
-    df["temp_vs_daily_max"] = np.where(
-        daily_max > 0, temp_mean / daily_max, 0.0
+    out = pd.DataFrame(index=weather.index)
+    out["temp_vs_daily_max"] = np.where(daily_max > 0, temp / daily_max, 0.0)
+    out["precip_in_prior_window"] = (
+        (weather["precipitation_sum"].fillna(0).shift(1) > 0.1).astype(float).fillna(0)
     )
+    out["temp_rate_of_change"] = temp.diff(1).fillna(0)
+    return out
 
-    # Precipitation in prior window (binary)
-    precip = df["precipitation_sum"].fillna(0)
-    df["precip_in_prior_window"] = (precip.shift(1) > 0.1).astype(float).fillna(0)
 
-    # Temperature rate of change (diff from previous 3h window)
-    df["temp_rate_of_change"] = temp_mean.diff(1).fillna(0)
-
+def _add_intraday_features(df: pd.DataFrame) -> pd.DataFrame:
+    """Attach :func:`intraday_table` to a frame with one row per window."""
+    df = df.copy().sort_values("date")
+    table = intraday_table(df.set_index("date")[["temperature_mean", "precipitation_sum"]])
+    for col in INTRADAY_FEATURES:
+        df[col] = table[col].to_numpy()
     return df
 
 
-def _add_weather_derived_features(df: pd.DataFrame, species: str = "") -> pd.DataFrame:
+def _streak(mask: pd.Series) -> pd.Series:
+    """Length of the run of True values ending at each position (0 where False)."""
+    mask = mask.astype(bool)
+    return mask.astype(int).groupby((~mask).cumsum()).cumsum().astype(float)
+
+
+_shared_derived_cache: dict[tuple, pd.DataFrame] = {}
+
+
+def _shared_weather_derived(weather: pd.DataFrame) -> pd.DataFrame:
+    """Every weather-derived column that does not depend on the species.
+
+    Cached on a cheap fingerprint of the frame: the trainer asks for the same
+    table once per species, and the benchmark once per species per fold.
     """
-    Compute weather-derived features from the raw weather columns already in *df*.
+    temp_mean = weather["temperature_mean"]
+    key = (
+        len(weather),
+        weather.index[0] if len(weather) else None,
+        weather.index[-1] if len(weather) else None,
+        float(temp_mean.sum()),
+        float(weather["precipitation_sum"].sum()),
+        "wind_direction" in weather.columns,
+    )
+    cached = _shared_derived_cache.get(key)
+    if cached is not None:
+        return cached
 
-    Operates on 3-hour window data. Rolling windows are sized in number of
-    3h windows: 24 windows = 3 days, 56 windows = 7 days.
-
-    Features added:
-    - GDD (Growing Degree Days) — cumulative thermal time from Jan 1 (daily)
-    - 3 / 7-day rolling means for temperature, sunshine, precipitation
-    - Day-over-day and 3-day temperature deltas (warming trend)
-    - Warm × sunny interaction (peak dispersal signal)
-    - Dry + warm interaction
-    - Burst potential: consecutive warm windows (#2); the threshold-gated
-      readiness features live with the phenology block since they read the
-      species' selected forcing rule
-    - Explosion likelihood: dry streak, warm-after-cold, wind×dry_warm (#6)
-    """
-    df = df.copy().sort_values("date")
-
-    # De-duplicate so rolling computations are per-window
-    temp_mean = df.groupby("date")["temperature_mean"].first()
-    sunshine = df.groupby("date")["sunshine_duration"].first()
-    precip = df.groupby("date")["precipitation_sum"].first()
-    humidity = df.groupby("date")["humidity_mean"].first()
-    wind = df.groupby("date")["wind_speed_max"].first()
+    sunshine = weather["sunshine_duration"]
+    precip = weather["precipitation_sum"]
+    humidity = weather["humidity_mean"]
+    wind = weather["wind_speed_max"]
 
     # --- GDD (cumsum of daily max(0, T_mean - T_base), reset each Jan 1) ---
-    window_dates = pd.DatetimeIndex(pd.to_datetime(temp_mean.index)).normalize()
-    daily_temp = pd.Series(temp_mean.values, index=window_dates).groupby(level=0).mean()
+    window_dates = pd.DatetimeIndex(pd.to_datetime(weather.index)).normalize()
+    daily_temp = pd.Series(temp_mean.to_numpy(), index=window_dates).groupby(level=0).mean()
     daily_gdd_contrib = (daily_temp - GDD_T_BASE).clip(lower=0)
     gdd_daily = daily_gdd_contrib.groupby(pd.DatetimeIndex(daily_temp.index).year).cumsum()
-    date_to_gdd = gdd_daily.to_dict()
-    gdd = pd.Series(
-        [date_to_gdd.get(d, 0.0) for d in window_dates],
-        index=temp_mean.index,
-    )
+    gdd = pd.Series(gdd_daily.reindex(window_dates).fillna(0.0).to_numpy(), index=weather.index)
 
     # --- Rolling weather (3 days = 24 windows, 7 days = 56 windows) ---
     temp_r3 = temp_mean.rolling(24, min_periods=1).mean()
     temp_r7 = temp_mean.rolling(56, min_periods=1).mean()
-    sun_r3 = sunshine.rolling(24, min_periods=1).mean()
-    sun_r7 = sunshine.rolling(56, min_periods=1).mean()
-    rain_r3 = precip.rolling(24, min_periods=1).sum()
-    rain_r7 = precip.rolling(56, min_periods=1).sum()
-
-    # --- Temperature deltas (1 day = 8 windows, 3 days = 24 windows) ---
-    td1 = temp_mean.diff(8)
-    td3 = temp_mean.diff(24)
 
     # --- Interactions ---
-    temp_x_sun = temp_mean * sunshine / 3600.0  # normalize sunshine to hours
     dry_warm = temp_mean * (100.0 - humidity) / 100.0
-
-    # --- Burst potential features (#2) ---
-    activation_temp = SPECIES_ACTIVATION_TEMP.get(species, _DEFAULT_ACTIVATION_TEMP)
-
-    # Consecutive warm windows: count streak of temp > activation_temp
-    warm_mask = (temp_mean > activation_temp).astype(int)
-    # Compute streak: reset counter when not warm
-    streak = warm_mask.copy()
-    for i in range(1, len(streak)):
-        if streak.iloc[i] == 1:
-            streak.iloc[i] = streak.iloc[i - 1] + 1
-    consec_warm = streak.astype(float)
-
-    # --- Explosion likelihood features (#6) ---
-    # Dry streak: consecutive windows with precipitation < 0.1mm
-    dry_mask = (precip < 0.1).astype(int)
-    dry_str = dry_mask.copy()
-    for i in range(1, len(dry_str)):
-        if dry_str.iloc[i] == 1:
-            dry_str.iloc[i] = dry_str.iloc[i - 1] + 1
-
-    warm_after_cold = temp_r3 - temp_r7  # positive = warming trend
-    wind_x_dw = wind * dry_warm  # dispersal capacity
 
     # --- Upwind transport features ---
     # Wind direction: where the wind is coming FROM (meteorological convention)
     # 0°/360° = N, 90° = E, 180° = S, 270° = W
     # Munich is surrounded by alpine forests (S) and agricultural plains (N)
-    if "wind_direction" in df.columns:
-        wind_dir = df.groupby("date")["wind_direction"].first()
+    if "wind_direction" in weather.columns:
+        wind_dir = weather["wind_direction"]
     else:
-        wind_dir = pd.Series(0.0, index=temp_mean.index)
+        wind_dir = pd.Series(0.0, index=weather.index)
     dir_rad = np.radians(wind_dir)
-    wd_sin = np.sin(dir_rad)              # positive = from east
     wd_cos = np.cos(dir_rad)              # positive = from north
-    # Directional indicators (how much wind comes from that direction)
-    wind_from_south = (-wd_cos).clip(lower=0)   # 180° → 1.0
-    wind_from_north = wd_cos.clip(lower=0)       # 0°   → 1.0
-    # Transport potential = wind speed × directional strength
-    transport_s = wind * wind_from_south
-    transport_n = wind * wind_from_north
 
-    # Build a lookup dict indexed by date
     derived = pd.DataFrame({
         "gdd": gdd,
         "temp_rolling_3d": temp_r3,
         "temp_rolling_7d": temp_r7,
-        "sunshine_rolling_3d": sun_r3,
-        "sunshine_rolling_7d": sun_r7,
-        "rain_rolling_3d": rain_r3,
-        "rain_rolling_7d": rain_r7,
-        "temp_delta_1d": td1,
-        "temp_delta_3d": td3,
-        "temp_x_sunshine": temp_x_sun,
+        "sunshine_rolling_3d": sunshine.rolling(24, min_periods=1).mean(),
+        "sunshine_rolling_7d": sunshine.rolling(56, min_periods=1).mean(),
+        "rain_rolling_3d": precip.rolling(24, min_periods=1).sum(),
+        "rain_rolling_7d": precip.rolling(56, min_periods=1).sum(),
+        # Temperature deltas (1 day = 8 windows, 3 days = 24 windows)
+        "temp_delta_1d": temp_mean.diff(8),
+        "temp_delta_3d": temp_mean.diff(24),
+        "temp_x_sunshine": temp_mean * sunshine / 3600.0,  # sunshine in hours
         "dry_warm": dry_warm,
-        "consecutive_warm_hrs": consec_warm,
-        "dry_streak": dry_str.astype(float),
-        "warm_after_cold": warm_after_cold,
-        "wind_x_dry_warm": wind_x_dw,
-        "wind_dir_sin": wd_sin,
+        # Explosion likelihood (#6): consecutive windows with precipitation < 0.1 mm
+        "dry_streak": _streak(precip < 0.1),
+        "warm_after_cold": temp_r3 - temp_r7,  # positive = warming trend
+        "wind_x_dry_warm": wind * dry_warm,    # dispersal capacity
+        "wind_dir_sin": np.sin(dir_rad),       # positive = from east
         "wind_dir_cos": wd_cos,
-        "wind_from_south": wind_from_south,
-        "wind_from_north": wind_from_north,
-        "transport_south": transport_s,
-        "transport_north": transport_n,
+        # Transport potential = wind speed × southerly strength (180° → 1.0)
+        "transport_south": wind * (-wd_cos).clip(lower=0),
     })
+    # A handful of frames are live at once (the training frame and one fold
+    # context per species); older ones are dropped rather than accumulated.
+    while len(_shared_derived_cache) >= 8:
+        _shared_derived_cache.pop(next(iter(_shared_derived_cache)))
+    _shared_derived_cache[key] = derived
+    return derived
 
+
+def weather_derived_table(weather: pd.DataFrame, species: str = "") -> pd.DataFrame:
+    """The weather-derived features per window, from a window-indexed weather frame.
+
+    Rolling windows are sized in 3h windows: 24 = 3 days, 56 = 7 days.
+
+    - GDD (Growing Degree Days) — cumulative thermal time from Jan 1 (daily)
+    - 3 / 7-day rolling means for temperature, sunshine, precipitation
+    - Day-over-day and 3-day temperature deltas (warming trend)
+    - Warm × sunny and dry + warm interactions
+    - Burst potential: consecutive warm windows above the species' activation
+      temperature (#2) — the one column that depends on the species; the
+      threshold-gated readiness features live with the phenology block
+    - Explosion likelihood: dry streak, warm-after-cold, wind×dry_warm (#6)
+    - Wind direction components and southerly transport
+
+    NaN (the first windows of a delta, a missing raw value) is filled with 0,
+    as the model sees it.
+    """
+    if weather.empty:
+        return pd.DataFrame(columns=WEATHER_DERIVED_FEATURES)
+    derived = _shared_weather_derived(weather).copy()
+    activation_temp = SPECIES_ACTIVATION_TEMP.get(species, _DEFAULT_ACTIVATION_TEMP)
+    derived["consecutive_warm_hrs"] = _streak(weather["temperature_mean"] > activation_temp)
+    return derived[WEATHER_DERIVED_FEATURES].fillna(0.0)
+
+
+def _add_weather_derived_features(df: pd.DataFrame, species: str = "") -> pd.DataFrame:
+    """Attach :func:`weather_derived_table` to a frame carrying raw weather columns.
+
+    *df* may hold several rows per window (one per species); the table is
+    built on its windows and mapped back by date.
+    """
+    df = df.copy().sort_values("date")
+    derived = weather_derived_table(window_weather(df), species)
     for col in derived.columns:
-        mapping = derived[col].to_dict()
-        df[col] = df["date"].map(mapping)
-
-    df = df.fillna({col: 0.0 for col in derived.columns})
-    return df
+        df[col] = df["date"].map(derived[col])
+    return df.fillna({col: 0.0 for col in derived.columns})
 
 
 # Leads the model is trained at, in 3h windows. A 5-day forecast spans leads
@@ -573,9 +593,13 @@ def prepare_training_data(
     for col in FEATURE_COLS:
         if col not in species_df.columns:
             species_df[col] = 0.0
-    species_df = _add_weather_derived_features(species_df, species)
+    # Weather-only features are built once on the history's window grid and
+    # attached by date; every species row of a window shares them.
+    weather = window_weather(history)
+    tables = pd.concat([weather_derived_table(weather, species), intraday_table(weather)], axis=1)
+    for col in tables.columns:
+        species_df[col] = species_df["date"].map(tables[col]).fillna(0.0)
     species_df = _add_ndvi_features(species_df)
-    species_df = _add_intraday_features(species_df)
     species_df = _add_season_feature(species_df, species)
     species_df = _add_phenology_features(species_df, species)
     species_df = _add_load_features(species_df, species)

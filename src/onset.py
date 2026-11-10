@@ -356,8 +356,14 @@ def _climatology_loo_error(onsets: dict[int, int]) -> float:
     return float(np.mean(errors)) if errors else float("inf")
 
 
+_selection_cache: dict[tuple, tuple[ForcingRule | None, float | None, float]] = {}
+
+
 def select_forcing_rule(
-    history: pd.DataFrame, species: str, before_year: int | None = None
+    history: pd.DataFrame,
+    species: str,
+    before_year: int | None = None,
+    onsets: dict[int, int] | None = None,
 ) -> tuple[ForcingRule | None, float | None, float]:
     """The projection rule for *species*, calibrated on seasons before *before_year*.
 
@@ -367,12 +373,29 @@ def select_forcing_rule(
     :data:`MIN_RULE_SELECTION_YEARS` prior seasons the default rule is used,
     exactly as before there was a choice; with fewer than
     :data:`MIN_CALIBRATION_YEARS` there is no threshold either.
+
+    *onsets* is ``observed_onsets(history, species)`` when the caller already
+    has it. The answer depends on the history only through those onsets and
+    the daily temperatures, so it is memoised on exactly that: a feature
+    build asks for every year of every species, twice, and the answer
+    changes once a year.
     """
-    onsets = {
-        y: d for y, d in observed_onsets(history, species).items()
-        if before_year is None or y < before_year
-    }
-    daily_temp = daily_temperature(history)
+    if onsets is None:
+        onsets = observed_onsets(history, species)
+    key = (_fingerprint(history), tuple(sorted(onsets.items())), before_year)
+    cached = _selection_cache.get(key)
+    if cached is None:
+        cached = _select_forcing_rule(
+            daily_temperature(history),
+            {y: d for y, d in onsets.items() if before_year is None or y < before_year},
+        )
+        _selection_cache[key] = cached
+    return cached
+
+
+def _select_forcing_rule(
+    daily_temp: pd.Series, onsets: dict[int, int]
+) -> tuple[ForcingRule | None, float | None, float]:
     if daily_temp.empty or len(onsets) < MIN_CALIBRATION_YEARS:
         return DEFAULT_FORCING_RULE, None, float("inf")
 
@@ -418,13 +441,14 @@ def rules_by_year(
     """
     out: dict[int, tuple[ForcingRule, float | None]] = {}
     daily_temp = daily_temperature(history)
+    all_onsets = observed_onsets(history, species)
     for year in years:
-        rule, threshold, _ = select_forcing_rule(history, species, before_year=int(year))
+        rule, threshold, _ = select_forcing_rule(
+            history, species, before_year=int(year), onsets=all_onsets
+        )
         if rule is None:
             rule = DEFAULT_FORCING_RULE
-            onsets = {
-                y: d for y, d in observed_onsets(history, species).items() if y < int(year)
-            }
+            onsets = {y: d for y, d in all_onsets.items() if y < int(year)}
             at = _forcing_at(forcing_series(daily_temp, rule), onsets) if not daily_temp.empty else {}
             threshold = float(np.median(list(at.values()))) if len(at) >= MIN_CALIBRATION_YEARS else None
         out[int(year)] = (rule, threshold)
@@ -485,7 +509,8 @@ def onset_doy_by_day(history: pd.DataFrame, species: str) -> pd.Series:
     if daily_temp.empty:
         return pd.Series(dtype=float)
 
-    onsets = {y: float(d) for y, d in observed_onsets(history, species).items()}
+    all_onsets = observed_onsets(history, species)
+    onsets = {y: float(d) for y, d in all_onsets.items()}
     idx = pd.DatetimeIndex(daily_temp.index)
     estimate = pd.Series(np.nan, index=idx, dtype=float)
 
@@ -496,7 +521,9 @@ def onset_doy_by_day(history: pd.DataFrame, species: str) -> pd.Series:
             climatology = _static_onset_doy(species)
         year_est = np.full(int(mask.sum()), climatology, dtype=float)
 
-        rule, threshold, _ = select_forcing_rule(history, species, before_year=year)
+        rule, threshold, _ = select_forcing_rule(
+            history, species, before_year=year, onsets=all_onsets
+        )
         if rule is not None and threshold is not None:
             year_forcing = forcing_series(daily_temp, rule)[mask]
             crossed = (year_forcing >= threshold).to_numpy()

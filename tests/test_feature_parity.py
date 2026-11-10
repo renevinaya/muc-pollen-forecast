@@ -189,7 +189,6 @@ def serving_features(
     days = pd.DatetimeIndex(weather.index).normalize().unique()
     ctx = build_context(
         past, weather, ndvi=ndvi_from_history(history, days), species=[species],
-        parallel=False,
     )
 
     rows = {}
