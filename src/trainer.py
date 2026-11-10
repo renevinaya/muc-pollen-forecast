@@ -30,7 +30,6 @@ from xgboost import XGBClassifier, XGBRegressor
 from .types import (
     ALL_SPECIES,
     CALENDAR_FEATURES,
-    CAMS_FEATURES,
     FEATURE_COLS,
     INTRADAY_FEATURES,
     LAG_FEATURES,
@@ -926,7 +925,6 @@ FEATURE_FAMILIES: dict[str, list[str]] = {
     "ndvi": NDVI_FEATURES,
     "phenology": PHENOLOGY_FEATURES,
     "load": LOAD_FEATURES,
-    "cams": CAMS_FEATURES,
     "intraday": INTRADAY_FEATURES,
     "lag": LAG_FEATURES,
     "upwind": UPWIND_FEATURES,

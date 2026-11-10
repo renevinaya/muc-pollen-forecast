@@ -167,7 +167,6 @@ def _run(monkeypatch: pytest.MonkeyPatch, frame: pd.DataFrame, last_obs: pd.Time
     history = frame[frame["date"] <= last_obs].reset_index(drop=True)
 
     monkeypatch.setattr(forecaster, "fetch_weather_forecast", lambda days: weather)
-    monkeypatch.setattr(forecaster, "fetch_cams_forecast", lambda days: pd.DataFrame())
     monkeypatch.setattr(forecaster, "local_now", lambda: pd.Timestamp("2021-04-20 13:30"))
 
     import src.dwd

@@ -40,7 +40,6 @@ ML-based pollen forecast for Munich at 3-hour resolution, using a three-stage XG
 | [Open-Meteo](https://open-meteo.com/) | Weather forecast + historical archive | Hourly weather aggregated to 3-hour windows: temperature, precipitation, wind, humidity, sunshine, radiation, boundary layer height, dew point, CAPE, direct radiation, soil temperature + moisture (no API key required) |
 | [MODIS (ORNL DAAC)](https://modis.ornl.gov/rst/api/v1) | NDVI / EVI satellite data | MOD13Q1 250 m 16-day vegetation indices, cubic-interpolated to daily resolution |
 | [DWD Open Data](https://opendata.dwd.de/) | Pollenflug-Gefahrenindex | Official pollen danger levels for Oberbayern (partregion 121) — used both for benchmarking and an inference-time level blend |
-| [Copernicus CAMS](https://ads.atmosphere.copernicus.eu/) (optional) | European pollen forecast | Physics-based ensemble forecast for alder, birch, grass, mugwort, ragweed. **Off by default** — see [Optional: CAMS pollen feature](#optional-cams-pollen-feature) |
 
 ## Model
 
@@ -397,29 +396,6 @@ uv sync
 
 Requires Python ≥ 3.12 (the version the pipeline runs, and the minimum for current numpy/xgboost). Dependencies: httpx, pandas, numpy, xgboost, scikit-learn, joblib.
 
-### Optional: CAMS pollen feature
-
-The model can consume the [Copernicus CAMS](https://ads.atmosphere.copernicus.eu/)
-physics-based European pollen forecast as an extra feature (`cams_pollen`),
-which adds long-range-transport and season-onset signal a purely local model
-can't see. It is **off by default and fail-open**: with no Atmosphere Data Store
-(ADS) credentials or extra dependencies installed, the feature is simply `0`
-everywhere and the model is unaffected — production never breaks.
-
-To activate:
-
-```bash
-# 1. Install the optional dependencies (cdsapi, xarray, netCDF4)
-uv sync --extra cams
-
-# 2. Provide ADS credentials (or configure ~/.cdsapirc)
-export CAMS_ADS_URL="https://ads.atmosphere.copernicus.eu/api"
-export CAMS_ADS_KEY="<your-ads-key>"
-
-# 3. Backfill historical CAMS into history.csv and retrain so the feature is
-#    populated for training; it then becomes live at inference automatically.
-```
-
 ## Usage
 
 ```bash
@@ -698,7 +674,6 @@ file cross-origin.
 | `GITHUB_REPOSITORY` | Actions (automatic) | `owner/repo` holding the data release. Falls back to `renevinaya/muc-pollen-forecast`. |
 | `DATA_REPO` | optional | Overrides `GITHUB_REPOSITORY` when pointing at a fork. |
 | `DATA_RELEASE_TAG` | optional | Release tag holding the data assets (default: `data`). |
-| `CAMS_ADS_URL` / `CAMS_ADS_KEY` | repo secrets (optional) | Activates the Copernicus CAMS feature. |
 
 ### Repository setup
 
@@ -890,7 +865,7 @@ was built from — the part of the output that used to be silent:
   blend), `weather_soil` (Open-Meteo answered without soil variables),
   `upwind` (no station readings in the last 7 days, for some or all species),
   `model` (a species with no trained model, forecast by persistence), and
-  `confidence` (no calibration table). CAMS is not listed: it has never been
-  active, in training or live, so a zero there is the norm, not a fallback.
+  `confidence` (no calibration table) and `outlook` (the season outlook
+  could not be computed and is left out).
 - `degraded` is true when observations are stale or anything was defaulted.
   The same line is printed in the run log (`Inputs: ...`).

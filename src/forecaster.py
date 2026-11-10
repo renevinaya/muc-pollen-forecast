@@ -45,7 +45,6 @@ from .trainer import TwoStageModel, finalize_features, load_models, inv_log_tran
 from .confidence import confidence_for, load_table, value_interval
 from .features import FeatureContext, LagState, build_context, build_feature_row, combined_weather
 from .outlook import OUTLOOK_FORECAST_DAYS, SeasonOutlook, season_outlook
-from .cams import fetch_cams_forecast
 
 WINDOW = pd.Timedelta(hours=3)
 
@@ -287,7 +286,6 @@ def generate_forecast(
         history,
         weather,
         ndvi=_fetch_ndvi(forecast_days_index, defaulted),
-        cams=fetch_cams_forecast(FORECAST_DAYS),
     )
     dwd_levels = _fetch_dwd_levels(defaulted)
 

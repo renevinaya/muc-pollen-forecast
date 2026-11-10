@@ -106,7 +106,6 @@ def build_history(
             "ndvi": _ndvi(dt.dayofyear),
             "evi": 0.2 + 0.3 * max(0.0, np.sin(np.pi * dt.dayofyear / 365)),
             "ndvi_delta": _ndvi(dt.dayofyear) - _ndvi(dt.dayofyear - 1),
-            "cams_pollen": 0.0,
             # Calendar features live in history.csv: the collector writes them
             # at fetch time, so the trainer reads rather than derives them. The
             # forecaster derives them from the timestamp, and that pair is

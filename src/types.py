@@ -178,15 +178,13 @@ LOAD_FEATURES = [
     "load_trend",       # last season vs the one before (alternation)
 ]
 
-# CAMS features (optional — from the Copernicus European pollen forecast).
-# When the CAMS integration is not activated (no ADS key / deps), this column
-# is simply 0 everywhere and the model ignores it. See src/cams.py.
-# Empty on purpose. `cams_pollen` was in the model's input list for its whole
-# life without ever being populated: it is NaN in 97% of history rows and 0.0 in
-# the rest, and no model ever split on it. The collector still writes the column
-# and src/cams.py still fetches when credentials exist, so activating CAMS is
-# a backfill plus putting "cams_pollen" back in this list and retraining.
-CAMS_FEATURES: list[str] = []
+# No CAMS features. `cams_pollen` was in the model's input list for its whole
+# life without ever being populated (NaN in 95% of history rows, 0.0 in the
+# rest; no model ever split on it), and the Copernicus client behind it was
+# removed in November 2026. The European pollen forecast is served without
+# credentials by Open-Meteo's air-quality API if it is ever wanted: measured
+# against Munich it finds the birch and grass starts to within a few days in
+# most years but does not know a heavy year from a light one (TASKS.md).
 
 # Intra-day relative features (capture diurnal position and short-term dynamics)
 INTRADAY_FEATURES = [
@@ -227,7 +225,6 @@ FEATURE_COLS = (
     + NDVI_FEATURES
     + PHENOLOGY_FEATURES
     + LOAD_FEATURES
-    + CAMS_FEATURES
     + INTRADAY_FEATURES
     + LAG_FEATURES
     + UPWIND_FEATURES

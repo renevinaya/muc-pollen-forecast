@@ -58,9 +58,6 @@ jobs:
       - name: Run pipeline
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Optional — enables the Copernicus CAMS feature when set.
-          CAMS_ADS_URL: ${{ secrets.CAMS_ADS_URL }}
-          CAMS_ADS_KEY: ${{ secrets.CAMS_ADS_KEY }}
         run: |
           if [ "$MODE" = "train" ]; then
             uv run python -m src.main run-train

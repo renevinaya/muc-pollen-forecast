@@ -47,7 +47,6 @@ from .onset import (
     readiness_by_day,
     _static_onset_doy,
 )
-from .cams import cams_value
 
 # Longest lag the model asks for (7 days of 3h windows). The rolling state
 # keeps exactly this many past values.
@@ -207,7 +206,6 @@ class FeatureContext:
     weather_derived: dict[str, pd.DataFrame]
     ndvi: pd.DataFrame
     intraday: pd.DataFrame
-    cams: pd.DataFrame
     onset_by_species: dict[str, pd.Series]
     # Forcing under each species' rule and the rule's threshold, per day,
     # accumulated over the combined measured-plus-forecast temperature.
@@ -245,7 +243,6 @@ def build_context(
     history: pd.DataFrame,
     weather: pd.DataFrame,
     ndvi: pd.DataFrame,
-    cams: pd.DataFrame | None = None,
     species: list[str] | None = None,
 ) -> FeatureContext:
     """Precompute every per-run lookup table the row builder needs.
@@ -289,7 +286,6 @@ def build_context(
         weather_derived=weather_derived,
         ndvi=ndvi,
         intraday=intraday_table(combined),
-        cams=cams if cams is not None else pd.DataFrame(),
         onset_by_species=onset_by_species,
         readiness_by_species=readiness_by_species,
         onset_fallback=onset_fallback,
@@ -363,7 +359,6 @@ def static_features(ctx: FeatureContext, species: str, dt: pd.Timestamp) -> dict
     load = load_features_for_years(ctx.season_totals.get(species, {}), [year])[year]
     features.update({name: float(load[name]) for name in LOAD_FEATURES})
 
-    features["cams_pollen"] = cams_value(ctx.cams, dt, species)
     features.update(_row_from(ctx.intraday, dt, INTRADAY_FEATURES))
     return features
 

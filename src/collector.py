@@ -19,7 +19,6 @@ from .upwind import UPWIND_STATIONS, fetch_upwind, update_upwind
 from .pollen import fetch_measurements_chunked, fetch_pollen, pivot_pollen
 from .weather import fetch_historical_weather, fetch_weather_forecast
 from .ndvi import fetch_ndvi, interpolate_ndvi, set_composites_cache
-from .cams import fetch_cams_forecast, cams_value
 from .types import ALL_SPECIES, LOCATION, WEATHER_ONLY
 from .clock import local_now, local_today
 
@@ -109,11 +108,6 @@ def collect(days: int = 14) -> pd.DataFrame:
         print(f"  Upwind: {len(upwind_raw)} rows from {n_st} station(s)")
         update_upwind(upwind_raw)
 
-    # Optional CAMS pollen forecast (fail-open: empty when inactive). For the
-    # recent-data window most values are 0; a dedicated CAMS backfill populates
-    # history for training.
-    cams_df = fetch_cams_forecast()
-
     if pollen_raw.empty:
         print("No pollen data available.")
         return pd.DataFrame()
@@ -198,8 +192,6 @@ def collect(days: int = 14) -> pd.DataFrame:
                 row["ndvi"] = 0.0
                 row["evi"] = 0.0
                 row["ndvi_delta"] = 0.0
-            # CAMS feature (0.0 when CAMS is inactive)
-            row["cams_pollen"] = cams_value(cams_df, dt, species)
             rows.append(row)
 
     df = pd.DataFrame(rows)

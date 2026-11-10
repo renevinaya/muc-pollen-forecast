@@ -279,7 +279,6 @@ def test_collect_writes_weather_only_rows_for_unreported_windows(monkeypatch) ->
     monkeypatch.setattr(collector, "fetch_weather_forecast", lambda days: weather)
     monkeypatch.setattr(collector, "fetch_ndvi", lambda: pd.DataFrame(columns=["date", "ndvi", "evi"]))
     monkeypatch.setattr(collector, "set_composites_cache", lambda composites: None)
-    monkeypatch.setattr(collector, "fetch_cams_forecast", lambda: pd.DataFrame())
 
     frame = collector.collect(days=2)
 
