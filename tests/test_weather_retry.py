@@ -144,3 +144,38 @@ def test_a_transient_failure_does_not_trigger_the_soil_fallback(monkeypatch):
 
     assert len(seen) == 2
     assert all("soil_temperature_6cm" in hourly for hourly in seen)
+
+
+
+def test_retries_a_rate_limit(monkeypatch):
+    """429 is the service's limit, not a wrong request: wait and ask again."""
+    calls = queue_responses(
+        monkeypatch,
+        [FakeResponse(429, '{"error":true,"reason":"Minutely API request limit exceeded."}'),
+         FakeResponse(200, GOOD)],
+    )
+
+    assert weather._fetch_json("https://example.test/", {}, timeout=1) is not None
+    assert len(calls) == 2
+
+
+def test_a_rate_limit_does_not_trigger_the_soil_fallback(monkeypatch):
+    """A persistent 429 fails as a service failure, with the soil parameters still asked for.
+
+    Read as a client error it used to drop the soil parameters and retry —
+    into the same limit, or into a forecast without soil features.
+    """
+    seen = []
+
+    def fake_get(url, params=None, timeout=None):
+        seen.append(params["hourly"])
+        return FakeResponse(429, '{"error":true,"reason":"Daily API request limit exceeded."}')
+
+    monkeypatch.setattr(weather.httpx, "get", fake_get)
+
+    with pytest.raises(RuntimeError) as excinfo:
+        weather._get_weather("https://example.test/", {}, weather.FORECAST_SOIL_PARAMS, timeout=1)
+
+    assert len(seen) == weather._MAX_ATTEMPTS
+    assert all("soil_temperature_6cm" in hourly for hourly in seen)
+    assert "429" in str(excinfo.value) and "Daily API request limit" in str(excinfo.value)

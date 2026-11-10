@@ -127,6 +127,9 @@ def _parse_hourly_response(data: dict[str, Any]) -> pd.DataFrame:
 # path: every 3-hourly run dies if this call does.
 _MAX_ATTEMPTS = 4
 
+# Waits after a 429, in seconds: long enough to outlast a per-minute limit.
+_RATE_LIMIT_DELAYS = (5, 20, 60)
+
 
 def _fetch_json(url: str, params: dict[str, Any], timeout: float) -> Any:
     """GET a JSON payload, retrying transient failures with exponential backoff.
@@ -140,16 +143,28 @@ def _fetch_json(url: str, params: dict[str, Any], timeout: float) -> Any:
     4xx is deliberately not retried: it means the request itself is wrong, so
     repeating it changes nothing, and _get_weather has a fallback ready for the
     one 4xx we expect.
+
+    429 is the exception among the 4xx. It is Open-Meteo's rate limit — per
+    minute, hour or day, counted per address, and a shared runner address is
+    counted with everyone else on it — and says nothing about the request. It
+    is retried on a slower schedule and, if it persists, raised as a failure
+    of the service: read as a client error it used to send _get_weather into
+    its "soil parameters rejected" fallback, which either died on the same
+    limit or published a forecast with the soil features zeroed.
     """
     last_error: str | None = None
 
     for attempt in range(_MAX_ATTEMPTS):
+        rate_limited = False
         try:
             response = httpx.get(url, params=params, timeout=timeout)
         except httpx.HTTPError as exc:
             last_error = f"{type(exc).__name__}: {exc}"
         else:
-            if 400 <= response.status_code < 500:
+            if response.status_code == 429:
+                rate_limited = True
+                last_error = "HTTP 429 (rate limit): " + " ".join(response.text[:200].split())
+            elif 400 <= response.status_code < 500:
                 response.raise_for_status()
             elif response.status_code >= 500:
                 last_error = f"HTTP {response.status_code}"
@@ -165,7 +180,7 @@ def _fetch_json(url: str, params: dict[str, Any], timeout: float) -> Any:
                     )
 
         if attempt < _MAX_ATTEMPTS - 1:
-            delay = 2**attempt
+            delay = _RATE_LIMIT_DELAYS[attempt] if rate_limited else 2**attempt
             print(
                 f"  Weather API: {last_error} — retrying in {delay}s "
                 f"({attempt + 1}/{_MAX_ATTEMPTS - 1})"
