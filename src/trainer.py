@@ -129,10 +129,20 @@ def lag_block_on_grid(values: pd.Series, lead: int = 1) -> pd.DataFrame:
     out["pollen_lag_16"] = s.shift(16)         # 48h ago (#3)
     out["pollen_lag_24"] = s.shift(24)         # same time 3 days ago (72h)
     out["pollen_lag_56"] = s.shift(56)         # 7 days ago (#3)
-    out["pollen_rolling_8"] = s.rolling(8, min_periods=1).mean().shift(1)    # 24h mean
-    out["pollen_rolling_56"] = s.rolling(56, min_periods=1).mean().shift(1)  # 7-day mean
-    out["pollen_max_8"] = s.rolling(8, min_periods=1).max().shift(1)         # 24h max (#3)
-    out["pollen_max_56"] = s.rolling(56, min_periods=1).max().shift(1)       # 7-day max (#3)
+    # The rolling statistics are over the windows that were *measured*. Over
+    # the filled series a week that ends in an outage is a week of whatever
+    # the station last reported before it went dark — after the nine silent
+    # days of February 2026, a week of zeros behind a day at 380 grains.
+    # Only where the whole span is dark does the filled value stand in.
+    def over_measured(windows: int, how: str) -> pd.Series:
+        measured = getattr(raw.rolling(windows, min_periods=1), how)()
+        filled = getattr(s.rolling(windows, min_periods=1), how)()
+        return measured.where(measured.notna(), filled).shift(1)
+
+    out["pollen_rolling_8"] = over_measured(8, "mean")     # 24h mean
+    out["pollen_rolling_56"] = over_measured(56, "mean")   # 7-day mean
+    out["pollen_max_8"] = over_measured(8, "max")          # 24h max (#3)
+    out["pollen_max_56"] = over_measured(56, "max")        # 7-day max (#3)
     # Mean of the day's earlier windows (intra-day trend signal).
     day_groups = s.index.normalize()
     out["pollen_morning_avg"] = (

@@ -84,6 +84,9 @@ class LagState:
     """
 
     log_vals: list[float] = field(default_factory=list)
+    # The same windows as measured: NaN where the station did not report.
+    # The rolling statistics are taken over these (trainer.lag_block_on_grid).
+    raw_vals: list[float] = field(default_factory=list)
     morning: list[float] = field(default_factory=list)
     days_since_active: float = NEVER_ACTIVE
     day: pd.Timestamp | None = None
@@ -122,8 +125,11 @@ class LagState:
         raw, filled = grid_series(values, end=origin_ts - WINDOW)
         before = filled[filled.index < origin_ts]
         log_vals = list(before.to_numpy(dtype=float)[-LAG_WINDOW:])
+        raw_vals = list(raw[raw.index < origin_ts].to_numpy(dtype=float)[-LAG_WINDOW:])
         while len(log_vals) < LAG_WINDOW:
             log_vals.insert(0, 0.0)
+        while len(raw_vals) < LAG_WINDOW:
+            raw_vals.insert(0, float("nan"))
 
         active = raw[(raw.index < origin_ts) & (raw > 0)]
         dsa = (
@@ -135,7 +141,12 @@ class LagState:
         morning = list(before[before.index.normalize() == day].to_numpy(dtype=float))
 
         return cls(
-            log_vals=log_vals, morning=morning, days_since_active=dsa, day=day, upwind=upwind_now
+            log_vals=log_vals,
+            raw_vals=raw_vals,
+            morning=morning,
+            days_since_active=dsa,
+            day=day,
+            upwind=upwind_now,
         )
 
     def lag_features(self) -> dict[str, float]:
@@ -147,6 +158,14 @@ class LagState:
         def at(n: int) -> float:
             return float(vals[-n]) if len(vals) >= n else float(vals[0])
 
+        def over_measured(n: int, how: str) -> float:
+            """A statistic of the last *n* windows that were measured; of the filled ones if none was."""
+            measured = np.asarray(self.raw_vals[-n:], dtype=float)
+            measured = measured[np.isfinite(measured)]
+            window = measured if measured.size else np.asarray(vals[-n:], dtype=float)
+            return float(np.mean(window) if how == "mean" else np.max(window))
+
+        max_8 = over_measured(8, "max")
         return {
             "pollen_lag_1": at(1),
             "pollen_lag_2": at(2),
@@ -155,13 +174,13 @@ class LagState:
             "pollen_lag_16": at(16),
             "pollen_lag_24": at(24),
             "pollen_lag_56": at(56),
-            "pollen_rolling_8": float(np.mean(vals[-8:])),
-            "pollen_rolling_56": float(np.mean(vals[-56:])),
-            "pollen_max_8": float(np.max(vals[-8:])),
-            "pollen_max_56": float(np.max(vals[-56:])),
+            "pollen_rolling_8": over_measured(8, "mean"),
+            "pollen_rolling_56": over_measured(56, "mean"),
+            "pollen_max_8": max_8,
+            "pollen_max_56": over_measured(56, "max"),
             "pollen_morning_avg": float(np.mean(self.morning)) if self.morning else 0.0,
             "days_since_active": float(self.days_since_active),
-            **self.upwind_features(float(np.max(vals[-8:]))),
+            **self.upwind_features(max_8),
         }
 
     def upwind_features(self, local_max_8: float) -> dict[str, float]:

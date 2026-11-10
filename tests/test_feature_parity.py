@@ -303,6 +303,41 @@ def test_lags_are_time_based_across_a_gap(history: pd.DataFrame) -> None:
         assert np.allclose(batch.loc[served.index, col].to_numpy(dtype=float), served[col].to_numpy(dtype=float), atol=1e-6), col
 
 
+def test_rolling_statistics_are_over_measured_windows(history: pd.DataFrame) -> None:
+    """After an outage the 24 h and 7 d statistics are those of the windows measured.
+
+    Over the gap-filled series the first day back reads a mean dragged to
+    whatever the station last reported before it went dark — a week of zeros
+    behind a loud day, when the outage began before the season did.
+    """
+    gap_start, gap_end = pd.Timestamp("2021-04-20 00:00"), pd.Timestamp("2021-04-23 00:00")
+    gapped = _with_gap(history, str(gap_start), str(gap_end))
+    batch = trainer_features(gapped, SPECIES, lead=1)
+    logs = np.log1p(gapped[gapped["species"] == SPECIES].set_index("date")["value"])
+
+    # Five windows after the gap: of the 24 h before, three windows are dark.
+    target = gap_end + 5 * WINDOW
+    day = logs[(logs.index >= target - 8 * WINDOW) & (logs.index < target)]
+    week = logs[(logs.index >= target - 56 * WINDOW) & (logs.index < target)]
+    assert len(day) == 5 and len(week) == 56 - 24
+    row = batch.loc[target]
+    assert row["pollen_rolling_8"] == pytest.approx(float(day.mean()))
+    assert row["pollen_max_8"] == pytest.approx(float(day.max()))
+    assert row["pollen_rolling_56"] == pytest.approx(float(week.mean()))
+    assert row["pollen_max_56"] == pytest.approx(float(week.max()))
+
+    # The serving path reads the same block.
+    state = LagState.from_history(gapped, SPECIES, target).lag_features()
+    for col in ("pollen_rolling_8", "pollen_max_8", "pollen_rolling_56", "pollen_max_56"):
+        assert state[col] == pytest.approx(float(row[col])), col
+
+    # With nothing measured in the span, the carried value stands in.
+    first_after = batch.loc[gap_end]
+    carried = float(logs.loc[gap_start - WINDOW])
+    assert first_after["pollen_rolling_8"] == pytest.approx(carried)
+    assert first_after["pollen_max_8"] == pytest.approx(carried)
+
+
 def test_days_since_active_counts_gap_windows(history: pd.DataFrame) -> None:
     """A quiet stretch plus an outage is measured in time on both paths."""
     # Birch is dormant in the fixture from day 141 on; cut a gap in June and

@@ -180,6 +180,19 @@ and was worse (MAE 7.0 against 6.9, and hazel's onset timing 1.3→6.0 days
 at day 2). The parity test cuts a gap into its fixture and requires both
 paths to agree through it.
 
+The four rolling statistics — the 24-hour and 7-day mean and maximum — are
+taken over the windows that were **measured** (G.5), and over the carried
+values only where nothing in the span was. A carried value is a fair
+stand-in for one missing window; over a span that ends in an outage it is
+a day or a week of whatever the station last said before it went dark,
+and the official station is dark for 15–50 days a year. Record months,
+seven days: pollen MAE 5.87 → 5.85 and level accuracy 81.6 → 81.8%, mould
+MAE 23.1 → 22.5 at 78.4 → 77.2%; over the onset months the level is right
+47.9% of the time instead of 45.5% and false starts fall from 18 run-days
+to 7 (MAE 101.3 → 102.2). It does not repair what prompted it: hazel in
+February 2026, back from nine silent days at 130–380 grains a day, is
+still forecast at a tenth of that.
+
 ### Season onset
 
 Three features are parameterised by when the season is expected to start:
@@ -396,16 +409,17 @@ record months it scores, against persistence:
 
 | Horizon | MAE | Persistence MAE | Skill | Level acc. | Persistence level acc. | Bias |
 |---------|-----|-----------------|-------|------------|------------------------|------|
-| day 1 | 23.3 | 30.8 | +28% | 80.9% | 54.2% | −8.2 |
-| day 3 | 23.1 | 35.6 | +36% | 78.6% | 55.6% | −8.1 |
-| day 5 | 22.9 | 37.3 | +40% | 78.2% | 53.2% | −6.8 |
-| day 7 | 23.2 | 36.7 | +38% | 79.3% | 47.7% | −6.3 |
+| day 1 | 22.7 | 30.8 | +30% | 78.9% | 54.2% | −7.8 |
+| day 3 | 22.2 | 35.6 | +39% | 75.7% | 55.6% | −7.6 |
+| day 5 | 22.5 | 37.3 | +40% | 77.2% | 53.2% | −6.1 |
+| day 7 | 23.1 | 36.7 | +38% | 76.3% | 47.7% | −5.4 |
 
 The model that was live until then — trained on the merged labels — scores
 MAE 30.8 at day 1 on the same official rows, no better than persistence
 there (+19% at day 5).
 Spores are a persistent, slowly varying series, so the level is right
-four days in five and within one level on practically all of them; what
+on more than three days in four and within one level on practically all
+of them; what
 the model does not do is call a "high" day (2% of the days in these
 months): most of its training years lie far below the level the station
 has reported since 2025. The conformal confidence stays pooled across all
@@ -509,24 +523,24 @@ same baseline throughout.
 
 | Horizon | MAE | RMSE | Level acc. | Bias | Persistence MAE | Skill |
 |---------|-----|------|-----------|------|-----------------|-------|
-| day 1 | **6.4** | 48.5 | 81.5% | **−1.6** | 10.3 | **+37.9%** |
-| day 2 | **6.1** | 47.7 | 81.5% | **−1.8** | 10.5 | **+41.5%** |
-| day 3 | **5.8** | 44.8 | 81.8% | **−1.6** | 10.7 | **+45.3%** |
-| day 4 | **5.7** | 43.5 | 81.8% | **−1.4** | 11.6 | **+50.9%** |
-| day 5 | **5.7** | 43.2 | 81.8% | **−1.3** | 11.3 | **+49.7%** |
-| day 6 | **5.5** | 31.7 | 81.3% | **−0.9** | 11.9 | **+53.4%** |
-| day 7 | **5.8** | 36.8 | 81.7% | **−1.4** | 13.7 | **+57.4%** |
+| day 1 | **6.4** | 48.8 | 82.1% | **−1.8** | 10.3 | **+38.5%** |
+| day 2 | **6.1** | 48.3 | 81.9% | **−2.0** | 10.5 | **+42.0%** |
+| day 3 | **5.8** | 45.7 | 82.5% | **−1.8** | 10.7 | **+45.3%** |
+| day 4 | **5.7** | 44.2 | 82.0% | **−1.6** | 11.6 | **+51.0%** |
+| day 5 | **5.7** | 44.0 | 81.5% | **−1.5** | 11.3 | **+49.5%** |
+| day 6 | **5.5** | 31.9 | 81.3% | **−1.0** | 11.9 | **+53.5%** |
+| day 7 | **5.8** | 36.5 | 81.4% | **−1.5** | 13.7 | **+57.7%** |
 
-The model beats persistence at every horizon by 38–57% and its error does
+The model beats persistence at every horizon by 38–58% and its error does
 not grow across the week; the skill rises because persistence gets worse.
 That flatness is partly the benchmark's: the weather it reads is measured,
 and a real day-7 forecast reads a week-old weather forecast (see the two
-caveats above). The bias is about −1.5 grains/m³ — it leans low since E.2
+caveats above). The bias is about −1.6 grains/m³ — it leans low since E.2
 removed the value weights that were pushing it up. Level accuracy, on
-daily-mean levels (D.4; see *Model*), is 81.6% exact and 99.6% within one
+daily-mean levels (D.4; see *Model*), is 81.8% exact and 99.4% within one
 level, against persistence's 77.7% at day 1 and 75.5% at day 7. The
 mould-spore taxon is scored in [its own section](#mould-spores); a pooled
-figure that includes it (MAE 7.8 at day 1) is not comparable with this
+figure that includes it (MAE 7.7 at day 1) is not comparable with this
 table.
 
 **Seven days instead of five** (G.2a) is the same model trained on two more
@@ -594,7 +608,8 @@ On the official series:
 | G.1 trained on the official series | 6.50 | 5.93 | −1.59 | −1.29 | +47.6% | 81.6% |
 | G.2c poplar's window; spores have no onset | 6.48 | 5.85 | −1.28 | −1.06 | +48.3% | 81.7% |
 | G.2b onset estimate from five candidates | 6.34 | 5.59 | −1.67 | −1.45 | +50.6% | 81.6% |
-| G.2a trained to seven days | **6.42** | **5.67** | **−1.55** | **−1.32** | **+49.9%** | **81.7%** |
+| G.2a trained to seven days | 6.42 | 5.67 | −1.55 | −1.32 | +49.9% | 81.7% |
+| G.5 rolling statistics over measured windows | **6.36** | **5.69** | **−1.75** | **−1.46** | **+49.7%** | **82.0%** |
 
 **G.1** did not make the pollen error smaller — a model trained on the
 merged labels predicted the official values about as well, because for
@@ -604,10 +619,10 @@ error (30.8 → 22.6 at day 1, where the second series ran at two to eight
 times the official one). **G.2c** is poplar (MAE 15.4 → 14.9). **G.2b**
 is the one step of the series that moved the pollen error: 5.85 → 5.59 at
 day 5, from the nine taxa that have a measured onset (7.4 → 7.2 over
-their five days). Over the whole series the
-day-1 error is where it was, the day-5 error is 3% lower, the level is
-right 81.7% of the time instead of 78.9%, and the forecast is two days
-longer.
+their five days). **G.5** is described under [Train/serve
+parity](#trainserve-parity). Over the whole series the day-1 error is 1%
+lower and the day-5 error 3%, the level is right 82.0% of the time
+instead of 78.9%, and the forecast is two days longer.
 
 > **On fold counts.** An earlier version of this section reported three folds
 > (Sep, Jan, May) and concluded that the model beat persistence from day 3 on
@@ -626,31 +641,29 @@ and horizon, the timing of the first predicted 3-day run at or above the low
 level, MAE and bias in the ±10-day window next to the MAE of predicting zero,
 false starts, and the predicted/actual ratio by days since onset.
 
-The current picture, the seven-day model on the official series (hazel,
+The current picture, the live model on the official series (hazel,
 alder, birch, grass; the starts of 2024–2026):
 
 | mean timing error, days (starts called) | d1 | d2 | d3 | d4 | d5 | d6 | d7 |
 |---|---|---|---|---|---|---|---|
-| birch | 2.3 (3) | 2.0 (3) | 1.7 (3) | 1.3 (3) | 2.0 (3) | 6.7 (3) | 7.0 (3) |
-| grass | 0.5 (2) | 0.5 (2) | 0.0 (2) | 0.5 (2) | 1.0 (2) | 1.5 (2) | 3.0 (2) |
+| birch | 2.0 (3) | 2.3 (3) | 1.7 (3) | 1.3 (3) | 1.7 (3) | 2.0 (3) | 7.0 (3) |
+| grass | 1.0 (2) | 0.5 (2) | 0.0 (2) | 0.0 (2) | 0.0 (2) | 1.5 (2) | 5.0 (2) |
 | alder | 7.5 (2) | 2.0 (1) | 3.0 (1) | 3.0 (1) | 3.0 (1) | 3.0 (1) | 3.0 (1) |
-| hazel | 6.5 (2) | 1.0 (1) | – | – | – | – | – |
+| hazel | 7.0 (2) | 1.0 (1) | – | – | – | – | – |
 
-Birch and grass are called to within about two days out to day 5 and
+Birch and grass are called to within about two days out to day 6 and
 within a week at day 7. Hazel and alder are called at day 1 or not at all
 in two years of three, and in both years the reason is the amount, not the
 date. In 2025 the measured "start" was three days at 10–17 grains/m³
 followed by a station gap and a week of nothing; the forecast starts both
 species on 21 February, a day after the season that lasted began. In 2026
 both came back from a nine-day station outage at 130–380 grains a day, and
-the day-1 forecast said 9–24: its lag block held one loud day after a week
-that the outage had filled with the last value measured before it, a zero
+the day-1 forecast said 13–24 with those measurements in its lag block
 (TASKS.md, H.1). The 22 February peak is on the right day at every
 horizon, seven days out included — at 100 against 1 700. Across these
-months the
-day-1 forecast loses to persistence (MAE 90.8 against 80.0) and wins from
-day 2 (+14%) to day 7 (+27%); false starts are 18 run-days, all birch
-2025 and 2026. In heavy years the first two weeks are forecast at a tenth
+months the day-1 forecast loses to persistence (MAE 91.7 against 80.0)
+and wins from day 2 (+13%) to day 7 (+27%); false starts are 7 run-days,
+all birch. In heavy years the first two weeks are forecast at a tenth
 to a third of what arrives (birch 2024 and 2026: 0.06–0.10 in days 5–9;
 hazel 2026: 0.02–0.10): nothing the model reads precedes the local count,
 so it cannot tell a 25 000-grain year from a 3 000-grain one on day one.
@@ -787,7 +800,7 @@ difference means something. Two numbers are published per prediction, because
 |-------|---------|---------------|
 | `confidence` | P(the emitted level is exactly right) | 0.3 – 0.9 (mean ~0.7) |
 | `confidence_within_one` | P(the truth is within one level of it) | ~0.9 – 0.99 |
-| `value_low`, `value_high` | central 80% interval for `value` | 0.4 – 37 for a value of 10 at day 1 |
+| `value_low`, `value_high` | central 80% interval for `value` | 0.3 – 35 for a value of 10 at day 1 |
 
 All of them are **conformal**: `src/confidence.json`, generated by
 `python -m src.main calibrate` from the 14-day rollout benchmark, stores per
@@ -858,16 +871,16 @@ held-out fold.
 That comparison was made on the merged labels and the five-day model. The
 table now published — the seven-day model on the official series, 14 days
 of rollout over the record months — was scored the same way, leave one
-fold out, on the 3 309 emitted day-rows of days 1–7: the level is exactly
-right 64% of the time (66.5% at day 1, 63.5% at day 7, 61.4% at day 14)
-against a stated 68%, ECE 0.070, correlation with being right 0.22, Brier
-0.222. When it says 0.32 it is right 24% of the time, at 0.48 56%, at 0.66
-58%, at 0.84 77%. So it still discriminates, and it overstates by four
-points: most of that is the March fold (stated 0.68, right 0.60 on 1 536
-of the rows — poplar, ash and birch at once), which held out leaves the
-table five quieter months to learn from. Within one level it states 0.987
-and is right 0.988; the 80% value interval covers 71–91% of the windows
-per held-out fold. The comparison of schemes has not been repeated on the
+fold out, on the 3 253 emitted day-rows of days 1–7: the level is exactly
+right 66% of the time (68% at day 1, 63% at day 7 and at day 14) against
+a stated 68%, ECE 0.072, correlation with being right 0.20, Brier 0.221.
+When it says 0.32 it is right 28% of the time, at 0.48 58%, at 0.66 62%,
+at 0.85 76%. So it still discriminates, less sharply, and it overstates
+by three points: most of that is the March fold (stated 0.68, right 0.62
+on 1 516 of the rows — poplar, ash and birch at once), which held out
+leaves the table five quieter months to learn from. Within one level it
+states 0.987 and is right 0.986; the 80% value interval covers 70–90% of
+the windows per held-out fold. The comparison of schemes has not been repeated on the
 official series (TASKS.md).
 
 ## Output Format

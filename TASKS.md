@@ -13,39 +13,40 @@ carries the `seasons` block.
 
 The date of a start is projected by the season outlook (5.0 days off a
 week ahead, calendar 9.2). The 3-hour forecast is a different matter.
-`benchmark-onset`, seven-day model, official labels — first predicted
+`benchmark-onset`, the live model, official labels — first predicted
 3-day run at or above the low level against the measured start, by
 horizon day:
 
 | | 2024 | 2025 | 2026 |
 |---|---|---|---|
-| hazel | d1 0, d2 +1, d3–7 not called | d1 +13, then not called | not called |
+| hazel | d1 0, d2 +1, d3–7 not called | d1 +14, then not called | not called |
 | alder | +2 … +3 at every horizon | d1 +13, then not called | not called |
-| birch | +4 … +7 | 0 to d5; 14 d early at d6–7 | −2 … 0 |
-| grass | −1 … +4 | 0 … +2 | not called |
+| birch | +4 … +7 | −1 … 0 to d6; 14 d early at d7 | −2 … 0 |
+| grass | −2 … +3 to d6; +8 at d7 | 0 … +2 | not called |
 
-Birch and grass: 1.3–2.3 and 0–1 days off out to day 5, 7.0 and 3.0 at
+Birch and grass: 1.3–2.3 and 0–1 days off out to day 6, 7.0 and 5.0 at
 day 7. Hazel and alder: it is the amount, not the date, both times. The
 2025 "start" on 8 February is three days at 10–17 grains, a station gap
 and a week of zeros; the forecast starts both on 21 February, a day after
 the season that lasted did. In 2026 both came back from a nine-day outage at
-130–380 grains a day against a day-1 forecast of 9–24. Grass 2026 hovers
+130–380 grains a day against a day-1 forecast of 13–24. Grass 2026 hovers
 at the threshold (3–15 against 5). In these months day 1 loses to
-persistence (MAE 90.8 against 80.0); days 2–7 win by 14–27%. What is left:
+persistence (MAE 91.7 against 80.0); days 2–7 win by 13–27%; false starts
+are 7 run-days, all birch. What is left:
 
-* **Outages in the lag block.** On 13 February 2026 the lag block read 264
-  in the last window and 76 over the last 24 hours — and 1.8 over the last
-  seven days, with nothing 48 h, 72 h and 7 d back, because a window inside
-  an outage carries the last value measured before it (E.1), here a zero
-  from 1 February. To the model that is the first day of a season after a
-  quiet week; it answered 24 for the day (in training a block with that
-  24-hour mean is followed by a median of 71 and a mean of 134) and the
-  day brought 329. The merged series papered over the station's outages;
-  the official one has 15–50 silent days a year. Test rolling statistics
-  over measured windows only plus the measured share of the last seven
-  days as a feature — on both paths, with the parity test. A.5 (NaN
-  passthrough for raw inputs) is a different change and lost.
-
+* **Day 1 of a heavy start.** On 13 February 2026 hazel's lag block read
+  264 in the last window and 76 over the last 24 hours, and the forecast
+  for the day was 24; the day brought 329. In training a block with that
+  24-hour mean is followed by a median of 71 and a mean of 134. The nine
+  silent days before it were the suspect — the 7-day statistics were those
+  of the zeros carried through the outage — and are not the cause: with
+  the statistics over measured windows (G.5) the same days are forecast at
+  13–24 instead of 9–24. What holds the forecast down is everything that
+  says "nothing yet" (`gdd` at 2.65, `days_since_typical_onset` at 1)
+  outvoting the measurement. In these months day 1 loses to persistence
+  by 14%. Scaling the forecast by yesterday's error fixes exactly this
+  and breaks the general folds (*Tried, not adopted*); a version confined
+  to the fortnight after a detected start is untested.
 * **The projected date as a model input.** Replacing the estimate behind
   `days_since_typical_onset` with the outlook's continuous projection did
   nothing (*Tried, not adopted*). Untested: the projection as a feature of
@@ -99,14 +100,21 @@ persistence (MAE 90.8 against 80.0); days 2–7 win by 14–27%. What is left:
   | — six or seven candidates | 4.2 / 5.2 | 4.5 / 4.5 |
   | outlook 7 days ahead (six species) | 5.0 | 5.8 |
   | outlook interval coverage | 81% | 76% |
+  | forecast, eleven pollen taxa, days 1–7: MAE | 5.87 | 5.78 |
+  | — level accuracy / bias / RMSE | 81.6% / −1.43 / 42.8 | 81.4% / −1.84 / 44.1 |
+  | — alder / poplar MAE | 20.1 / 14.6 | 18.2 / 13.4 |
+  | — hazel / ash / oak MAE | 5.6 / 5.6 / 6.2 | 6.0 / 6.3 / 6.7 |
+  | mould MAE / level accuracy | 23.1 / 78.4% | 23.2 / 78.2% |
 
   The ensemble is still ahead of the single rule and of the calendar (9.4)
   on either history, so G.2b stands — but "4.0" is the favourable end of
   what four test years per species can tell apart, and five candidates
-  was chosen on the incomplete grid. The forecast benchmark on the
-  completed grid is still to be read. If it is adopted: `mode: backfill`,
-  then `backfill-labels` (it gives the station's values to the 40 windows
-  of the June 2026 outage that it has since filled in), `calibrate
+  was chosen on the incomplete grid. The forecast is a wash: alder and
+  poplar gain, eight taxa lose a little, the level is right slightly less
+  often. Nothing here can see the difference in the grid's favour, so it
+  stays off the release. If it is adopted later: `mode: backfill`, then
+  `backfill-labels` (it gives the station's values to the 40 windows of
+  the June 2026 outage that it has since filled in), `calibrate
   --rebuild` and `train`.
 * **The benchmark's weather is measured, not forecast.** A day-7 window is
   trained and scored on weather known to the hour, and the confidence
@@ -127,10 +135,17 @@ persistence (MAE 90.8 against 80.0); days 2–7 win by 14–27%. What is left:
   the September backfill — through June 2026 it uses composites that did
   not exist yet — while serving holds the last composite flat
   (`ndvi_delta` exactly 0 on 79% of days since). The pair earns 3.2% of
-  gain and the benchmark reads the look-ahead version. Make it as-of in
-  the history and the fold context, then decide whether it stays. The
+  gain and the benchmark reads the look-ahead version. Without the pair
+  (63 features, record months, seven days) the pollen models are no
+  worse — MAE 5.87 → 5.83, level accuracy 81.6 → 82.0%, with the
+  look-ahead version to lose — and the mould model reads the level right
+  75.9% of the time instead of 78.4% (MAE 23.1 → 22.9): the pollen models
+  do not need it, the mould model uses it as a season clock. Left in for
+  that reason. Either make it as-of in the history and the fold context
+  and measure again, or take it out together with its fetch — the
   composites cache is a local file on an ephemeral runner, so every run
-  refetches three years from ORNL.
+  refetches three years from ORNL — once the mould model has something
+  better to read the season from.
 
 ## H.3 The amount
 
@@ -154,8 +169,8 @@ persistence (MAE 90.8 against 80.0); days 2–7 win by 14–27%. What is left:
   (long) plus weather (one row per window) is about a sixth of the size
   and would retire the weather-only rows.
 * **Confidence on the official series.** Held out, the level confidence
-  overstates by four points (stated 0.68, right 0.64; ECE 0.070 against
-  0.037 on the merged labels) and correlates 0.22 with being right
+  overstates by three points (stated 0.68, right 0.66; ECE 0.072 against
+  0.037 on the merged labels) and correlates 0.20 with being right
   (0.32). Most of the overstatement is the March fold. The comparison of
   schemes (per horizon day, pooled, per magnitude bin, per species) was
   made on the merged labels and has not been repeated.
@@ -221,11 +236,12 @@ predictions common to every row (persistence MAE 10.3 / 11.3):
 | G.1 trained on the official series | 6.50 | 5.93 | −1.59 | −1.29 | +47.6% | 81.6% |
 | G.2c poplar's window; spores have no onset | 6.48 | 5.85 | −1.28 | −1.06 | +48.3% | 81.7% |
 | G.2b onset estimate from five candidates | 6.34 | 5.59 | −1.67 | −1.45 | +50.6% | 81.6% |
-| G.2a trained to seven days | **6.42** | **5.67** | **−1.55** | **−1.32** | **+49.9%** | **81.7%** |
+| G.2a trained to seven days | 6.42 | 5.67 | −1.55 | −1.32 | +49.9% | 81.7% |
+| G.5 rolling statistics over measured windows | **6.36** | **5.69** | **−1.75** | **−1.46** | **+49.7%** | **82.0%** |
 
-The seven-day model on all seven days (91 399 predictions): MAE 6.4 / 6.1 /
-5.8 / 5.7 / 5.7 / 5.5 / 5.8, skill +38 / +42 / +45 / +51 / +50 / +53 /
-+57%, level accuracy 81.6% (persistence 77.7% at day 1, 75.5% at day 7).
+On all seven days (91 399 predictions): MAE 6.4 / 6.1 / 5.8 / 5.7 / 5.7 /
+5.5 / 5.8, skill +38 / +42 / +46 / +51 / +50 / +54 / +58%, level accuracy
+81.8% (persistence 77.7% at day 1, 75.5% at day 7).
 
 Mould on the same rows (5 977 predictions; persistence 30.8 / 37.3):
 
@@ -236,6 +252,7 @@ Mould on the same rows (5 977 predictions; persistence 30.8 / 37.3):
 | G.2c no spore onset | 23.1 | 22.7 | −14.4 | +24.9% | +39.0% | 75.6% |
 | G.1b quantile 0.85 | 22.8 | 22.6 | −8.3 | +25.8% | +39.3% | 78.9% |
 | G.2a trained to seven days | 23.3 | 22.9 | −8.2 | +24.4% | +38.6% | 78.2% |
+| G.5 rolling statistics over measured windows | 22.7 | 22.5 | −7.8 | +26.4% | +39.7% | 77.5% |
 
 The season start, each of 2023–2026 projected from the seasons before it,
 mean absolute error of the date in days (hazel, alder, birch, ash, grass,
@@ -318,6 +335,12 @@ poplar; per species in the README):
 - **G.2a** (`eb349b4`) — seven days: leads to 56 windows, calibration to
   14 days. Costs 0.07 MAE on days 1–5, days 6 and 7 at +53% and +57%
   skill on measured weather.
+- **G.5** — the 24-hour and 7-day rolling statistics of the lag block are
+  taken over the windows that were measured, and over the carried values
+  only where the whole span is dark; the official station is silent for
+  15–50 days a year. General: pollen MAE 5.87 → 5.85, level accuracy
+  81.6 → 81.8%, mould MAE 23.1 → 22.5 at 78.4 → 77.2%. Onset months: level
+  accuracy 45.5 → 47.9%, false starts 18 → 7 run-days, MAE 101.3 → 102.2.
 - **G.3** (`569fd02`, `3843904`, `c2c300d`) — a 429 from Open-Meteo is
   retried as a rate limit instead of being read as "soil parameters
   rejected"; the collector asks the forecast API for the last five days,
