@@ -267,3 +267,76 @@ def test_readiness_threshold_is_walk_forward():
     before = readiness_by_day(build_history(base), SPECIES).loc["2024-03-01", "threshold"]
     after = readiness_by_day(build_history(shifted), SPECIES).loc["2024-03-01", "threshold"]
     assert before == pytest.approx(after)
+
+
+# --- The ensemble (G.2b) ------------------------------------------------------
+
+
+def test_the_estimate_is_the_median_vote_not_the_best_candidate():
+    """One candidate that crosses weeks early does not move the estimate."""
+    from src.onset import ensemble_crossing_doy, forcing_series
+
+    days = pd.date_range("2024-01-01", "2024-06-30", freq="D")
+    daily_temp = pd.Series(5.0, index=days)
+    # At a constant 5 °C a rule from 1 Jan at base 0 gains 5 degree-days a day.
+    jan0 = ((1, 1), 0.0)
+    forcing = forcing_series(daily_temp, jan0)
+
+    def threshold_for(doy: int) -> float:
+        return float(forcing.iloc[doy - 1])
+
+    wild = (jan0, threshold_for(10), 0.5)  # best-ranked, and far off
+    ensemble = [wild, (jan0, threshold_for(40), 1.0), (jan0, threshold_for(42), 1.1),
+                (None, None, 1.2), (jan0, threshold_for(60), 1.3)]
+    # Votes: 10, 40, 42, calendar 45, 60 -> the third.
+    assert ensemble_crossing_doy(daily_temp, 2024, ensemble, calendar=45.0) == 42
+    # The single best candidate, which is what shipped before, says day 10.
+    assert ensemble_crossing_doy(daily_temp, 2024, ensemble[:1], calendar=45.0) == 10
+
+
+def test_the_ensemble_stays_silent_until_its_median_has_crossed():
+    """Rules that have not crossed vote "later"; no day is named before it is known."""
+    from src.onset import ensemble_crossing_doy
+
+    days = pd.date_range("2024-01-01", "2024-02-10", freq="D")  # 41 days of history
+    daily_temp = pd.Series(5.0, index=days)
+    jan0 = ((1, 1), 0.0)
+    forcing_per_day = 5.0
+    ensemble = [(jan0, 20 * forcing_per_day, 1.0), (jan0, 60 * forcing_per_day, 1.1),
+                (jan0, 70 * forcing_per_day, 1.2)]
+    # Only one of three has crossed by day 41: the median is still unknown.
+    assert ensemble_crossing_doy(daily_temp, 2024, ensemble, calendar=50.0) is None
+    # With the calendar among the votes its date counts from the start.
+    with_calendar = ensemble[:2] + [(None, None, 1.2)]
+    assert ensemble_crossing_doy(daily_temp, 2024, with_calendar, calendar=30.0) == 30.0
+
+
+def test_ensemble_estimate_never_looks_ahead():
+    """Cutting the year off after any day leaves every earlier estimate as it was."""
+    onsets = {2019: 40, 2020: 35, 2021: 50, 2022: 44, 2023: 38, 2024: 47}
+    history = build_history(onsets)
+    # A year with real structure: cold, then a warm spell, then cold again.
+    doy = pd.to_datetime(history["date"]).dt.dayofyear
+    history["temperature_mean"] = np.where((doy > 25) & (doy < 60), 9.0, 1.0)
+    full = onset_doy_by_day(history, SPECIES)
+    for cut in ("2024-02-01", "2024-02-20", "2024-03-15"):
+        truncated = onset_doy_by_day(history[history["date"] <= cut], SPECIES)
+        year = truncated[truncated.index.year == 2024]
+        assert np.allclose(year.to_numpy(), full.loc[year.index].to_numpy()), cut
+
+
+def test_walk_forward_report_scores_each_year_on_the_years_before_it():
+    from src.onset import MIN_RULE_SELECTION_YEARS, walk_forward_onsets
+
+    onsets = {2019: 40, 2020: 35, 2021: 50, 2022: 44, 2023: 38, 2024: 47}
+    history = build_history(onsets)
+    report = walk_forward_onsets(history, SPECIES)
+    assert list(report["year"]) == sorted(onsets)[MIN_RULE_SELECTION_YEARS:]
+    # The calendar of 2023 is the median of 2019-2022 and knows nothing of 2023.
+    row = report.set_index("year").loc[2023]
+    assert row["calendar"] == np.median([40, 35, 50, 44])
+    assert row["observed"] == 38
+
+    shifted = {**onsets, 2024: 70}
+    again = walk_forward_onsets(build_history(shifted), SPECIES).set_index("year")
+    assert again.loc[2023, "estimate"] == row["estimate"]

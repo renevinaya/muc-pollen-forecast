@@ -72,14 +72,32 @@ MIN_CALIBRATION_YEARS = 2
 # and it does not fit the others: for alder it is no better than the calendar
 # (12.8 d vs 11.6 d climatology) and for birch it is twice as bad (20.8 d vs
 # 9.0 d), because January warmth counts fully towards a tree that does not
-# respond to it until March. So the rule is now chosen per species, at
+# respond to it until March. So the rules are ranked per species, at
 # calibration time, by leave-one-out over the seasons before the year being
-# projected: the (start date, base) pair with the smallest LOO error wins, and
-# if none beats the climatology, the climatology is used on its own.
+# projected, together with the calendar (the median of those seasons) as one
+# more candidate.
+#
+# The estimate is not the best candidate's. With four to seven seasons a
+# leave-one-out error is known to a few days at best, the best few
+# candidates are indistinguishable, and which one comes first flips from
+# year to year (alder: 1 Jan / 3 °C, 15 Jan / 5, 15 Jan / 5, 15 Jan / 3 for
+# 2023-2026) and with any small change in the temperatures. Scored
+# walk-forward on 2023-2026 the single best candidate was 8.7 days off over
+# hazel, alder, birch, ash and grass — alder 17.0, worse than the calendar's
+# 6.8 — against the 2-4 days its own leave-one-out error promised. The
+# estimate is therefore the median over the ENSEMBLE_SIZE best candidates:
+# 4.0 days on the same years (alder 5.0), 4.2 with six, 5.8 with four.
 
 FORCING_STARTS: tuple[tuple[int, int], ...] = ((1, 1), (1, 15), (2, 1), (2, 15), (3, 1))
 FORCING_BASES: tuple[float, ...] = (0.0, 3.0, 5.0)
 ForcingRule = tuple[tuple[int, int], float]
+
+# How many of the best-ranked candidates vote on the onset estimate.
+ENSEMBLE_SIZE = 5
+
+# One candidate estimate of a year's onset with its leave-one-out error: a
+# forcing rule and its threshold, or the calendar (rule and threshold None).
+Candidate = tuple[ForcingRule | None, float | None, float]
 
 # What ran before there was a choice, and what still runs when there are too
 # few seasons to choose on: leave-one-out over three seasons is a coin toss.
@@ -368,23 +386,42 @@ def _climatology_loo_error(onsets: dict[int, int]) -> float:
     return float(np.mean(errors)) if errors else float("inf")
 
 
-_selection_cache: dict[tuple, tuple[ForcingRule | None, float | None, float]] = {}
+_ranking_cache: dict[tuple, list[Candidate]] = {}
 
 
-def select_forcing_rule(
+def _rank_candidates(daily_temp: pd.Series, onsets: dict[int, int]) -> list[Candidate]:
+    """Every forcing rule and the calendar, smallest leave-one-out error first.
+
+    The calendar goes in first and the sort is stable, so a rule has to beat
+    it strictly to rank above it, and rules that tie keep the grid's order.
+    """
+    ranked: list[Candidate] = [(None, None, _climatology_loo_error(onsets))]
+    for start in FORCING_STARTS:
+        for base in FORCING_BASES:
+            rule: ForcingRule = (start, base)
+            forcing = forcing_series(daily_temp, rule)
+            at = _forcing_at(forcing, onsets)
+            if len(at) < MIN_CALIBRATION_YEARS:
+                continue
+            ranked.append(
+                (rule, float(np.median(list(at.values()))), _rule_loo_error(forcing, onsets))
+            )
+    ranked.sort(key=lambda candidate: candidate[2])
+    return ranked
+
+
+def ranked_candidates(
     history: pd.DataFrame,
     species: str,
     before_year: int | None = None,
     onsets: dict[int, int] | None = None,
-) -> tuple[ForcingRule | None, float | None, float]:
-    """The projection rule for *species*, calibrated on seasons before *before_year*.
+) -> list[Candidate]:
+    """The onset candidates for *species*, calibrated on seasons before *before_year*.
 
-    Returns ``(rule, threshold, loo_error)``. ``rule`` is None when the
-    climatology beats every rule on leave-one-out — the projection is then
-    switched off for that species and year. With fewer than
-    :data:`MIN_RULE_SELECTION_YEARS` prior seasons the default rule is used,
-    exactly as before there was a choice; with fewer than
-    :data:`MIN_CALIBRATION_YEARS` there is no threshold either.
+    Best first. Empty with fewer than :data:`MIN_CALIBRATION_YEARS` prior
+    seasons (nothing to calibrate on); the default rule alone with fewer than
+    :data:`MIN_RULE_SELECTION_YEARS` (leave-one-out over three seasons is a
+    coin toss); every rule and the calendar otherwise.
 
     *onsets* is ``observed_onsets(history, species)`` when the caller already
     has it. The answer depends on the history only through those onsets and
@@ -395,43 +432,89 @@ def select_forcing_rule(
     if onsets is None:
         onsets = observed_onsets(history, species)
     key = (_fingerprint(history), tuple(sorted(onsets.items())), before_year)
-    cached = _selection_cache.get(key)
-    if cached is None:
-        cached = _select_forcing_rule(
-            daily_temperature(history),
-            {y: d for y, d in onsets.items() if before_year is None or y < before_year},
-        )
-        _selection_cache[key] = cached
-    return cached
+    cached = _ranking_cache.get(key)
+    if cached is not None:
+        return cached
 
-
-def _select_forcing_rule(
-    daily_temp: pd.Series, onsets: dict[int, int]
-) -> tuple[ForcingRule | None, float | None, float]:
-    if daily_temp.empty or len(onsets) < MIN_CALIBRATION_YEARS:
-        return DEFAULT_FORCING_RULE, None, float("inf")
-
-    if len(onsets) < MIN_RULE_SELECTION_YEARS:
+    daily_temp = daily_temperature(history)
+    prior = {y: d for y, d in onsets.items() if before_year is None or y < before_year}
+    ranked: list[Candidate]
+    if daily_temp.empty or len(prior) < MIN_CALIBRATION_YEARS:
+        ranked = []
+    elif len(prior) < MIN_RULE_SELECTION_YEARS:
         forcing = forcing_series(daily_temp, DEFAULT_FORCING_RULE)
-        at = _forcing_at(forcing, onsets)
-        threshold = float(np.median(list(at.values()))) if len(at) >= MIN_CALIBRATION_YEARS else None
-        return DEFAULT_FORCING_RULE, threshold, _rule_loo_error(forcing, onsets)
+        at = _forcing_at(forcing, prior)
+        ranked = (
+            [(DEFAULT_FORCING_RULE, float(np.median(list(at.values()))),
+              _rule_loo_error(forcing, prior))]
+            if len(at) >= MIN_CALIBRATION_YEARS
+            else []
+        )
+    else:
+        ranked = _rank_candidates(daily_temp, prior)
+    _ranking_cache[key] = ranked
+    return ranked
 
-    best_rule: ForcingRule | None = None
-    best_error = _climatology_loo_error(onsets)
-    best_forcing: pd.Series | None = None
-    for start in FORCING_STARTS:
-        for base in FORCING_BASES:
-            rule: ForcingRule = (start, base)
-            forcing = forcing_series(daily_temp, rule)
-            error = _rule_loo_error(forcing, onsets)
-            if error < best_error:
-                best_rule, best_error, best_forcing = rule, error, forcing
 
-    if best_rule is None or best_forcing is None:
-        return None, None, best_error
-    threshold = float(np.median(list(_forcing_at(best_forcing, onsets).values())))
-    return best_rule, threshold, best_error
+def select_forcing_rule(
+    history: pd.DataFrame,
+    species: str,
+    before_year: int | None = None,
+    onsets: dict[int, int] | None = None,
+) -> tuple[ForcingRule | None, float | None, float]:
+    """The best-ranked forcing rule for *species* on seasons before *before_year*.
+
+    Returns ``(rule, threshold, loo_error)``. ``rule`` is None when the
+    calendar ranks above every rule. With fewer than
+    :data:`MIN_RULE_SELECTION_YEARS` prior seasons the default rule is used,
+    exactly as before there was a choice; with fewer than
+    :data:`MIN_CALIBRATION_YEARS` there is no threshold either.
+
+    This is the rule the thermal *readiness* features are measured under.
+    The onset *estimate* is the vote of the best few candidates
+    (:func:`onset_ensemble`), not this rule's crossing.
+    """
+    ranked = ranked_candidates(history, species, before_year, onsets)
+    if not ranked:
+        return DEFAULT_FORCING_RULE, None, float("inf")
+    return ranked[0]
+
+
+def onset_ensemble(
+    history: pd.DataFrame,
+    species: str,
+    before_year: int | None = None,
+    onsets: dict[int, int] | None = None,
+) -> list[Candidate]:
+    """The candidates that vote on the onset estimate: the best :data:`ENSEMBLE_SIZE`."""
+    return ranked_candidates(history, species, before_year, onsets)[:ENSEMBLE_SIZE]
+
+
+def ensemble_crossing_doy(
+    daily_temp: pd.Series, year: int, ensemble: list[Candidate], calendar: float
+) -> float | None:
+    """The day of year the ensemble puts the onset on, or None while it cannot say.
+
+    Each rule votes its crossing day in *year*, the calendar votes
+    *calendar*, a rule that has not crossed votes "later than anything
+    seen", and the median vote wins. That median is known on the day it
+    names: by then every vote at or before it has been cast, and whatever
+    the others turn out to be, they are later. So an estimate that switches
+    to this value from that day on never uses a temperature from after it.
+    """
+    if not ensemble:
+        return None
+    years = pd.DatetimeIndex(daily_temp.index).year
+    votes: list[float] = []
+    for rule, threshold, _ in ensemble:
+        if rule is None or threshold is None:
+            votes.append(float(calendar))
+            continue
+        crossing = _crossing_doy(forcing_series(daily_temp, rule)[years == year], threshold)
+        votes.append(float("inf") if crossing is None else crossing)
+    votes.sort()
+    median = votes[(len(votes) - 1) // 2]
+    return None if median == float("inf") else median
 
 
 def describe_forcing_rule(rule: ForcingRule | None) -> str:
@@ -506,12 +589,13 @@ def onset_doy_by_day(history: pd.DataFrame, species: str) -> pd.Series:
 
     For each day the answer is the best estimate available *on that day*:
 
-      * prior-year climatology, until this year's forcing — accumulated under
-        the rule chosen for this species on the seasons before this year —
-        reaches the threshold calibrated on those same seasons;
-      * the actual crossing day-of-year from then on;
-      * the climatology throughout, for a species-year whose rule selection
-        found nothing better than the calendar.
+      * prior-year climatology, until the day the ensemble of the best
+        candidates — forcing rules calibrated on the seasons before this
+        year, and the calendar — names as the onset
+        (:func:`ensemble_crossing_doy`);
+      * that day from then on;
+      * the climatology throughout, for a species-year with too few seasons
+        behind it or whose ensemble never gets there.
 
     The switch is what carries the new information — it tells the model the
     season is running early or late as soon as the warmth confirms it, and it
@@ -533,20 +617,47 @@ def onset_doy_by_day(history: pd.DataFrame, species: str) -> pd.Series:
             climatology = _static_onset_doy(species)
         year_est = np.full(int(mask.sum()), climatology, dtype=float)
 
-        rule, threshold, _ = select_forcing_rule(
-            history, species, before_year=year, onsets=all_onsets
-        )
-        if rule is not None and threshold is not None:
-            year_forcing = forcing_series(daily_temp, rule)[mask]
-            crossed = (year_forcing >= threshold).to_numpy()
-            if crossed.any():
-                crossing_day = pd.Timestamp(year_forcing.index[int(np.argmax(crossed))])
-                # Only from the crossing onwards — before it, we did not know.
-                year_est[crossed] = float(crossing_day.dayofyear)
+        ensemble = onset_ensemble(history, species, before_year=year, onsets=all_onsets)
+        crossing = ensemble_crossing_doy(daily_temp, year, ensemble, climatology)
+        if crossing is not None:
+            # Only from that day onwards — before it, we did not know.
+            year_est[idx[mask].dayofyear.to_numpy() >= crossing] = crossing
 
         estimate[mask] = year_est
 
     return estimate
+
+
+def walk_forward_onsets(history: pd.DataFrame, species: str) -> pd.DataFrame:
+    """How the onset estimate would have done on each measured season.
+
+    One row per year that has enough seasons behind it for a rule ranking:
+    ``observed``, ``calendar`` (the median of the seasons before it),
+    ``estimate`` (the ensemble's day, calibrated on those seasons only and
+    read off that year's temperatures; the calendar where the ensemble never
+    gets there) and ``best_rule`` (the single best candidate's day, what
+    shipped before the ensemble). This — not a leave-one-out error, which is
+    what the ranking minimises — is the error to expect of the estimate.
+    """
+    onsets = observed_onsets(history, species)
+    daily_temp = daily_temperature(history)
+    rows: list[dict[str, float]] = []
+    for year in sorted(onsets):
+        prior = [float(d) for y, d in onsets.items() if y < year]
+        if len(prior) < MIN_RULE_SELECTION_YEARS:
+            continue
+        calendar = float(np.median(prior))
+        ranked = ranked_candidates(history, species, before_year=year, onsets=onsets)
+        estimate = ensemble_crossing_doy(daily_temp, year, ranked[:ENSEMBLE_SIZE], calendar)
+        best = ensemble_crossing_doy(daily_temp, year, ranked[:1], calendar)
+        rows.append({
+            "year": year,
+            "observed": float(onsets[year]),
+            "calendar": calendar,
+            "estimate": calendar if estimate is None else estimate,
+            "best_rule": calendar if best is None else best,
+        })
+    return pd.DataFrame(rows, columns=["year", "observed", "calendar", "estimate", "best_rule"])
 
 
 def onset_doy_for_date(history: pd.DataFrame, species: str, when: pd.Timestamp) -> float:

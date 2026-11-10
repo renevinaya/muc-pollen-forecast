@@ -883,24 +883,36 @@ def train_species_model(
 def _print_onset_calibration(history: pd.DataFrame) -> None:
     """Report the onset calibration this run is training against.
 
-    Both numbers drift as seasons accumulate, and both silently change what the
-    phenology features mean, so the retrain log is the right place to see them.
+    These numbers drift as seasons accumulate and silently change what the
+    phenology features mean, so the retrain log is the right place to see
+    them. The error printed is the walk-forward one — each measured season
+    estimated from the seasons before it — for the ensemble and for the
+    calendar. The leave-one-out error the candidates are ranked by is not
+    printed as an error: it is what the ranking minimises, and it ran at
+    2-4 days while the single best candidate was 9 days off.
     """
-    from .onset import describe_forcing_rule, select_forcing_rule
+    from .onset import describe_forcing_rule, select_forcing_rule, walk_forward_onsets
 
     print("\n  Onset calibration (measured from history):")
     print(f"    {'Species':<12} {'onset DOY':>10} {'seasons':>8}"
-          f"   {'projection rule':<22} {'threshold':>10} {'LOO':>6}")
-    print(f"    {'-'*12} {'-'*10} {'-'*8}   {'-'*22} {'-'*10} {'-'*6}")
+          f"   {'best rule (readiness)':<22} {'threshold':>10}"
+          f"   {'walk-forward |err|: estimate':>29} {'calendar':>9} {'n':>3}")
+    print(f"    {'-'*12} {'-'*10} {'-'*8}   {'-'*22} {'-'*10}   {'-'*29} {'-'*9} {'-'*3}")
     for species in ALL_SPECIES:
         seasons = len(observed_onsets(history, species))
         onset = typical_onset_doy(species, history)
-        rule, threshold, loo = select_forcing_rule(history, species)
-        loo_text = f"{loo:5.1f}d" if loo != float("inf") else "     -"
+        rule, threshold, _ = select_forcing_rule(history, species)
         thr_text = f"{threshold:10.1f}" if threshold is not None else f"{'-':>10}"
+        scored = walk_forward_onsets(history, species)
+        if scored.empty:
+            err_text = f"{'-':>29} {'-':>9} {0:>3}"
+        else:
+            est = float((scored["estimate"] - scored["observed"]).abs().mean())
+            cal = float((scored["calendar"] - scored["observed"]).abs().mean())
+            err_text = f"{est:>28.1f}d {cal:>8.1f}d {len(scored):>3}"
         measured = "" if seasons else "  (baseline)"
         print(f"    {species:<12} {onset:>10.0f} {seasons:>8}"
-              f"   {describe_forcing_rule(rule):<22} {thr_text} {loo_text}{measured}")
+              f"   {describe_forcing_rule(rule):<22} {thr_text}   {err_text}{measured}")
     print()
 
 

@@ -199,16 +199,35 @@ constants:
   tells the model the season is running early or late as soon as the weather
   confirms it — and because it only looks backwards, training and forecasting
   compute it identically.
-- **The forcing rule behind that crossing is chosen per species.** One rule
-  (forcing from 1 January at base 0 °C) used to project every species; it fit
-  hazel and was worse than the calendar for alder and birch, because January
-  warmth counts fully towards a tree that does not respond to it until March.
-  At calibration time the rule is now picked from a grid of start dates
-  (1 Jan – 1 Mar) and bases (0 / 3 / 5 °C) by leave-one-out over the seasons
-  before the year being projected, and switched off — climatology only — when
-  no rule beats the calendar. Current picks: hazel 1 Jan / 3 °C (3.4 d LOO),
-  alder 15 Jan / 0 °C (6.5 d), birch 1 Mar / 5 °C (6.5 d), ash and poplar
-  1 Mar / 0 °C, oak and nettle climatology. The retrain log prints them.
+- **The crossing is the vote of several forcing rules, not of the best one.**
+  One rule (forcing from 1 January at base 0 °C) used to project every
+  species; it fit hazel and was worse than the calendar for alder and birch,
+  because January warmth counts fully towards a tree that does not respond
+  to it until March. So at calibration time a grid of rules — start dates
+  1 Jan – 1 Mar, bases 0 / 3 / 5 °C — is ranked per species by leave-one-out
+  over the seasons before the year being projected, with the calendar (the
+  median of those seasons) as one more candidate. The estimate is the
+  **median over the five best candidates**: with four to seven seasons the
+  best few are indistinguishable, and which comes first changes from year to
+  year and with any small change in the temperatures (alder: 1 Jan / 3 °C,
+  15 Jan / 5, 15 Jan / 5, 15 Jan / 3 for 2023–2026). The single best
+  candidate is still the rule the two readiness features are measured under.
+
+  Scored the way it is used — each of 2023–2026 estimated from the seasons
+  before it, mean absolute error in days:
+
+  | | hazel | alder | birch | ash | grass | poplar | mean of the first five |
+  |---|---|---|---|---|---|---|---|
+  | ensemble of five (shipped) | 5.0 | 5.0 | 5.2 | 1.2 | 3.8 | 5.5 | **4.0** |
+  | best candidate alone (before) | 7.0 | 17.0 | 6.8 | 3.8 | 9.1 | 4.0 | 8.7 |
+  | calendar | 14.6 | 6.8 | 6.5 | 7.1 | 11.9 | 8.2 | 9.4 |
+
+  Four years per species, so each cell is rough; six candidates give 4.2,
+  four 5.8, seven 5.2. The leave-one-out error the ranking minimises ran at
+  2–4 days throughout and is not an estimate of any of this, which is why
+  the retrain log now prints the walk-forward error instead. Oak and nettle
+  are better served by the calendar (5.8 and 6.1 days against 8.2 and 9.2)
+  and their measured "onsets" are doubtful to begin with.
 
 Every estimate for year *Y* is calibrated only on seasons before *Y*, so a
 backtest never sees its own answer. `tests/test_onset.py` pins both properties
