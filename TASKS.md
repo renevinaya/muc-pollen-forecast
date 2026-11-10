@@ -5,9 +5,9 @@ measured on the official LGL series and the six record months unless it
 says otherwise. Ordered by what it is expected to buy.
 
 Production is on this state: the data release was relabelled from the LGL
-series and the twelve models retrained on 2026-11-10 (pipeline runs 623
-and 624), and the forecast published since then is seven days long and
-carries the `seasons` block.
+series on 2026-11-10 (pipeline run 623) and the twelve models retrained
+(run 624, and again after G.5 in run 626), and the forecast published since is
+seven days long and carries the `seasons` block.
 
 ## H.1 The season start in the forecast's own curve
 
@@ -335,7 +335,7 @@ poplar; per species in the README):
 - **G.2a** (`eb349b4`) — seven days: leads to 56 windows, calibration to
   14 days. Costs 0.07 MAE on days 1–5, days 6 and 7 at +53% and +57%
   skill on measured weather.
-- **G.5** — the 24-hour and 7-day rolling statistics of the lag block are
+- **G.5** (`53e4ffe`) — the 24-hour and 7-day rolling statistics of the lag block are
   taken over the windows that were measured, and over the carried values
   only where the whole span is dark; the official station is silent for
   15–50 days a year. General: pollen MAE 5.87 → 5.85, level accuracy
