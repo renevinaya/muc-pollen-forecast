@@ -29,7 +29,7 @@ from src.confidence import (
     expected_calibration_error,
     load_table,
 )
-from src.types import SPECIES_THRESHOLDS
+from src.types import FORECAST_DAYS, SPECIES_THRESHOLDS
 
 LEVELS = ["low", "moderate", "high", "very_high"]
 
@@ -45,7 +45,7 @@ def synthetic_results(n: int = 4000, accuracy: float = 0.35, seed: int = 3) -> p
     ]
     return pd.DataFrame({
         "species": rng.choice(["Betula", "Alnus", "Poaceae"], n),
-        "horizon_day": rng.integers(1, 6, n),
+        "horizon_day": rng.integers(1, FORECAST_DAYS + 1, n),
         "fold": rng.integers(1, 7, n),
         "origin": rng.integers(0, 50, n),
         "predicted": rng.uniform(1.0, 50.0, n),

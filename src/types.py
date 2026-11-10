@@ -231,7 +231,10 @@ LEAD_FEATURES = [
     "lead_windows",
 ]
 
-FORECAST_DAYS = 5
+# Seven days: the weather API serves every variable the model reads for
+# sixteen, the collector has always fetched seven, and the direct model does
+# not decay across the horizon. Five until November 2026.
+FORECAST_DAYS = 7
 WINDOWS_PER_DAY = 8  # 3-hour windows: 00, 03, 06, 09, 12, 15, 18, 21
 
 FEATURE_COLS = (

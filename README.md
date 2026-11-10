@@ -1,8 +1,8 @@
 # muc-pollen-forecast
 
-ML-based pollen forecast for Munich at 3-hour resolution, using a three-stage XGBoost pipeline (classifier + quantile regressor + extreme regressor) trained on historical pollen measurements, weather data, satellite vegetation indices, and phenological observations.
+ML-based pollen forecast for Munich: seven days at 3-hour resolution from a three-stage XGBoost pipeline (classifier + quantile regressor + extreme regressor) trained on the official station's measurements, weather data and a satellite vegetation index — and, per species, a projected date for the start of its season with a measured uncertainty ([Season outlook](#season-outlook)).
 
-**Species covered (11):** Alnus, Ambrosia, Artemisia, Betula, Corylus, Fraxinus, Poaceae, Populus, Quercus, Salix, Urtica
+**Species covered (11):** Alnus, Ambrosia, Artemisia, Betula, Corylus, Fraxinus, Poaceae, Populus, Quercus, Salix, Urtica — plus the fungal-spore aggregate ([Mould spores](#mould-spores))
 
 ## Architecture
 
@@ -17,8 +17,9 @@ ML-based pollen forecast for Munich at 3-hour resolution, using a three-stage XG
 │  2. Trainer    — train three-stage XGBoost per species   │
 │     → save models to models/*.joblib                     │
 │                                                          │
-│  3. Forecaster — predict 5-day pollen forecast           │
+│  3. Forecaster — predict 7-day pollen forecast           │
 │     → real-time observation assimilation                 │
+│     → season outlook: projected start per species        │
 │     → write data/forecast.json                           │
 │                                                          │
 │  4. Evaluator  — autoregressive rollout, scored per day  │
@@ -122,7 +123,7 @@ thirty-three columns.
 
 Lag features are anchored at the **forecast origin**, not at the window being
 predicted, and a `lead_windows` feature says how far ahead that window is. So
-all 40 windows of a forecast are predicted from one shared block of *measured*
+all 56 windows of a forecast are predicted from one shared block of *measured*
 values.
 
 They used to be autoregressive: each window's prediction became the next
@@ -132,10 +133,10 @@ day 5 while the mean actual was flat at 9.0 → 7.7, and MAE degraded 43% across
 the horizon. Fixing the calibration (task 3.1) barely dented it, because it was
 never a calibration problem.
 
-Training covers seven leads (1, 4, 8, 16, 24, 32, 40) — dense early, where a
+Training covers nine leads (1, 4, 8, 16, 24, 32, 40, 48, 56) — dense early, where a
 window's own recent past dominates, sparse later, where it barely matters — so
-the model learns directly how much a day-old lag is worth versus a five-day-old
-one. That is 145k rows per species and about 2.3 minutes for a full retrain.
+the model learns directly how much a day-old lag is worth versus a week-old
+one. That is about 175k rows per species (19 476 measured windows × nine leads).
 
 Models record the feature columns they were fitted on, and `load_models`
 refuses any that disagree. The pipeline checks out new code every run but keeps
@@ -154,7 +155,7 @@ skewed features still looks like a forecast.
 
 `src/features.py` now owns the row-wise half, and both the forecaster and the
 rollout benchmark call it. `tests/test_feature_parity.py` builds the same
-windows both ways and requires all 72 features to agree.
+windows both ways and requires all 65 features to agree.
 
 It found one immediately: `days_since_active` was computed with a cumulative
 sum that does not advance while a species is inactive, so training saw a
@@ -306,9 +307,10 @@ code: the official series (filed under DEMUNC in 2019 and from 2023, under
 DEBIED in 2020–2022) and a second one that the LGL does not publish. The
 merge was a series no station measured: yearly sums 1.02–1.93 times the
 official ones, the daily level different on 6–45% of a year's pollen days,
-season starts moved by up to 20 days (the alder start of 2025 by 16), and
-readings such as 7 640 alder grains in a window in which the official
-station counted none. The four upwind stations had the same two series.
+measured season starts moved by up to 20 days (oak 2023 by 20, hazel 2023
+by 7, grass 2026 by 7, alder 2025 by 4), and readings such as 7 640 alder
+grains in a window in which the official station counted none. The four
+upwind stations had the same two series.
 
 `python -m src.main backfill-labels` rewrote every stored value from the
 LGL series (the files as they were are kept on the data release as
@@ -368,33 +370,43 @@ feature yet carries it (TASKS.md, B.5).
 and the four upwind stations since 2019 and forecast here as a twelfth
 taxon since F.1 (TASKS.md). It runs through the
 same collector, model, benchmark and calibration as the pollen, with three
-differences: it has no flowering season (the gate never zeroes it), there
-is no DWD index to blend with, and its level thresholds — 50 / 150 / 300
-spores/m³ for low / moderate / high — are quantiles of the Munich station's
-own 2024+ daily means (median 46, 85th percentile ~150, 99th ~300), because
-no official classification exists and the sampler's regime changed in 2024
-(the 2019–2023 median is 9). The model's quantile target and stage-3
-threshold were tuned on the rollout benchmark rather than inherited from the
-pollen defaults; the pollen default (α 0.85) would have published a mould
-forecast with a bias of +11 spores/m³ and only 12% skill against
-persistence. On the standard six folds the mould model scores, against persistence:
+differences: it has no flowering season (the gate never zeroes it) and so
+no onset, no ramp weight and no season outlook; there is no DWD index to
+blend with; and its level thresholds — 50 / 150 / 300 spores/m³ for low /
+moderate / high — are the app's own, because no official classification
+exists. They were set in F.1 as quantiles of the merged series' 2024+
+daily means. On the official series they sit at the 58th, 88th and 97th
+percentile of the daily means since 2025 and were left where they are —
+2025 is when the station's spore counts rose (yearly median 0–5 through
+2024, 27 in 2025, 57 in 2026; what F.1 read as a regime change in 2024 was
+the second series).
+
+The quantile target was 0.70 while the labels were the merged series,
+where the pollen default of 0.85 was a bias of +11 spores/m³. On the
+official series 0.70 is a bias of −13.8 and gets the level right 75.6% of
+the time; the sweep (0.70 / 0.75 / 0.80 / 0.85 / 0.90: MAE 22.8 / 23.0 /
+22.5 / 22.7 / 22.8, bias −13.8 / −13.1 / −10.7 / −7.9 / −4.9, level 75.6 /
+75.9 / 77.2 / 78.9 / 78.8%) does not move the error and settles the level
+at 0.85, so the mould model no longer has a quantile of its own. On the
+record months it scores, against persistence:
 
 | Horizon | MAE | Persistence MAE | Skill | Level acc. | Persistence level acc. | Bias |
 |---------|-----|-----------------|-------|------------|------------------------|------|
-| day 1 | 27.8 | 33.2 | +16% | 81.1% | 56.5% | +1.9 |
-| day 3 | 29.5 | 39.4 | +25% | 78.0% | 56.5% | +0.9 |
-| day 5 | 30.3 | 42.3 | +29% | 76.7% | 53.3% | +0.8 |
+| day 1 | 23.3 | 30.8 | +28% | 80.9% | 54.2% | −8.2 |
+| day 3 | 23.1 | 35.6 | +36% | 78.6% | 55.6% | −8.1 |
+| day 5 | 22.9 | 37.3 | +40% | 78.2% | 53.2% | −6.8 |
+| day 7 | 23.2 | 36.7 | +38% | 79.3% | 47.7% | −6.3 |
 
-Spores are a persistent, slowly varying series — tomorrow looks like today
-far more than for any pollen — so the skill is smaller than the pollen's
-but the level is right four days in five. Of the emitted mould points the
-level is exactly right 79% of the time and within one level 98.5%. The
-residuals have the same spread as the pollen's (log-space standard
-deviation 0.80 against 0.83), and the conformal confidence stays pooled
-across all twelve taxa: a table split into pollen and spores calibrates
-worse held-out (ECE 0.052 against 0.042). The pollen models are untouched
-by the addition — their per-species benchmark rows are identical before
-and after.
+The model that was live until then — trained on the merged labels — scores
+MAE 30.8 at day 1 on the same official rows, no better than persistence
+there (+19% at day 5).
+Spores are a persistent, slowly varying series, so the level is right
+four days in five and within one level on practically all of them; what
+the model does not do is call a "high" day (2% of the days in these
+months): most of its training years lie far below the level the station
+has reported since 2025. The conformal confidence stays pooled across all
+twelve taxa (a table split into pollen and spores calibrated worse
+held-out when F.1 measured it, ECE 0.052 against 0.042).
 
 ## Setup
 
@@ -422,7 +434,7 @@ python -m src.main run
 # Monthly pipeline (collect → train → forecast)
 python -m src.main run-train
 
-# Backtest the 5-day forecast the way it actually runs
+# Backtest the 7-day forecast the way it actually runs
 python -m src.main benchmark
 ```
 
@@ -432,7 +444,7 @@ python -m src.main benchmark
 |---------|-------------|
 | `collect [days]` | Fetch recent pollen + weather + NDVI at 3h resolution, append to history (default: 14 days) |
 | `train` | Train three-stage XGBoost models per species on all history |
-| `forecast` | Generate 5-day forecast at 3h resolution using trained models |
+| `forecast` | Generate 7-day forecast at 3h resolution using trained models |
 | `backfill [days]` | Collect that many days in one go — the same code path as `collect`, for bootstrapping an empty store (default: 365 days) |
 | `backfill-labels [start_year]` | Rewrite every stored measurement, Munich and upwind, from the official LGL series; the history keeps its windows and weather (see [One station, one series](#one-station-one-series)) |
 | `backfill-upwind [start_year]` | Fetch the upwind stations' history into `data/upwind.csv` (default: 2019) and back it up to the data release |
@@ -440,10 +452,10 @@ python -m src.main benchmark
 | `backfill-weather [start] [end]` | Rewrite every weather column of the existing history from the Open-Meteo archive; pollen values untouched |
 | `backfill-ndvi [start] [end]` | Rewrite the NDVI columns of the existing history from MODIS composites |
 | `run-backfill` | Both of the above against the data release (what `mode: backfill` runs in Actions) |
-| `benchmark [days]` | Walk-forward **rollout** of the shipped forecast, scored per forecast day (default: 5), over the six record months (`RECORD_MONTHS` in `src/rollout.py`). `--months 2026-02,2026-04` names other months, `--folds N` samples N across the year; `--species A,B` |
+| `benchmark [days]` | Walk-forward **rollout** of the shipped forecast, scored per forecast day (default: 7), over the six record months (`RECORD_MONTHS` in `src/rollout.py`). `--months 2026-02,2026-04` names other months, `--folds N` samples N across the year; `--species A,B` |
 | `benchmark-onset` | The shipped rollout over the months containing each measured season start of the last three seasons (default: Corylus, Alnus, Betula): timing, amount and false starts per species-year and horizon. `--species A,B`, `--years N`. Ends with the season outlook's start-date error by lead |
 | `outlook` | Print the season outlook as the forecast publishes it, and its start-date error by lead on the measured seasons (thermal only, runs in seconds) |
-| `calibrate [--rebuild]` | Regenerate `src/confidence.json` from `data/benchmark_rollout.csv`; `--rebuild` runs the rollout first, over 10 days so stale runs read a measured rate |
+| `calibrate [--rebuild]` | Regenerate `src/confidence.json` from `data/benchmark_rollout.csv`; `--rebuild` runs the rollout first, over twice the shipped horizon so stale runs read a measured rate |
 | `dwd` | Display the current DWD pollen danger index for Oberbayern |
 | `run` | Execute collect → forecast in sequence (every 3 hours) |
 | `run-train` | Execute collect → train → forecast in sequence (monthly retraining); a refused retrain falls back to the released models |
@@ -459,7 +471,7 @@ the only features whose quality depends on how far ahead you are forecasting.
 `src/rollout.py` replays the forecast exactly as `generate_forecast` runs it:
 every window is predicted directly from the measured lag block at the forecast
 origin, through the same `src/features.py` code path production uses. A
-forecast is launched from every day of a test month and rolled five days out,
+forecast is launched from every day of a test month and rolled seven days out,
 and skill is reported **per forecast day** against a persistence baseline.
 That comparison is the report's first block and its verdict — a forecast that
 loses to "nothing changes" has no claim on a user's attention, whatever its
@@ -467,61 +479,85 @@ MAE — and everything else follows it.
 
 Folds are spread across the calendar year rather than evenly along the
 timeline. Even spacing put all three folds in August — dormant for every tree
-species — so the benchmark was scoring an empty season.
+species — so the benchmark was scoring an empty season. The default folds
+are fixed: the six **record months** September and November 2025, January,
+March, May and July 2026 (`RECORD_MONTHS`). "Six across the year" was
+resampled from whatever the history held, so the months — and with them
+every number — moved as the history grew.
 
 What it deliberately does not simulate, both of which flatter the model and are
 printed with the report rather than hidden:
 
-- **Weather is actual, not forecast.** A real 5-day forecast also carries the
-  weather model's error.
+- **Weather is actual, not forecast.** A real 7-day forecast also carries the
+  weather model's error: against Open-Meteo's archived runs (January–June
+  2024) the daily mean temperature is off by 0.5 °C a day ahead and 2.0 °C
+  seven days ahead. Replaying the benchmark on those archived forecasts is
+  an open point (TASKS.md).
 - **No DWD blend.** The DWD index covers only today + 2 days and is not
   archived, so it cannot be replayed historically.
 
 ### What it currently says
 
-Six folds spread across the year (Sep, Nov, Jan, Mar, May, Jul), 184 forecast
-origins, 80 680 scored predictions. Persistence is the same baseline throughout
-— it does not depend on the model.
+The six record months, 157 forecast origins (every day the station
+reported), 91 399 scored predictions of the eleven pollen taxa, on the
+official series. Persistence — the last measured window held flat — is the
+same baseline throughout.
 
 | Horizon | MAE | RMSE | Level acc. | Bias | Persistence MAE | Skill |
 |---------|-----|------|-----------|------|-----------------|-------|
-| day 1 | **6.4** | 45.1 | 75.2% | **−1.7** | 10.4 | **+38.3%** |
-| day 2 | **6.3** | 44.9 | 74.8% | **−1.9** | 10.9 | **+42.2%** |
-| day 3 | **6.1** | 42.0 | 74.5% | **−1.8** | 11.2 | **+45.8%** |
-| day 4 | **5.9** | 40.2 | 74.2% | **−1.7** | 11.8 | **+49.5%** |
-| day 5 | **5.9** | 39.6 | 73.6% | **−1.5** | 11.4 | **+48.2%** |
+| day 1 | **6.4** | 48.5 | 81.5% | **−1.6** | 10.3 | **+37.9%** |
+| day 2 | **6.1** | 47.7 | 81.5% | **−1.8** | 10.5 | **+41.5%** |
+| day 3 | **5.8** | 44.8 | 81.8% | **−1.6** | 10.7 | **+45.3%** |
+| day 4 | **5.7** | 43.5 | 81.8% | **−1.4** | 11.6 | **+50.9%** |
+| day 5 | **5.7** | 43.2 | 81.8% | **−1.3** | 11.3 | **+49.7%** |
+| day 6 | **5.5** | 31.7 | 81.3% | **−0.9** | 11.9 | **+53.4%** |
+| day 7 | **5.8** | 36.8 | 81.7% | **−1.4** | 13.7 | **+57.4%** |
 
-The model beats persistence at every horizon by 38–50%, with no decay across
-the five days and a bias of about −1.7 grains/m³ (it leans low since E.2
-removed the value weights that were pushing it up; see the stage table).
-These are the eleven pollen taxa; the mould-spore taxon added in F.1 is
-scored in its own section below, and a pooled figure that includes it
-(MAE 8.2 at day 1) is not comparable with this table.
-Level accuracy is measured on daily-mean levels (D.4; see *Model*): 74.5%
-exact and 99.8% within one level, against persistence's 66.6% / 64.5% at
-days 1 / 5. Under the old 3-hour definition the B.5 predictions scored
-76.3% exact — and persistence 78.7%, because "none at night" was free; the
-daily definition is the one under which the model's level skill is visible
-at all.
+The model beats persistence at every horizon by 38–57% and its error does
+not grow across the week; the skill rises because persistence gets worse.
+That flatness is partly the benchmark's: the weather it reads is measured,
+and a real day-7 forecast reads a week-old weather forecast (see the two
+caveats above). The bias is about −1.5 grains/m³ — it leans low since E.2
+removed the value weights that were pushing it up. Level accuracy, on
+daily-mean levels (D.4; see *Model*), is 81.6% exact and 99.6% within one
+level, against persistence's 77.7% at day 1 and 75.5% at day 7. The
+mould-spore taxon is scored in [its own section](#mould-spores); a pooled
+figure that includes it (MAE 7.8 at day 1) is not comparable with this
+table.
 
-These numbers are measured on the **complete** history (see *Data coverage*
-below). Before the backfill the model scored 7.3 / 76.9%; on the complete
-history the same model scored 7.8 / 75.6%. That earlier score was partly an
-artefact: eight weather columns were NaN before March 2025 and filled to 0,
-which gave the model a "2025 or later" flag, and all six folds lie in that
-era. Restoring the NaN block recovers 7.3 exactly; dropping the eight
-features on complete data stays at 7.8. The flag was a proxy for how heavy
-recent seasons are; the three season-load features are the honest
-replacement and take the model to 7.0 — better than the artefact — though
-they leave the level accuracy where it was and the season-start amplitude
-untouched (TASKS.md, B.6). The per-species onset rules and the transport-aware
-onset detector (B.2/B.3) take it to 6.9, mostly through hazel, and the four
-upwind stations (B.5) to 6.8. Building the lag block on the time grid
-(E.1) costs 0.1 of that back for half a point of level accuracy, and
-dropping the value weights that compounded with the quantile target (E.2)
-takes it to 6.1.
+**Seven days instead of five** (G.2a) is the same model trained on two more
+leads (48 and 56 windows). On the 65 747 predictions of days 1–5 that both
+score, the seven-day model is at MAE 5.96 against 5.89 for the five-day
+one (day 1 6.42 against 6.34, day 5 5.67 against 5.59), bias −1.54
+against −1.67, level accuracy 81.7% against 81.6%: a hundredth of the
+error for two more days at +53% and +57% skill.
 
-Three fixes got here, each measured on these same folds:
+**These numbers are not comparable with anything measured before November
+2026**, when the labels were a merge of two series (see [One station, one
+series](#one-station-one-series)) and the folds were resampled as the
+history grew. The table below therefore has two parts: the steps up to E.2
+as they were measured, on the merged labels (184 origins, 80 680
+predictions over five days), and the steps since, re-run on the official
+series over the record months (the 65 747 day-1-to-5 predictions common to
+all of them; persistence 10.3 / 11.3 at days 1 / 5).
+
+On the merged labels the path was: before the weather backfill the model
+scored 7.3 / 76.9%; on the complete history the same model scored 7.8 /
+75.6%. That earlier score was partly an artefact: eight weather columns
+were NaN before March 2025 and filled to 0, which gave the model a "2025
+or later" flag, and all six folds lie in that era. Restoring the NaN block
+recovers 7.3 exactly; dropping the eight features on complete data stays
+at 7.8. The flag was a proxy for how heavy recent seasons are; the three
+season-load features are the honest replacement and take the model to 7.0
+— better than the artefact — though they leave the level accuracy where it
+was and the season-start amplitude untouched. The per-species onset rules
+and the transport-aware onset detector (B.2/B.3) take it to 6.9, mostly
+through hazel, and the four upwind stations (B.5) to 6.8. Building the lag
+block on the time grid (E.1) costs 0.1 of that back for half a point of
+level accuracy, and dropping the value weights that compounded with the
+quantile target (E.2) takes it to 6.1.
+
+On the merged labels:
 
 | | day 1 MAE | day 5 MAE | day 1 bias | day 5 bias | day 5 skill |
 |---|---|---|---|---|---|
@@ -544,7 +580,30 @@ horizon. **Phase 2** cut 73 features to 60 — and the smaller model is better a
 every horizon, not merely equal, so those features were adding variance rather
 than signal.
 
-Day-5 MAE has gone 17.1 → 5.9 and day-5 bias +13.2 → −1.5.
+Day-5 MAE went 17.1 → 5.9 and day-5 bias +13.2 → −1.5 on those labels.
+
+On the official series:
+
+| | day 1 MAE | day 5 MAE | day 1 bias | day 5 bias | day 5 skill | level acc. |
+|---|---|---|---|---|---|---|
+| E.2 as released: trained on the merged labels, scored on the official ones | 6.42 | 5.86 | −1.37 | −0.97 | +48.2% | 78.9% |
+| G.1 trained on the official series | 6.50 | 5.93 | −1.59 | −1.29 | +47.6% | 81.6% |
+| G.2c poplar's window; spores have no onset | 6.48 | 5.85 | −1.28 | −1.06 | +48.3% | 81.7% |
+| G.2b onset estimate from five candidates | 6.34 | 5.59 | −1.67 | −1.45 | +50.6% | 81.6% |
+| G.2a trained to seven days | **6.42** | **5.67** | **−1.55** | **−1.32** | **+49.9%** | **81.7%** |
+
+**G.1** did not make the pollen error smaller — a model trained on the
+merged labels predicted the official values about as well, because for
+most taxa the two series agree on nine windows in ten — it made the level
+right on 2.7 more days in a hundred, and it took a quarter off the mould
+error (30.8 → 22.6 at day 1, where the second series ran at two to eight
+times the official one). **G.2c** is poplar (MAE 15.4 → 14.9). **G.2b**
+is the one step of the series that moved the pollen error: 5.85 → 5.59 at
+day 5, from the nine taxa that have a measured onset (7.4 → 7.2 over
+their five days). Over the whole series the
+day-1 error is where it was, the day-5 error is 3% lower, the level is
+right 81.7% of the time instead of 78.9%, and the forecast is two days
+longer.
 
 > **On fold counts.** An earlier version of this section reported three folds
 > (Sep, Jan, May) and concluded that the model beat persistence from day 3 on
@@ -694,10 +753,10 @@ difference means something. Two numbers are published per prediction, because
 |-------|---------|---------------|
 | `confidence` | P(the emitted level is exactly right) | 0.3 – 0.9 (mean ~0.7) |
 | `confidence_within_one` | P(the truth is within one level of it) | ~0.9 – 0.99 |
-| `value_low`, `value_high` | central 80% interval for `value` | ×0.09 – ×2.3 of the value at day 1 |
+| `value_low`, `value_high` | central 80% interval for `value` | 0.4 – 37 for a value of 10 at day 1 |
 
 All of them are **conformal**: `src/confidence.json`, generated by
-`python -m src.main calibrate` from the 10-day rollout benchmark, stores per
+`python -m src.main calibrate` from the 14-day rollout benchmark, stores per
 forecast horizon the distribution of the benchmark's residuals in log space —
 `log1p(actual) − log1p(predicted)` — once for daily means (levels are daily
 means) and once for 3-hour windows. A prediction's confidence is the share of
@@ -719,7 +778,7 @@ counts from and what the benchmark measured. On a normal run the two agree.
 When the station has been silent for two days, a window "tomorrow" is a
 three-day forecast, and it is published as one. The table is therefore
 measured to twice the shipped horizon (`calibrate --rebuild` runs the rollout
-over 10 days), so a run up to five days stale still reads a measured
+over 14 days), so a run up to seven days stale still reads a measured
 distribution; a window beyond the furthest measured horizon gets that
 horizon's rate halved, the same "never measured, so published low" rule as a
 species without a model. The `status` block in the output says when this is
@@ -761,6 +820,21 @@ leave-one-fold-out: when it says 0.27 it is right 11% of the time, at 0.45
 the flat one was (ECE 0.007 vs 0.008) and now also discriminates (correlation
 0.17 vs 0.01). The 80% value interval covers 70–90% of the windows per
 held-out fold.
+
+That comparison was made on the merged labels and the five-day model. The
+table now published — the seven-day model on the official series, 14 days
+of rollout over the record months — was scored the same way, leave one
+fold out, on the 3 309 emitted day-rows of days 1–7: the level is exactly
+right 64% of the time (66.5% at day 1, 63.5% at day 7, 61.4% at day 14)
+against a stated 68%, ECE 0.070, correlation with being right 0.22, Brier
+0.222. When it says 0.32 it is right 24% of the time, at 0.48 56%, at 0.66
+58%, at 0.84 77%. So it still discriminates, and it overstates by four
+points: most of that is the March fold (stated 0.68, right 0.60 on 1 536
+of the rows — poplar, ash and birch at once), which held out leaves the
+table five quieter months to learn from. Within one level it states 0.987
+and is right 0.988; the 80% value interval covers 71–91% of the windows
+per held-out fold. The comparison of schemes has not been repeated on the
+official series (TASKS.md).
 
 ## Output Format
 

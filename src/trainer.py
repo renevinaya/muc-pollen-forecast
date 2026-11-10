@@ -521,12 +521,12 @@ def _add_weather_derived_features(df: pd.DataFrame, species: str = "") -> pd.Dat
     return df.fillna({col: 0.0 for col in derived.columns})
 
 
-# Leads the model is trained at, in 3h windows. A 5-day forecast spans leads
-# 1..40, and one row per lead would be 40x the training data, so these sample
+# Leads the model is trained at, in 3h windows. A 7-day forecast spans leads
+# 1..56, and one row per lead would be 56x the training data, so these sample
 # the range: dense early, where a window's own recent past still dominates, and
 # sparse later, where it barely matters. ``lead_windows`` is a feature, so the
 # model interpolates between them.
-TRAINING_LEADS = (1, 4, 8, 16, 24, 32, 40)
+TRAINING_LEADS = (1, 4, 8, 16, 24, 32, 40, 48, 56)
 
 
 # --- Onset ramp weighting (B.6) ------------------------------------------------

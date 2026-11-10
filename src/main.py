@@ -14,7 +14,7 @@ Usage:
     python -m src.main backfill-weather [START] [END]  # Rewrite weather columns from the archive
     python -m src.main backfill-ndvi [START]           # Rewrite NDVI columns from MODIS
     python -m src.main run-backfill # Both of the above against the data release (Actions)
-    python -m src.main benchmark [--folds N | --months YYYY-MM,...]  # Walk-forward rollout of the 5-day forecast
+    python -m src.main benchmark [--folds N | --months YYYY-MM,...]  # Walk-forward rollout of the shipped forecast
     python -m src.main benchmark-onset [--species A,B] [--years N]  # The shipped forecast around the season starts
     python -m src.main outlook      # The season outlook and its start-date error by lead
     python -m src.main calibrate    # Regenerate the confidence table

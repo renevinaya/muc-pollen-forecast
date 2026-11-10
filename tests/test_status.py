@@ -83,13 +83,15 @@ def test_stale_threshold_is_a_day() -> None:
 
 
 def test_confidence_beyond_the_measured_horizon_is_marked_down() -> None:
-    table = build_table(synthetic_results())  # horizons 1..5
-    last_measured, _ = confidence_for(table, "Betula", "low", 5)
-    beyond, _ = confidence_for(table, "Betula", "low", 6)
+    table = build_table(synthetic_results())  # horizons 1..FORECAST_DAYS
+    last_measured, _ = confidence_for(table, "Betula", "low", FORECAST_DAYS)
+    beyond, _ = confidence_for(table, "Betula", "low", FORECAST_DAYS + 1)
     far_beyond, _ = confidence_for(table, "Betula", "low", 30)
     assert beyond == pytest.approx(last_measured * BEYOND_HORIZON_SCALE, abs=1e-6)
     assert far_beyond == beyond
-    without_model, _ = confidence_for(table, "Betula", "low", 6, has_model=False)
+    without_model, _ = confidence_for(
+        table, "Betula", "low", FORECAST_DAYS + 1, has_model=False
+    )
     assert without_model == pytest.approx(beyond * NO_MODEL_SCALE, abs=1e-6)
 
 
@@ -97,13 +99,15 @@ def test_table_overall_rate_is_the_shipped_horizons_only() -> None:
     """Rows past FORECAST_DAYS calibrate stale runs; they must not move the headline."""
     results = synthetic_results(accuracy=0.60)
     far = synthetic_results(accuracy=0.10, seed=5)
-    far["horizon_day"] = far["horizon_day"] + FORECAST_DAYS  # days 6..10, much worse
+    far["horizon_day"] = far["horizon_day"] + FORECAST_DAYS  # the second half, much worse
     table = build_table(pd.concat([results, far], ignore_index=True))
     assert table["overall"]["exact"] == pytest.approx(0.60, abs=0.03)
     assert set(table["horizon_delta"]) == {str(d) for d in range(1, 2 * FORECAST_DAYS + 1)}
     assert table["source"]["horizon_days"] == 2 * FORECAST_DAYS
-    day_10 = table["overall"]["exact"] + table["horizon_delta"]["10"]["exact"]
-    assert day_10 == pytest.approx(0.10, abs=0.05)
+    last = str(2 * FORECAST_DAYS)
+    assert table["overall"]["exact"] + table["horizon_delta"][last]["exact"] == pytest.approx(
+        0.10, abs=0.05
+    )
 
 
 # --- Output --------------------------------------------------------------------
@@ -258,8 +262,8 @@ def test_stale_run_counts_its_lead_from_the_newest_measurement(
 def test_far_beyond_the_table_the_rate_is_halved(
     monkeypatch: pytest.MonkeyPatch, frame: pd.DataFrame
 ) -> None:
-    """Twelve silent days put every window past the ten measured horizons."""
-    out = _run(monkeypatch, frame, last_obs=pd.Timestamp("2021-04-08 06:00"))
+    """Nineteen silent days put every window past the measured horizons."""
+    out = _run(monkeypatch, frame, last_obs=pd.Timestamp("2021-04-01 06:00"))
     table = load_table()
     assert table is not None
     furthest = max(int(k) for k in table["horizon_delta"])
@@ -267,7 +271,7 @@ def test_far_beyond_the_table_the_rate_is_halved(
     values = [sp.value for w in out.forecast[0].windows for sp in w.species if sp.name == SPECIES]
     log_day_mean = float(np.log1p(np.mean(values)))
     last_measured = confidence_for(table, SPECIES, first.level, horizon_day=furthest, log_day_mean=log_day_mean)[0]
-    lead = int((pd.Timestamp("2021-04-20") - pd.Timestamp("2021-04-08 09:00")) / WINDOW) + 1
+    lead = int((pd.Timestamp("2021-04-20") - pd.Timestamp("2021-04-01 09:00")) / WINDOW) + 1
     assert (lead - 1) // 8 + 1 > furthest
     assert first.confidence == pytest.approx(last_measured * BEYOND_HORIZON_SCALE, abs=1e-6)
-    assert out.status is not None and out.status.observations.age_windows == 97
+    assert out.status is not None and out.status.observations.age_windows == 153
