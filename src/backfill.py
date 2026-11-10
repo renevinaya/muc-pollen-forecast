@@ -17,6 +17,11 @@ Both are idempotent: running them again re-fetches and rewrites the same
 values. Both are also the only place in the pipeline that writes history
 columns without going through the collector, so they report exactly which
 columns changed on how many rows.
+
+The weather refresh also completes the window grid: a window the history has
+no row for gets a weather-only row, so the weather no longer has holes where
+the station was silent. :func:`relabel_history`, further down, rewrites the
+measurements themselves from the official station series.
 """
 
 from __future__ import annotations
@@ -93,13 +98,21 @@ def refresh_weather(
     start: date | None = None,
     end: date | None = None,
     fetch=None,
+    add_missing: bool = True,
 ) -> pd.DataFrame:
     """Overwrite every weather column of *history* from the ERA5 archive.
 
     Covers ``start``..``end`` (default: the whole history up to the archive's
-    edge). All :data:`WEATHER_COLUMNS` are rewritten, including the ones the
-    model currently ignores, so un-pruning a column later needs no second
-    pass. *fetch* is the archive client, injectable for tests.
+    edge). All :data:`WEATHER_COLUMNS` are rewritten. *fetch* is the archive
+    client, injectable for tests.
+
+    With *add_missing*, every 3-hour window of the span that the history
+    has no row for is added as a weather-only row. The history only ever
+    got a row where the station reported, so its weather had the station's
+    gaps: in January-April 2019 and 2020, 69 and 50 of 120 days held only
+    part of the day, mostly the noon window alone, which runs 2-3 °C above
+    the day's mean — and those two seasons calibrate every onset threshold.
+    The measurements are not touched and no existing row is removed.
     """
     if fetch is None:
         from .weather import fetch_historical_weather as fetch
@@ -138,7 +151,27 @@ def refresh_weather(
 
     changed = _overwrite(history, weather, WEATHER_COLUMNS, dates)
     _print_changes(changed, len(history))
+    if add_missing:
+        history = _add_missing_windows(history, weather)
     return history
+
+
+def _add_missing_windows(history: pd.DataFrame, weather: pd.DataFrame) -> pd.DataFrame:
+    """Add a weather-only row for every window of *weather* the history lacks."""
+    missing = weather.index.difference(_history_dates(history))
+    if len(missing) == 0:
+        print("    every window of the span already has a row")
+        return history
+    columns = [c for c in WEATHER_COLUMNS if c in weather.columns]
+    rows = weather.loc[missing, columns].copy()
+    rows.insert(0, "date", rows.index)
+    rows["species"] = WEATHER_ONLY
+    rows["value"] = np.nan
+    by_year = pd.Series(missing.year).value_counts().sort_index()
+    print(f"    {len(missing)} window(s) without a row added as weather only "
+          f"({', '.join(f'{y}: {n}' for y, n in by_year.items())})")
+    out = pd.concat([history, rows.reset_index(drop=True)], ignore_index=True)
+    return out.sort_values(["date", "species"]).reset_index(drop=True)[list(history.columns)]
 
 
 def refresh_ndvi(

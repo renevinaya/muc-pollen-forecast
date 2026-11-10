@@ -13,7 +13,7 @@ import pandas as pd
 import pytest
 
 from src.backfill import NDVI_MAX_GAP_DAYS, refresh_ndvi, refresh_weather
-from src.types import ALL_SPECIES, WEATHER_COLUMNS
+from src.types import ALL_SPECIES, WEATHER_COLUMNS, WEATHER_ONLY
 
 
 def build_history(days: int = 30, start: str = "2024-01-01") -> pd.DataFrame:
@@ -151,3 +151,39 @@ def test_ndvi_refresh_with_nothing_fetched_changes_nothing():
     history = build_history()
     out = refresh_ndvi(history, fetch=lambda s, e: pd.DataFrame())
     pd.testing.assert_frame_equal(out, history.assign(date=pd.to_datetime(history["date"])))
+
+
+# --- Completing the window grid (G.3) -----------------------------------------
+
+
+def test_weather_refresh_adds_the_windows_the_station_skipped():
+    """A day the station reported at noon only becomes eight windows of weather."""
+    history = build_history(days=10)
+    dates = pd.to_datetime(history["date"])
+    noon_only = (dates.dt.normalize() == "2024-01-04") & (dates.dt.hour != 12)
+    absent = dates.dt.normalize() == "2024-01-06"
+    gapped = history[~(noon_only | absent)].reset_index(drop=True)
+
+    out = refresh_weather(gapped, fetch=fake_archive(5.0))
+
+    grid = pd.date_range("2024-01-01", periods=80, freq="3h")
+    assert sorted(out["date"].unique()) == list(grid)
+    added = out[out["species"] == WEATHER_ONLY]
+    assert len(added) == 7 + 8 and added["value"].isna().all()
+    assert (added["temperature_mean"] == 5.0).all()
+    # The measurements that were there are still there, untouched.
+    kept = out[out["species"] != WEATHER_ONLY].reset_index(drop=True)
+    pd.testing.assert_series_equal(kept["value"], gapped["value"])
+    assert list(out.columns) == list(gapped.columns)
+
+    # Idempotent: a second pass finds nothing to add.
+    again = refresh_weather(out, fetch=fake_archive(5.0))
+    assert len(again) == len(out)
+
+
+def test_weather_refresh_can_leave_the_grid_alone():
+    history = build_history(days=10)
+    gapped = history[pd.to_datetime(history["date"]).dt.normalize() != "2024-01-06"].reset_index(drop=True)
+    out = refresh_weather(gapped, fetch=fake_archive(5.0), add_missing=False)
+    assert len(out) == len(gapped)
+
