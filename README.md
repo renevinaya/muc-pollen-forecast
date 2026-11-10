@@ -231,7 +231,11 @@ constants:
   | calendar | 14.6 | 6.8 | 6.5 | 7.1 | 11.9 | 8.2 | 9.4 |
 
   Four years per species, so each cell is rough; six candidates give 4.2,
-  four 5.8, seven 5.2. The leave-one-out error the ranking minimises ran at
+  four 5.8, seven 5.2. How rough: on a copy of the history whose weather
+  grid is completed (TASKS.md, H.2) the three rows read 4.7 / 6.1 / 9.4,
+  with alder at 1.8 and ash at 5.5 — the ensemble stays ahead of the
+  single rule and of the calendar, by less. The leave-one-out error the
+  ranking minimises ran at
   2–4 days throughout and is not an estimate of any of this, which is why
   the retrain log now prints the walk-forward error instead. Oak and nettle
   are better served by the calendar (5.8 and 6.1 days against 8.2 and 9.2)
@@ -620,25 +624,55 @@ it, so the general benchmark cannot say when a season begins or how hard.
 each measured onset of the last three seasons and reports, per species-year
 and horizon, the timing of the first predicted 3-day run at or above the low
 level, MAE and bias in the ±10-day window next to the MAE of predicting zero,
-false starts, and the predicted/actual ratio by days since onset. The
-current picture (`src/onset_report.py`): timing within 1–7 days at every
-horizon for all three species, and amplitude a tenth to a third of what
-arrives in heavy years for the first two weeks — the loss is in the amount,
-not the date. Weighting the two weeks after each measured onset four times
-in training (B.6) improved the general benchmark and alder's timing and did
-not move the heavy-year ramp: nothing the model reads precedes the local
-count, so it cannot tell a 25,000-grain year from a 3,000-grain one on day
-one. TASKS.md tracks the numbers per change.
+false starts, and the predicted/actual ratio by days since onset.
+
+The current picture, the seven-day model on the official series (hazel,
+alder, birch, grass; the starts of 2024–2026):
+
+| mean timing error, days (starts called) | d1 | d2 | d3 | d4 | d5 | d6 | d7 |
+|---|---|---|---|---|---|---|---|
+| birch | 2.3 (3) | 2.0 (3) | 1.7 (3) | 1.3 (3) | 2.0 (3) | 6.7 (3) | 7.0 (3) |
+| grass | 0.5 (2) | 0.5 (2) | 0.0 (2) | 0.5 (2) | 1.0 (2) | 1.5 (2) | 3.0 (2) |
+| alder | 7.5 (2) | 2.0 (1) | 3.0 (1) | 3.0 (1) | 3.0 (1) | 3.0 (1) | 3.0 (1) |
+| hazel | 6.5 (2) | 1.0 (1) | – | – | – | – | – |
+
+Birch and grass are called to within about two days out to day 5 and
+within a week at day 7. Hazel and alder are called at day 1 or not at all
+in two years of three, and in both years the reason is the amount, not the
+date. In 2025 the measured "start" was three days at 10–17 grains/m³
+followed by a station gap and a week of nothing; the forecast starts both
+species on 21 February, a day after the season that lasted began. In 2026
+both came back from a nine-day station outage at 130–380 grains a day, and
+the day-1 forecast said 9–24: its lag block held one loud day after a week
+that the outage had filled with the last value measured before it, a zero
+(TASKS.md, H.1). The 22 February peak is on the right day at every
+horizon, seven days out included — at 100 against 1 700. Across these
+months the
+day-1 forecast loses to persistence (MAE 90.8 against 80.0) and wins from
+day 2 (+14%) to day 7 (+27%); false starts are 18 run-days, all birch
+2025 and 2026. In heavy years the first two weeks are forecast at a tenth
+to a third of what arrives (birch 2024 and 2026: 0.06–0.10 in days 5–9;
+hazel 2026: 0.02–0.10): nothing the model reads precedes the local count,
+so it cannot tell a 25 000-grain year from a 3 000-grain one on day one.
+Weighting the two weeks after each measured onset four times in training
+(B.6) improved the general benchmark and did not move that.
+
+The date of a start a week ahead is the [season outlook](#season-outlook)'s
+job, and its replay ends this report. TASKS.md tracks the numbers per
+change.
 
 ### Feature gain
 
 `train` prints the share of XGBoost gain each feature and feature family earns,
-so pruning decisions have evidence behind them. On the complete history the
-split is: lag 36%, weather-derived 24%, weather 12%, calendar 10%, season 5%,
-season load 4%, NDVI 4%, phenology 4%, intra-day 2%. Gain share counts how often trees could
-split on a feature, not whether the split helped — Phase 2 dropped 13% of
-gain and got a better model, and Phase A's eight diurnal/soil features earn
-2.6% between them while moving the benchmark by nothing.
+so pruning decisions have evidence behind them. In the models now live
+(official series, trained to seven days, November 2026) the split is: lag
+34%, weather-derived 20%, `season_active` 11%, weather 9%, calendar 9%,
+phenology 5.5%, season load 4%, NDVI 3.5%, upwind 3%, intra-day 2%. Gain
+share counts how often trees could split on a feature, not whether the
+split helped — Phase 2 dropped 13% of gain and got a better model, Phase
+A's eight diurnal/soil features earn 2.6% between them while moving the
+benchmark by nothing, and the fifteen features that earn least are not
+free to drop as a block (TASKS.md, *Tried, not adopted*).
 
 ### Data coverage
 
