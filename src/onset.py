@@ -44,6 +44,7 @@ import pandas as pd
 from .types import (
     SPECIES_GDD_THRESHOLD,
     SPECIES_THRESHOLDS,
+    SPORE_TAXA,
     SPECIES_TYPICAL_ONSET_DOY,
     SPECIES_SEASON,
     GDD_T_BASE,
@@ -205,7 +206,14 @@ def observed_onsets(history: pd.DataFrame, species: str) -> dict[int, int]:
     with no later run drops out. Only used on completed seasons, and the
     comparison is against whatever other years the caller's history holds, so
     a walk-forward caller only ever compares against the past.
+
+    A spore taxon has no onset: it is in the air all year, and the first
+    three days above its low level are a date without a meaning (the forcing
+    rules fit them with a 32-day error). It gets no onsets, hence the static
+    phenology features and no onset-ramp weight.
     """
+    if species in SPORE_TAXA:
+        return {}
     runs = _candidate_runs(history, species)
     chosen = {year: starts[0] for year, starts in runs.items() if starts}
     if len(chosen) < 3:

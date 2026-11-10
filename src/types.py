@@ -287,7 +287,11 @@ SPECIES_SEASON: dict[str, tuple[int, int]] = {
     "Corylus":   (1, 4),    # January – April
     "Fraxinus":  (3, 5),    # March – May
     "Poaceae":   (5, 9),    # May – September
-    "Populus":   (3, 5),    # March – May
+    # February – April. Was March – May: 6% of the station's poplar falls in
+    # February and 1.5% in May, and the onset detector, which only looks
+    # inside this window, put the start on 1 or 2 March in five of eight
+    # years with up to 20 February days already above the threshold.
+    "Populus":   (2, 4),
     "Quercus":   (4, 6),    # April – June
     "Salix":     (3, 5),    # March – May
     "Urtica":    (5, 9),    # May – September
@@ -313,7 +317,7 @@ def is_season_active(species: str, month: int) -> bool:
 SPECIES_TYPICAL_ONSET_DOY: dict[str, int] = {
     "Corylus":   45,    # mid-February (hazel)
     "Alnus":     55,    # late February (alder)
-    "Populus":   95,    # early April (poplar)
+    "Populus":   60,    # early March (poplar)
     "Salix":     95,    # early April (willow)
     "Fraxinus":  105,   # mid-April (ash)
     "Betula":    110,   # late April (birch)
