@@ -584,9 +584,10 @@ def prepare_training_data(
     Drops rows where lag features are NaN (the first few days, plus the first
     *lead* windows of each copy).
     """
-    species_df = history[history["species"] == species].copy()
+    species_df = history[(history["species"] == species) & history["value"].notna()].copy()
     if species_df.empty:
-        return pd.DataFrame(), pd.Series(dtype=float), pd.Series(dtype=float)
+        empty = (pd.DataFrame(), pd.Series(dtype=float), pd.Series(dtype=float))
+        return (*empty, np.zeros(0)) if with_ramp else empty
 
     species_df = species_df.sort_values("date").reset_index(drop=True)
     # Ensure all expected feature columns exist (backward compat with old history)
@@ -601,7 +602,14 @@ def prepare_training_data(
         species_df[col] = species_df["date"].map(tables[col]).fillna(0.0)
     species_df = _add_ndvi_features(species_df)
     species_df = _add_season_feature(species_df, species)
-    species_df = _add_phenology_features(species_df, species)
+    # The onset calibration reads the temperature of every window of the
+    # history, not only of the windows this species was measured in.
+    species_df = _add_phenology_features(
+        species_df,
+        species,
+        onset_by_day=onset_doy_by_day(history, species),
+        readiness=readiness_by_day(history, species),
+    )
     species_df = _add_load_features(species_df, species)
     upwind_by_window = upwind_series(upwind, species)
 
@@ -628,7 +636,7 @@ def prepare_training_data(
     X = finalize_features(X)
 
     if with_ramp:
-        return X, y, raw_values, onset_ramp_flag(species_df, species, combined["date"])
+        return X, y, raw_values, onset_ramp_flag(history, species, combined["date"])
     return X, y, raw_values
 
 

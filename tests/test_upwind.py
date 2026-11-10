@@ -118,6 +118,6 @@ def test_update_merges_by_station(tmp_path) -> None:
     assert (merged.merge(later, on=["date", "station", "species"])["value_x"] == 99.0).all()
 
 
-def test_station_codes_are_pollenscience_codes() -> None:
+def test_station_codes_are_epin_codes() -> None:
     for code in UPWIND_STATIONS:
         assert len(code) == 6 and code.isupper()

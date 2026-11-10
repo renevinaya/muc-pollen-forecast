@@ -191,7 +191,7 @@ def observation_status(
     """
     last_by_species: dict[str, pd.Timestamp] = {}
     if not history.empty:
-        newest = history.groupby("species")["date"].max()
+        newest = history[history["value"].notna()].groupby("species")["date"].max()
         last_by_species = {str(sp): pd.Timestamp(ts) for sp, ts in newest.items()}
 
     status: dict[str, ObservationStatus] = {}
@@ -278,7 +278,9 @@ def generate_forecast(
     # over a block that quietly ended two days ago (D.2).
     observed: dict[tuple[pd.Timestamp, str], float] = {}
     if not history.empty:
-        recent = history[history["date"] >= pd.Timestamp(weather.index.min())]
+        recent = history[
+            (history["date"] >= pd.Timestamp(weather.index.min())) & history["value"].notna()
+        ]
         for _, row in recent.iterrows():
             observed[(pd.Timestamp(row["date"]), str(row["species"]))] = float(row["value"])
 

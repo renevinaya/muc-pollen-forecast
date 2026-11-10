@@ -79,7 +79,7 @@ def season_totals(history: pd.DataFrame, species: str) -> dict[int, float]:
     """
     if history.empty:
         return {}
-    sp = history[history["species"] == species]
+    sp = history[(history["species"] == species) & history["value"].notna()]
     if sp.empty:
         return {}
 

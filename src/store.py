@@ -143,6 +143,12 @@ def _download_asset(name: str, dest: Path) -> bool:
     return True
 
 
+def asset_exists(name: str) -> bool:
+    """Whether the data release holds an asset called *name*."""
+    release = _get_release()
+    return release is not None and any(a["name"] == name for a in release.get("assets", []))
+
+
 def _delete_asset(release: dict, name: str) -> None:
     """Remove an existing asset by name so it can be replaced."""
     for asset in release.get("assets", []):

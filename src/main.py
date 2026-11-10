@@ -8,9 +8,9 @@ Usage:
     python -m src.main backfill-species Fungus  # Add one taxon's history (Munich + upwind)
     python -m src.main run          # Collect + forecast (3-hourly cron)
     python -m src.main run-train    # Collect + train + forecast (monthly cron)
-    python -m src.main backfill N   # Backfill N days of historical data
-    python -m src.main backfill-ps  # Backfill from pollenscience.eu (2019+, slow)
-    python -m src.main backfill-upwind [START_YEAR]  # Fetch the upwind stations' history (2019+, slow)
+    python -m src.main backfill N   # Collect N days in one go (bootstrap)
+    python -m src.main backfill-labels [START_YEAR]  # Rewrite every measurement from the official LGL series
+    python -m src.main backfill-upwind [START_YEAR]  # Fetch the upwind stations' history (2019+)
     python -m src.main backfill-weather [START] [END]  # Rewrite weather columns from the archive
     python -m src.main backfill-ndvi [START]           # Rewrite NDVI columns from MODIS
     python -m src.main run-backfill # Both of the above against the data release (Actions)
@@ -23,7 +23,7 @@ Usage:
 
 import json
 import sys
-from datetime import date, timedelta
+from datetime import date
 from typing import Any
 
 import pandas as pd
@@ -40,10 +40,9 @@ from .store import (
     can_upload,
     HISTORY_ASSET,
     PHENOLOGY_ASSET,
+    asset_exists,
 )
-from .pollen import fetch_pollen, pivot_pollen
-from .pollenscience import fetch_pollenscience_chunked
-from .weather import fetch_historical_weather, fetch_weather_forecast as fetch_weather_fc
+from .pollen import fetch_measurements_chunked
 from .evaluate import (
     temporal_split_evaluate,
     print_evaluation_report,
@@ -53,14 +52,15 @@ from .evaluate import (
 )
 from .rollout import rollout_evaluate, print_rollout_report, record_months
 from .onset_report import WINDOW_DAYS
-from .types import ALL_SPECIES, FORECAST_DAYS
-from .clock import local_now, local_today
+from .types import ALL_SPECIES, FORECAST_DAYS, LOCATION
+from .clock import local_today
 from .upwind import (
     UPWIND_ASSET,
     UPWIND_FILE,
     UPWIND_STATIONS,
     fetch_upwind_chunked,
     load_upwind,
+    replace_upwind,
     sync_upwind,
     update_upwind,
 )
@@ -141,228 +141,16 @@ def cmd_forecast(history: pd.DataFrame | None = None) -> None:
 
 
 def cmd_backfill(days: int = 365) -> pd.DataFrame:
+    """Collect *days* of history in one go — the bootstrap of an empty store.
+
+    The same code path as the 3-hourly collection (the official LGL series,
+    archive weather, the forecast API for the last five days), only over a
+    longer span. NDVI reaches two years back; ``run-backfill`` fills the rest.
     """
-    Backfill historical pollen data by fetching from the LGL API in chunks,
-    combined with historical weather from Open-Meteo's archive at 3h resolution.
-
-    Note: The LGL Bayern API may only have limited history available.
-    Open-Meteo historical archive goes back to 1940.
-
-    Important: Old daily-resolution history.csv data is incompatible with
-    the 3h model. Delete data/history.csv before running backfill.
-    """
-    import numpy as np
-
     print("=" * 60)
-    print(f"BACKFILL: Fetching up to {days} days of history (3h resolution)")
+    print(f"BACKFILL: collecting {days} days of history (3h resolution)")
     print("=" * 60)
-
-    if HISTORY_FILE.exists():
-        old = pd.read_csv(HISTORY_FILE, parse_dates=["date"], nrows=100)
-        if not old.empty:
-            hours = pd.to_datetime(old["date"]).dt.hour.unique()
-            if len(hours) == 1 and hours[0] == 0:
-                print("WARNING: Existing history.csv appears to contain old daily-resolution data.")
-                print("  The 3h model requires 3h-resolution data.")
-                print("  Consider deleting data/history.csv before backfilling.")
-
-    # Fetch pollen data at 3h resolution
-    pollen_raw = fetch_pollen(days=days)
-    if pollen_raw.empty:
-        print("No pollen data available for backfill.")
-        return pd.DataFrame()
-
-    pollen = pivot_pollen(pollen_raw)
-    n_days = len(pd.DatetimeIndex(pollen.index).normalize().unique())
-    print(f"Pollen data: {len(pollen)} windows ({n_days} days, "
-          f"{pollen.index.min()} to {pollen.index.max()})")
-
-    # Fetch matching weather data at 3h resolution
-    start = pollen.index.min().date() - timedelta(days=1)
-    archive_end = min(pollen.index.max().date(), local_today() - timedelta(days=5))
-
-    weather_parts: list[pd.DataFrame] = []
-
-    if start <= archive_end:
-        print(f"Fetching weather archive from {start} to {archive_end}...")
-        weather_parts.append(fetch_historical_weather(start, archive_end))
-
-    # Use forecast API for the most recent days (archive is ~5 days behind)
-    recent_weather = fetch_weather_fc(days=7)
-    now = local_now().floor("3h")
-    recent_weather = recent_weather[recent_weather.index <= now]
-    if not recent_weather.empty:
-        weather_parts.append(recent_weather)
-        print(f"Fetched {len(recent_weather)} recent weather windows from forecast API")
-
-    if not weather_parts:
-        print("No weather data available.")
-        return pd.DataFrame()
-
-    weather = pd.concat(weather_parts)
-    weather = weather[~weather.index.duplicated(keep="first")].sort_index()
-
-    # Add calendar + time-of-day features
-    w_dt_index = pd.DatetimeIndex(weather.index)
-    doy = w_dt_index.dayofyear
-    weather["day_of_year"] = doy
-    weather["day_of_year_sin"] = np.sin(2 * np.pi * doy / 365.25)
-    weather["day_of_year_cos"] = np.cos(2 * np.pi * doy / 365.25)
-    weather["month"] = w_dt_index.month
-    hour = w_dt_index.hour
-    weather["hour_of_day"] = hour
-    weather["hour_sin"] = np.sin(2 * np.pi * hour / 24)
-    weather["hour_cos"] = np.cos(2 * np.pi * hour / 24)
-
-    # Join
-    common_dts = pollen.index.intersection(weather.index)
-    print(f"Overlapping windows: {len(common_dts)}")
-
-    # Fetch NDVI for the backfill period (daily resolution)
-    try:
-        from .ndvi import ndvi_features
-        unique_dates = pd.DatetimeIndex(common_dts).normalize().unique()
-        ndvi_df = ndvi_features(unique_dates)
-        if not ndvi_df.empty:
-            print(f"NDVI data: {len(ndvi_df)} days")
-        else:
-            ndvi_df = pd.DataFrame()
-    except Exception as exc:
-        print(f"NDVI fetch failed ({exc}), continuing without.")
-        ndvi_df = pd.DataFrame()
-
-    rows: list[dict[str, object]] = []
-    for dt in common_dts:
-        w = weather.loc[dt]
-        day = dt.normalize()
-        for species in ALL_SPECIES:
-            val = pollen.loc[dt].get(species, 0.0) if species in pollen.columns else 0.0
-            row = {"date": dt, "species": species, "value": float(val)}
-            for col in weather.columns:
-                row[col] = float(w[col])
-            # Add NDVI (daily resolution, shared across windows)
-            if not ndvi_df.empty and day in ndvi_df.index:
-                for col in ndvi_df.columns:
-                    row[col] = float(ndvi_df.loc[day, col])
-            else:
-                row["ndvi"] = 0.0
-                row["evi"] = 0.0
-                row["ndvi_delta"] = 0.0
-            rows.append(row)
-
-    df = pd.DataFrame(rows)
-    print(f"Backfill data: {len(df)} rows")
-
-    history = update_history(df)
-    return history
-
-
-def cmd_backfill_pollenscience(start_year: int = 2019) -> pd.DataFrame:
-    """
-    Backfill historical pollen data from pollenscience.eu (TUM / Helmholtz).
-
-    Fetches data from start_year to present in small 28-day chunks with
-    5-second delays between requests to avoid overloading the server.
-    Combined with historical weather, calendar and NDVI features.
-
-    All species in ALL_SPECIES are available via the DEMUNC/DEBIED stations.
-    """
-    import numpy as np
-    from .ndvi import ndvi_features
-
-    start = date(start_year, 1, 1)
-    end = local_today() - timedelta(days=1)
-
-    print("=" * 60)
-    print(f"BACKFILL POLLENSCIENCE.EU: {start} to {end}")
-    print("  Stations: DEMUNC + DEBIED (Munich)")
-    print(f"  Species: {', '.join(ALL_SPECIES)}")
-    print("  Fetching slowly with 5s delay between requests...")
-    print("=" * 60)
-
-    # 1. Fetch pollen data slowly
-    print(f"\nFetching pollen data ({start} to {end})...")
-    pollen_raw = fetch_pollenscience_chunked(start, end, delay=5.0)
-    if pollen_raw.empty:
-        print("No pollen data returned.")
-        return pd.DataFrame()
-
-    ps_species = sorted(pollen_raw["species"].unique())
-    print(f"\n  Species found: {ps_species}")
-    print(f"  Total rows: {len(pollen_raw)}")
-
-    # Pivot to wide format
-    pollen = pollen_raw.pivot_table(
-        index="date", columns="species", values="value", aggfunc="mean"
-    ).fillna(0)
-    pollen.index = pd.DatetimeIndex(pollen.index)
-    pollen = pollen.sort_index()
-    n_days = len(pd.DatetimeIndex(pollen.index).normalize().unique())
-    print(f"  Windows: {len(pollen)} ({n_days} days, "
-          f"{pollen.index.min()} to {pollen.index.max()})")
-
-    # 2. Fetch matching historical weather
-    weather_start = pollen.index.min().date() - timedelta(days=1)
-    weather_end = min(end, local_today() - timedelta(days=5))
-    print(f"\nFetching weather archive ({weather_start} to {weather_end})...")
-    weather = fetch_historical_weather(weather_start, weather_end)
-    print(f"  Weather windows: {len(weather)}")
-
-    # 3. Calendar features
-    w_dt_idx = pd.DatetimeIndex(weather.index)
-    doy = w_dt_idx.dayofyear
-    weather["day_of_year"] = doy
-    weather["day_of_year_sin"] = np.sin(2 * np.pi * doy / 365.25)
-    weather["day_of_year_cos"] = np.cos(2 * np.pi * doy / 365.25)
-    weather["month"] = w_dt_idx.month
-    hour = w_dt_idx.hour
-    weather["hour_of_day"] = hour
-    weather["hour_sin"] = np.sin(2 * np.pi * hour / 24)
-    weather["hour_cos"] = np.cos(2 * np.pi * hour / 24)
-
-    # 4. Intersect pollen and weather windows
-    common_dts = pollen.index.intersection(weather.index)
-    print(f"  Overlapping windows: {len(common_dts)}")
-    if common_dts.empty:
-        print("No overlapping windows.")
-        return pd.DataFrame()
-
-    # 5. NDVI features
-    try:
-        unique_dates = pd.DatetimeIndex(common_dts).normalize().unique()
-        ndvi_df = ndvi_features(unique_dates)
-        if not ndvi_df.empty:
-            print(f"  NDVI: {len(ndvi_df)} days")
-        else:
-            ndvi_df = pd.DataFrame()
-    except Exception as exc:
-        print(f"  NDVI fetch failed ({exc}), continuing without.")
-        ndvi_df = pd.DataFrame()
-
-    # 6. Build rows
-    rows: list[dict[str, object]] = []
-    for dt in common_dts:
-        w = weather.loc[dt]
-        day = dt.normalize()
-        for species in ALL_SPECIES:
-            val = pollen.loc[dt].get(species, 0.0) if species in pollen.columns else 0.0
-            row = {"date": dt, "species": species, "value": float(val)}
-            for col in weather.columns:
-                row[col] = float(w[col])
-            if not ndvi_df.empty and day in ndvi_df.index:
-                for col in ndvi_df.columns:
-                    row[col] = float(ndvi_df.loc[day, col])
-            else:
-                row["ndvi"] = 0.0
-                row["evi"] = 0.0
-                row["ndvi_delta"] = 0.0
-            rows.append(row)
-
-    df = pd.DataFrame(rows)
-    print(f"\nBackfill data: {len(df)} rows")
-
-    history = update_history(df)
-    return history
+    return update_history(collect(days=days))
 
 
 def _describe_upwind(upwind: pd.DataFrame) -> str:
@@ -375,11 +163,10 @@ def _describe_upwind(upwind: pd.DataFrame) -> str:
 
 
 def cmd_backfill_upwind(start_year: int = 2019) -> pd.DataFrame:
-    """Fetch the upwind stations' full history from pollenscience.eu.
+    """Fetch the upwind stations' full history from the LGL API.
 
-    Same pacing as ``backfill-ps``. Merges into ``data/upwind.csv`` and, with
-    a token, backs the file up to the data release so the next forecast run
-    starts from it.
+    Merges into ``data/upwind.csv`` and, with a token, backs the file up to
+    the data release so the next forecast run starts from it.
     """
     if not UPWIND_STATIONS:
         print("No upwind stations configured (src/upwind.py).")
@@ -391,7 +178,7 @@ def cmd_backfill_upwind(start_year: int = 2019) -> pd.DataFrame:
     print(f"  Stations: {', '.join(f'{c} ({n})' for c, n in UPWIND_STATIONS.items())}")
     print("=" * 60)
     sync_upwind()
-    fetched = fetch_upwind_chunked(start, end, delay=5.0)
+    fetched = fetch_upwind_chunked(start, end)
     if fetched.empty:
         print("No upwind data returned.")
         return load_upwind()
@@ -658,19 +445,16 @@ def cmd_calibrate(rebuild: bool = False) -> None:
     print(f"\nWritten to {TABLE_PATH}")
 
 
-def cmd_backfill_species(species: str, start_year: int = 2019, delay: float = 3.0) -> None:
+def cmd_backfill_species(species: str, start_year: int = 2019) -> None:
     """Add one taxon's full history — Munich and the upwind stations — to the stored data.
 
-    For a taxon added after the history was built (``Fungus``): the Munich
-    values are fetched from pollenscience.eu in chunks and joined to the
-    weather and NDVI columns the history already carries for those windows,
-    then merged into ``data/history.csv``; the upwind stations' values go
-    into ``data/upwind.csv``. Both files are backed up to the data release
-    when a token is present.
+    For a taxon added after the history was built: the Munich values are
+    fetched from the LGL API and joined to the weather and NDVI columns the
+    history already carries for those windows, then merged into
+    ``data/history.csv``; the upwind stations' values go into
+    ``data/upwind.csv``. Both files are backed up to the data release when a
+    token is present.
     """
-    from .pollenscience import fetch_pollenscience_chunked
-    from .upwind import fetch_upwind_chunked
-
     if species not in ALL_SPECIES:
         print(f"Unknown species {species!r}; known: {', '.join(ALL_SPECIES)}")
         return
@@ -680,56 +464,112 @@ def cmd_backfill_species(species: str, start_year: int = 2019, delay: float = 3.
     print(f"BACKFILL {species}: {start} to {end}")
     print("=" * 60)
 
-    history = sync_historical_data(HISTORY_FILE) if not HISTORY_FILE.exists() else pd.read_csv(
-        HISTORY_FILE, parse_dates=["date"]
-    )
+    history = sync_historical_data(HISTORY_FILE)
     if history.empty:
         print("No history to attach the new taxon to; run backfill first.")
         return
 
-    print("\nMunich station:")
-    fetched = fetch_pollenscience_chunked(start, end, species=[species], delay=delay)
-    if fetched.empty:
-        print(f"  No {species} data returned.")
-    else:
-        # Every non-pollen column of a window is shared by all its species
-        # rows, so the new taxon borrows them from any existing row there.
+    fetched = fetch_measurements_chunked(
+        start, end, [LOCATION] + list(UPWIND_STATIONS), species=[species]
+    )
+    munich = fetched[fetched["station"] == LOCATION]
+    print(f"\nMunich station: {len(munich)} windows")
+    if not munich.empty:
+        # Every non-pollen column of a window is shared by all its rows, so
+        # the new taxon borrows them from any existing row there.
         carried = [c for c in history.columns if c not in ("date", "species", "value")]
-        template = history.drop_duplicates("date").set_index("date")[carried]
-        fetched["date"] = pd.to_datetime(fetched["date"])
-        rows = fetched[fetched["date"].isin(template.index)].copy()
-        rows["species"] = species
+        template = history.groupby("date")[carried].first()
+        rows = munich[munich["date"].isin(template.index)][["date", "species", "value"]].copy()
         rows = rows.join(template, on="date")
-        print(f"  {len(fetched)} windows fetched, {len(rows)} inside the history's weather coverage")
+        print(f"  {len(rows)} inside the history's weather coverage")
         update_history(rows[history.columns])
         if can_upload():
             upload_csv(HISTORY_FILE, HISTORY_ASSET)
 
-    if UPWIND_STATIONS:
-        print("\nUpwind stations:")
+    upwind_rows = fetched[fetched["station"] != LOCATION]
+    if not upwind_rows.empty:
         sync_upwind()
-        upwind_rows = fetch_upwind_chunked(start, end, delay=delay, species=[species])
-        if upwind_rows.empty:
-            print(f"  No upwind {species} data returned.")
-        else:
-            upwind = update_upwind(upwind_rows)
-            print(f"  Upwind stations: {_describe_upwind(upwind)}")
-            if can_upload():
-                upload_csv(UPWIND_FILE, UPWIND_ASSET)
+        upwind = update_upwind(upwind_rows)
+        print(f"Upwind stations: {_describe_upwind(upwind)}")
+        if can_upload():
+            upload_csv(UPWIND_FILE, UPWIND_ASSET)
 
 
-def cmd_probe_species() -> None:
-    """Diagnostic: every taxon pollenscience.eu reports for the Munich station codes."""
-    from .pollenscience import MUNICH_LOCATIONS, probe_taxa
+# Where the pre-relabelling files are kept on the data release. Written once,
+# never overwritten, so the merged series can be restored or compared.
+HISTORY_BACKUP_ASSET = "history_merged.csv.gz"
+UPWIND_BACKUP_ASSET = "upwind_merged.csv.gz"
+
+# The relabelling refuses to run when the station series it fetched covers
+# less of the history than this: a failed request must not turn a year of
+# measurements into weather-only rows.
+MIN_OFFICIAL_COVERAGE = 0.8
+
+
+def cmd_backfill_labels(start_year: int = 2019) -> None:
+    """Rewrite every measurement — Munich and upwind — from the official LGL series.
+
+    Until November 2026 both files were filled from pollenscience.eu, whose
+    station codes carry a second series beside the official one; the stored
+    value was the larger of the two (TASKS.md, G.1). This fetches the
+    official series for the whole span and replaces the values in place: the
+    history keeps its windows and weather (:func:`src.backfill.relabel_history`),
+    the upwind file is rewritten whole. The files as they were are stored on
+    the release once, under ``history_merged.csv.gz`` / ``upwind_merged.csv.gz``.
+    Idempotent.
+    """
+    from .backfill import relabel_history
 
     print("=" * 60)
-    print("PROBE: taxa reported by pollenscience.eu (last 30 days)")
+    print("BACKFILL LABELS: measurements from the official LGL series")
     print("=" * 60)
-    for location in MUNICH_LOCATIONS + list(UPWIND_STATIONS):
-        for taxon, info in sorted(probe_taxa(location).items()):
-            if info["max"]:
-                print(f"  {location} {taxon:<16} n={info['n']:<5} last={info['last']} "
-                      f"max={info['max']:.1f} mean={info['mean']:.1f}")
+    history = sync_historical_data(HISTORY_FILE)
+    if history.empty:
+        print("No history to relabel.")
+        return
+    sync_upwind()
+
+    start = date(start_year, 1, 1)
+    end = local_today()
+    stations = [LOCATION] + list(UPWIND_STATIONS)
+    print(f"Fetching {', '.join(stations)} from {start} to {end}...")
+    official = fetch_measurements_chunked(start, end, stations, strict=True)
+    munich = official[official["station"] == LOCATION][["date", "species", "value"]]
+
+    windows = pd.DatetimeIndex(pd.to_datetime(history["date"]).unique())
+    inside = windows[windows >= pd.Timestamp(start)]
+    coverage = float(inside.isin(pd.DatetimeIndex(munich["date"].unique())).mean())
+    print(f"The station series covers {coverage:.1%} of the history's windows since {start}")
+    if coverage < MIN_OFFICIAL_COVERAGE:
+        raise SystemExit(
+            f"refusing to relabel: the fetched series covers only {coverage:.0%} of the history"
+        )
+
+    if can_upload():
+        for path, name in ((HISTORY_FILE, HISTORY_BACKUP_ASSET), (UPWIND_FILE, UPWIND_BACKUP_ASSET)):
+            if path.exists() and not asset_exists(name):
+                upload_csv(path, name)
+
+    untouched = history[pd.to_datetime(history["date"]) < pd.Timestamp(start)]
+    relabelled, report = relabel_history(
+        history[pd.to_datetime(history["date"]) >= pd.Timestamp(start)], munich
+    )
+    history = pd.concat([untouched, relabelled], ignore_index=True)
+    history.to_csv(HISTORY_FILE, index=False)
+    print(f"History: {report['windows_reported']} windows relabelled "
+          f"({report['values_changed']} of {report['values_compared']} values changed), "
+          f"{report['windows_weather_only']} windows kept as weather only, "
+          f"{report['station_windows_without_weather']} station windows have no weather yet")
+    print(f"Wrote {len(history)} rows -> {HISTORY_FILE}")
+
+    upwind = replace_upwind(official[official["station"] != LOCATION])
+    print(f"Upwind stations: {_describe_upwind(upwind)}")
+
+    if can_upload():
+        upload_csv(HISTORY_FILE, HISTORY_ASSET)
+        upload_csv(UPWIND_FILE, UPWIND_ASSET)
+    else:
+        print("No GITHUB_TOKEN — relabelled files kept locally only")
 
 
 def cmd_dwd() -> None:
@@ -971,16 +811,13 @@ def main() -> None:
     elif command == "backfill":
         days = int(sys.argv[2]) if len(sys.argv) > 2 else 365
         cmd_backfill(days)
-    elif command == "backfill-ps":
-        start_year = int(sys.argv[2]) if len(sys.argv) > 2 else 2019
-        cmd_backfill_pollenscience(start_year)
+    elif command == "backfill-labels":
+        cmd_backfill_labels(int(sys.argv[2]) if len(sys.argv) > 2 else 2019)
     elif command == "backfill-species":
         if len(sys.argv) < 3:
             print("Usage: backfill-species <species> [start_year]")
             return
         cmd_backfill_species(sys.argv[2], int(sys.argv[3]) if len(sys.argv) > 3 else 2019)
-    elif command == "probe-species":
-        cmd_probe_species()
     elif command == "backfill-upwind":
         start_year = int(sys.argv[2]) if len(sys.argv) > 2 else 2019
         cmd_backfill_upwind(start_year)

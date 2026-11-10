@@ -6,11 +6,11 @@ weeks of every heavy season are forecast at a tenth to a third of the truth,
 because nothing the model reads precedes the local count. Stations 50–200 km
 away see the same air mass hours to a day earlier.
 
-pollenscience.eu serves the other stations of the Bavarian ePIN network
-through the same endpoint as Munich. Their measurements are kept in a second,
-long-format file (``data/upwind.csv``: date, station, species, value) that is
-appended on every run and backed up to the data release beside the history,
-so they never touch the history's own columns.
+The LGL API serves the other stations of the Bavarian ePIN network through
+the same endpoint as Munich (:mod:`src.pollen`). Their measurements are kept
+in a second, long-format file (``data/upwind.csv``: date, station, species,
+value) that is appended on every run and backed up to the data release beside
+the history, so they never touch the history's own columns.
 
 The features are lag-like: they describe the upwind stations as of the
 forecast origin, and are anchored there for every lead exactly as the local
@@ -20,8 +20,7 @@ station outage shifts nothing.
 
 from __future__ import annotations
 
-import time
-from datetime import date, timedelta
+from datetime import date
 from pathlib import Path
 
 import numpy as np
@@ -32,7 +31,7 @@ DATA_DIR = Path(__file__).parent.parent / "data"
 UPWIND_FILE = DATA_DIR / "upwind.csv"
 UPWIND_ASSET = "upwind.csv.gz"
 
-# pollenscience.eu station codes read as upwind context for Munich. The ePIN
+# Station codes read as upwind context for Munich. The ePIN
 # network's automatic stations (3 h resolution, 2019+) within ~150 km, one in
 # each direction so whichever way the air arrives from, a station saw it
 # first. Garmisch (75 km S, alpine, flowers later) and the two stations
@@ -49,7 +48,6 @@ WINDOW = pd.Timedelta(hours=3)
 SHORT_WINDOWS = 8
 LONG_WINDOWS = 56
 
-_CHUNK_DAYS = 28
 _COLUMNS = ["date", "station", "species", "value"]
 
 
@@ -66,51 +64,24 @@ def fetch_upwind(
 
     *species* narrows the request to those taxa (default: all of them).
     """
-    from .pollenscience import _fetch_single_location
+    from .pollen import fetch_measurements
 
-    parts: list[pd.DataFrame] = []
-    for code in stations or list(UPWIND_STATIONS):
-        df = _fetch_single_location(start, end, code, species)
-        if not df.empty:
-            df = df.assign(station=code)
-            parts.append(df[_COLUMNS])
-    if not parts:
-        return pd.DataFrame(columns=_COLUMNS)
-    combined = pd.concat(parts, ignore_index=True)
-    combined = combined.groupby(["date", "station", "species"], as_index=False)["value"].max()
-    return combined.sort_values(["date", "station", "species"]).reset_index(drop=True)
+    return fetch_measurements(start, end, stations or list(UPWIND_STATIONS), species)[_COLUMNS]
 
 
 def fetch_upwind_chunked(
     start: date,
     end: date,
     stations: list[str] | None = None,
-    delay: float = 5.0,
+    delay: float = 1.0,
     species: list[str] | None = None,
 ) -> pd.DataFrame:
-    """Backfill: fetch in 28-day chunks with a pause between requests."""
-    codes = stations or list(UPWIND_STATIONS)
-    chunks: list[pd.DataFrame] = []
-    chunk_start = start
-    while chunk_start <= end:
-        chunk_end = min(chunk_start + timedelta(days=_CHUNK_DAYS - 1), end)
-        print(f"  Fetching {chunk_start} to {chunk_end} ({', '.join(codes)})...")
-        for code in codes:
-            try:
-                df = fetch_upwind(chunk_start, chunk_end, [code], species)
-            except Exception as exc:  # noqa: BLE001 — one bad chunk must not end the backfill
-                print(f"    {code}: error {exc}, skipping chunk")
-                df = pd.DataFrame(columns=_COLUMNS)
-            if not df.empty:
-                chunks.append(df)
-                print(f"    {code}: {len(df)} rows, {int((df['value'] > 0).sum())} nonzero")
-            time.sleep(delay)
-        chunk_start = chunk_end + timedelta(days=1)
-    if not chunks:
-        return pd.DataFrame(columns=_COLUMNS)
-    combined = pd.concat(chunks, ignore_index=True)
-    combined = combined.drop_duplicates(subset=["date", "station", "species"], keep="last")
-    return combined.sort_values(["date", "station", "species"]).reset_index(drop=True)
+    """Backfill: fetch in quarterly requests with a pause between them."""
+    from .pollen import fetch_measurements_chunked
+
+    return fetch_measurements_chunked(
+        start, end, stations or list(UPWIND_STATIONS), species, delay
+    )[_COLUMNS]
 
 
 # --- Storage ----------------------------------------------------------------
@@ -136,6 +107,16 @@ def update_upwind(new_data: pd.DataFrame, path: Path = UPWIND_FILE) -> pd.DataFr
     combined.to_csv(path, index=False)
     print(f"Updated upwind measurements: {len(combined)} rows -> {path}")
     return combined
+
+
+def replace_upwind(data: pd.DataFrame, path: Path = UPWIND_FILE) -> pd.DataFrame:
+    """Write *data* as the whole stored file, discarding what was there."""
+    data = data[_COLUMNS].drop_duplicates(subset=["date", "station", "species"], keep="last")
+    data = data.sort_values(["date", "station", "species"]).reset_index(drop=True)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    data.to_csv(path, index=False)
+    print(f"Rewrote upwind measurements: {len(data)} rows -> {path}")
+    return data
 
 
 def sync_upwind(path: Path = UPWIND_FILE) -> pd.DataFrame:

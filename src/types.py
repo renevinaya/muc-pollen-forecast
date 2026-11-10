@@ -31,6 +31,14 @@ ALL_SPECIES = [
 # blend with and no flowering season to gate on.
 SPORE_TAXA = {"Fungus"}
 
+# The ``species`` of a history row that carries a window's weather and no
+# measurement: the station did not report that window. The history holds one
+# such row per unreported window so that everything computed from weather
+# alone — thermal forcing, GDD, the rolling and streak features — runs over
+# the windows that happened rather than over the windows the station was up.
+# Its ``value`` is NaN. Nothing that iterates ALL_SPECIES ever sees it.
+WEATHER_ONLY = "_weather"
+
 # Feature columns used by the model (order matters for training/prediction)
 # Raw weather columns the collector writes and the feature pipeline carries.
 # This is NOT the model's input list — several of these exist only so the
@@ -365,10 +373,12 @@ SPECIES_THRESHOLDS: dict[str, tuple[float, float, float]] = {
     "Quercus":   (10,  50,  200),
     "Salix":     (5,   20,   50),
     "Urtica":    (10,  50,  200),
-    # No DWD index exists for spores. These are quantiles of the Munich
-    # station's own daily means in the 2024+ sampler regime (median 46,
-    # 85th percentile ~150, 99th ~300; see TASKS.md, F.1), so "moderate" is
-    # an above-average day and "very high" a top-1% one.
+    # No DWD index exists for spores. Read against the official station's
+    # daily means since March 2025, when its spore counts rose (yearly
+    # median 0-5 in 2019-2024, 28 in 2025, 57 in 2026), these are about the
+    # median, the 87th and the 97th percentile: 45% of days are above 50,
+    # 13% above 150, 3% above 300. So "moderate" is an above-average day
+    # and "very high" one of the ten highest of a year.
     "Fungus":    (50, 150, 300),
 }
 

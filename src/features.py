@@ -108,7 +108,7 @@ class LagState:
         if history.empty:
             return cls(log_vals=[0.0] * LAG_WINDOW, upwind=upwind_now)
 
-        sp = history[history["species"] == species]
+        sp = history[(history["species"] == species) & history["value"].notna()]
         sp = sp[pd.to_datetime(sp["date"]) < pd.Timestamp(origin)]
         sp = sp.sort_values("date")
         if sp.empty:

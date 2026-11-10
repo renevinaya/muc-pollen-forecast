@@ -2,10 +2,12 @@
 Data collector: fetches pollen measurements, weather, and NDVI, appends
 to historical CSV.
 
-Run daily to accumulate training data. The collector merges pollen data from the
-LGL Bayern API with weather data from Open-Meteo's historical archive and NDVI
-from MODIS, producing one row per (datetime, species) at 3-hour resolution
-with all features attached.
+Run every three hours to accumulate training data. The collector merges the
+official station series from the LGL Bayern API with weather from Open-Meteo
+and NDVI from MODIS, producing one row per (window, species) at 3-hour
+resolution with all features attached — and, for a window the station did
+not report, a single weather-only row (:data:`src.types.WEATHER_ONLY`), so
+the weather of the history has no holes where the station has outages.
 """
 
 from datetime import timedelta
@@ -13,13 +15,12 @@ from pathlib import Path
 
 import pandas as pd
 
-from .pollenscience import fetch_pollenscience
 from .upwind import UPWIND_STATIONS, fetch_upwind, update_upwind
-from .pollen import pivot_pollen
+from .pollen import fetch_measurements_chunked, fetch_pollen, pivot_pollen
 from .weather import fetch_historical_weather, fetch_weather_forecast
 from .ndvi import fetch_ndvi, interpolate_ndvi, set_composites_cache
 from .cams import fetch_cams_forecast, cams_value
-from .types import ALL_SPECIES
+from .types import ALL_SPECIES, LOCATION, WEATHER_ONLY
 from .clock import local_now, local_today
 
 DATA_DIR = Path(__file__).parent.parent / "data"
@@ -56,11 +57,20 @@ def _upwind_result(future) -> pd.DataFrame:
         return pd.DataFrame()
 
 
+def _fetch_station(start, end) -> pd.DataFrame:
+    """The Munich station's values: one request, or quarterly ones for a long span."""
+    if (end - start).days <= 90:
+        return fetch_pollen(start, end)
+    frame = fetch_measurements_chunked(start, end, [LOCATION])
+    return frame[["date", "species", "value"]]
+
+
 def collect(days: int = 14) -> pd.DataFrame:
     """
     Collect recent pollen + weather data and return a tidy DataFrame.
 
-    One row per (datetime, species) at 3-hour resolution — ready to append
+    One row per (datetime, species) at 3-hour resolution, plus one
+    weather-only row per window the station did not report — ready to append
     to the history file.
     """
     from concurrent.futures import ThreadPoolExecutor
@@ -74,7 +84,7 @@ def collect(days: int = 14) -> pd.DataFrame:
 
     # Fetch pollen, weather, and NDVI in parallel
     with ThreadPoolExecutor(max_workers=5) as pool:
-        fut_pollen = pool.submit(fetch_pollenscience, start, end)
+        fut_pollen = pool.submit(_fetch_station, start, end)
         fut_upwind = pool.submit(fetch_upwind, start, end) if UPWIND_STATIONS else None
         fut_archive = (
             pool.submit(fetch_historical_weather, archive_start, archive_end)
@@ -137,18 +147,26 @@ def collect(days: int = 14) -> pd.DataFrame:
     # 3. Add calendar features to weather
     weather = _add_calendar_features(weather)
 
-    # 4. Join: only keep windows where we have both pollen AND weather
+    # 4. Windows the station reported get one row per species; windows it
+    #    did not (an outage, or the last few hours it has not published yet)
+    #    get one weather-only row. Only windows inside the span the station
+    #    was asked about can be called unreported.
+    asked = weather.index >= pd.Timestamp(start)
     common_dts = pollen.index.intersection(weather.index)
+    unreported = weather.index[asked].difference(pollen.index)
     if common_dts.empty:
         print("  No overlapping windows between pollen and weather data.")
         return pd.DataFrame()
+    if len(unreported):
+        print(f"  {len(unreported)} window(s) without a station value kept as weather only")
 
     pollen = pollen.loc[common_dts]
-    weather = weather.loc[common_dts]
+    all_dts = common_dts.union(unreported)
+    weather = weather.loc[all_dts]
 
     # 5. NDVI features (per date, not per window — same for all windows of a day)
     try:
-        unique_dates = pd.DatetimeIndex(common_dts).normalize().unique()
+        unique_dates = pd.DatetimeIndex(all_dts).normalize().unique()
         ndvi_df = interpolate_ndvi(ndvi_composites, unique_dates)
         if not ndvi_df.empty:
             print(f"  NDVI: {len(ndvi_df)} days")
@@ -160,11 +178,15 @@ def collect(days: int = 14) -> pd.DataFrame:
 
     # 6. Melt pollen to long format and merge weather + NDVI
     rows: list[dict[str, object]] = []
-    for dt in common_dts:
+    reported = set(common_dts)
+    for dt in all_dts:
         w = weather.loc[dt]
         day = dt.normalize()
-        for species in ALL_SPECIES:
-            pollen_value = pollen.loc[dt].get(species, 0.0) if species in pollen.columns else 0.0
+        for species in ALL_SPECIES if dt in reported else [WEATHER_ONLY]:
+            if species == WEATHER_ONLY:
+                pollen_value = float("nan")
+            else:
+                pollen_value = pollen.loc[dt].get(species, 0.0) if species in pollen.columns else 0.0
             row = {"date": dt, "species": species, "value": float(pollen_value)}
             for col in weather.columns:
                 row[col] = float(w[col])
@@ -183,6 +205,20 @@ def collect(days: int = 14) -> pd.DataFrame:
     df = pd.DataFrame(rows)
     print(f"  Merged: {len(df)} rows")
     return df
+
+
+def drop_superseded_weather_rows(history: pd.DataFrame) -> pd.DataFrame:
+    """Remove a window's weather-only row once the window has measurements.
+
+    The station publishes with a few hours' delay, so the newest windows are
+    first written as weather only and get their species rows a run or two
+    later. The species rows carry the same weather; the placeholder goes.
+    """
+    placeholder = history["species"] == WEATHER_ONLY
+    if not placeholder.any():
+        return history
+    measured = set(history.loc[~placeholder, "date"])
+    return history[~(placeholder & history["date"].isin(measured))]
 
 
 def update_history(new_data: pd.DataFrame) -> pd.DataFrame:
@@ -205,6 +241,7 @@ def update_history(new_data: pd.DataFrame) -> pd.DataFrame:
     combined = pd.concat([history, new_data], ignore_index=True)
     # Keep the latest value for each (date, species) pair
     combined = combined.drop_duplicates(subset=["date", "species"], keep="last")
+    combined = drop_superseded_weather_rows(combined)
     combined = combined.sort_values(["date", "species"]).reset_index(drop=True)
 
     combined.to_csv(HISTORY_FILE, index=False)

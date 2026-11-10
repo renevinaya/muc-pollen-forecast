@@ -44,6 +44,7 @@ from .types import (
     LAG_FEATURES,
     UPWIND_FEATURES,
     WEATHER_COLUMNS,
+    WEATHER_ONLY,
     WINDOWS_PER_DAY,
     daily_levels,
     season_gate_active,
@@ -208,7 +209,11 @@ def rollout_evaluate(
         print("  No eligible folds (not enough training history).")
         return pd.DataFrame()
 
-    all_dates = pd.DatetimeIndex(sorted(history["date"].unique()))
+    # Forecasts are launched from, and scored on, the windows the station
+    # reported. The weather of a fold covers every window, reported or not.
+    measured = history[history["value"].notna() & (history["species"] != WEATHER_ONLY)]
+    all_dates = pd.DatetimeIndex(sorted(measured["date"].unique()))
+    every_window = pd.DatetimeIndex(sorted(history["date"].unique()))
     results: list[dict[str, object]] = []
 
     for fold_num, period in enumerate(folds, start=1):
@@ -235,6 +240,7 @@ def rollout_evaluate(
         span = all_dates[(all_dates >= origins.min()) & (all_dates <= span_end)]
         if len(span) == 0:
             continue
+        fold_windows = every_window[(every_window >= origins.min()) & (every_window <= span_end)]
 
         print(
             f"  Fold {fold_num} ({period}): train<{month_start.date()}, "
@@ -253,12 +259,13 @@ def rollout_evaluate(
             if model is None:
                 continue
 
-            ctx, _ = _fold_context(history, past, span, [name])
+            ctx, _ = _fold_context(history, past, fold_windows, [name])
             static = static_feature_frame(ctx, name, span)
 
             actuals = (
                 history[(history["species"] == name) & history["date"].isin(span)]
                 .set_index("date")["value"]
+                .dropna()
                 .to_dict()
             )
 
@@ -346,6 +353,8 @@ def persistence_baseline(results: pd.DataFrame, history: pd.DataFrame) -> pd.Dat
         if key not in measured.index:
             continue
         anchor = float(measured.loc[key])
+        if anchor != anchor:  # the window before the origin was not reported
+            continue
         for _, r in grp.iterrows():
             rows.append({
                 "species": name,

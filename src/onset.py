@@ -120,8 +120,12 @@ def daily_temperature(history: pd.DataFrame) -> pd.Series:
     if cached is not None:
         return cached
 
-    days = pd.to_datetime(history["date"]).dt.normalize()
-    daily = history.groupby(days)["temperature_mean"].mean().sort_index()
+    # One value per window first: a window has as many rows as it has
+    # species (or a single weather-only row), and a day's mean must not
+    # weight its windows by that.
+    per_window = history.groupby("date")["temperature_mean"].first()
+    days = pd.DatetimeIndex(pd.to_datetime(per_window.index)).normalize()
+    daily = per_window.groupby(days).mean().sort_index()
     daily = daily.dropna()
     _daily_temp_cache[key] = daily
     return daily
@@ -135,7 +139,7 @@ def cumulative_gdd(daily_temp: pd.Series, base: float) -> pd.Series:
 
 def _daily_pollen(history: pd.DataFrame, species: str) -> pd.Series:
     """Mean measured concentration per calendar day for one species."""
-    sp = history[history["species"] == species]
+    sp = history[(history["species"] == species) & history["value"].notna()]
     if sp.empty:
         return pd.Series(dtype=float)
     days = pd.to_datetime(sp["date"]).dt.normalize()

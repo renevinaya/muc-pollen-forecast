@@ -13,11 +13,11 @@ on:
         description: >-
           forecast = collect + predict; train = also retrain models;
           backfill = rewrite the weather and NDVI columns of the stored history
-          from the archives; backfill-upwind = fetch the upwind stations'
-          history from pollenscience.eu; backfill-species = add the mould-spore
-          taxon's history, Munich and upwind (none of the three publishes a forecast)
+          from the archives; backfill-labels = rewrite every measurement,
+          Munich and upwind, from the official LGL series (neither of the two
+          publishes a forecast)
         type: choice
-        options: [forecast, train, backfill, backfill-upwind, backfill-species]
+        options: [forecast, train, backfill, backfill-labels]
         default: forecast
 
 permissions:
@@ -66,10 +66,8 @@ jobs:
             uv run python -m src.main run-train
           elif [ "$MODE" = "backfill" ]; then
             uv run python -m src.main run-backfill
-          elif [ "$MODE" = "backfill-upwind" ]; then
-            uv run python -m src.main backfill-upwind
-          elif [ "$MODE" = "backfill-species" ]; then
-            uv run python -m src.main backfill-species Fungus
+          elif [ "$MODE" = "backfill-labels" ]; then
+            uv run python -m src.main backfill-labels
           else
             uv run python -m src.main run
           fi

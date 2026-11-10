@@ -27,7 +27,7 @@ import numpy as np
 import pandas as pd
 
 from .clock import local_today
-from .types import WEATHER_COLUMNS
+from .types import ALL_SPECIES, WEATHER_COLUMNS, WEATHER_ONLY
 
 # The archive lags real time by about this much; the collector fills the gap
 # from the forecast API and those rows are left alone here.
@@ -191,3 +191,67 @@ def refresh_ndvi(
     changed = _overwrite(history, table, NDVI_COLUMNS, days)
     _print_changes(changed, len(history))
     return history
+
+
+def relabel_history(
+    history: pd.DataFrame, official: pd.DataFrame
+) -> tuple[pd.DataFrame, dict[str, int]]:
+    """Rewrite the measurements of *history* from the official station series.
+
+    *official* is the station's long frame (``date``, ``species``, ``value``).
+    The history keeps its windows and every non-measurement column exactly as
+    they are; only what counts as a measurement changes:
+
+    * a window the station reported gets one row per species with the
+      station's value (0 for a taxon it did not list in that window);
+    * a window the history has but the station did not report keeps its
+      weather as a single weather-only row — its values came from somewhere
+      else and are dropped;
+    * a station window the history has no weather for is left out, and
+      counted, since a row cannot be written without weather.
+
+    Returns the new history and a report: windows relabelled, turned into
+    weather only, missing weather, and values that changed.
+    """
+    if history.empty:
+        return history, {}
+    history = history.copy()
+    history["date"] = pd.to_datetime(history["date"])
+    carried = [c for c in history.columns if c not in ("date", "species", "value")]
+    per_window = history.groupby("date")[carried].first()
+
+    wide = (
+        official[official["species"].isin(ALL_SPECIES)]
+        .pivot_table(index="date", columns="species", values="value", aggfunc="mean")
+        .reindex(columns=ALL_SPECIES)
+        .fillna(0.0)
+    )
+    wide.index = pd.DatetimeIndex(wide.index)
+
+    reported = per_window.index.intersection(wide.index)
+    unreported = per_window.index.difference(wide.index)
+
+    values = wide.loc[reported].stack().rename("value").reset_index()
+    values.columns = ["date", "species", "value"]
+    rows = values.join(per_window, on="date")
+    weather_rows = per_window.loc[unreported].reset_index()
+    weather_rows["species"] = WEATHER_ONLY
+    weather_rows["value"] = np.nan
+
+    out = pd.concat([rows, weather_rows], ignore_index=True)[list(history.columns)]
+    out = out.sort_values(["date", "species"]).reset_index(drop=True)
+
+    old = history[history["species"].isin(ALL_SPECIES)].set_index(["date", "species"])["value"]
+    old = old[~old.index.duplicated(keep="last")]
+    new = out[out["species"] != WEATHER_ONLY].set_index(["date", "species"])["value"]
+    both = new.index.intersection(old.index)
+    changed = int((~np.isclose(new.loc[both].to_numpy(float), old.loc[both].to_numpy(float),
+                               atol=0.05, equal_nan=True)).sum())
+    report = {
+        "windows_reported": int(len(reported)),
+        "windows_weather_only": int(len(unreported)),
+        "station_windows_without_weather": int(len(wide.index.difference(per_window.index))),
+        "values_changed": changed,
+        "values_compared": int(len(both)),
+    }
+    return out, report

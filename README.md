@@ -36,8 +36,7 @@ ML-based pollen forecast for Munich at 3-hour resolution, using a three-stage XG
 
 | Source | API | What it provides |
 |--------|-----|------------------|
-| [pollenscience.eu](https://pollenscience.eu/api/measurements) | Pollen and spore measurements | Primary source: 3-hour pollen counts and the fungal-spore aggregate (`Fungus`) for Munich (station DEMUNC, 2019+), plus the four ePIN stations around it (Mindelheim, Altötting, Feucht, Viechtach) as upwind context — see [Upwind stations](#upwind-stations) and [Mould spores](#mould-spores) |
-| [LGL Bayern](https://d1ppjuhp1nvtc2.cloudfront.net/measurements) | Pollen measurements | Alternative: real-time 3-hour pollen counts for Munich |
+| [LGL Bayern ePIN](https://d1ppjuhp1nvtc2.cloudfront.net/measurements) | Pollen and spore measurements | The official station series: 3-hour pollen counts and the fungal-spore aggregate (`Fungus`) for Munich (station DEMUNC, 2019+), plus the four ePIN stations around it (Mindelheim, Altötting, Feucht, Viechtach) as upwind context — see [One station, one series](#one-station-one-series), [Upwind stations](#upwind-stations) and [Mould spores](#mould-spores) |
 | [Open-Meteo](https://open-meteo.com/) | Weather forecast + historical archive | Hourly weather aggregated to 3-hour windows: temperature, precipitation, wind, humidity, sunshine, radiation, boundary layer height, dew point, CAPE, direct radiation, soil temperature + moisture (no API key required) |
 | [MODIS (ORNL DAAC)](https://modis.ornl.gov/rst/api/v1) | NDVI / EVI satellite data | MOD13Q1 250 m 16-day vegetation indices, cubic-interpolated to daily resolution |
 | [DWD Open Data](https://opendata.dwd.de/) | Pollenflug-Gefahrenindex + CDC Phenology | Official pollen danger levels for Oberbayern (partregion 121) — used both for benchmarking and an inference-time level blend; the phenology archive is fetched for reference but no longer feeds the model — see [Season onset](#season-onset) |
@@ -219,6 +218,37 @@ The DWD phenology fetch (`python -m src.main phenology`) is unrelated to these
 features now. It returns a single year of Munich observations with no Alnus at
 all, which put Corylus 24 days and Alnus 17 days off their measured medians.
 
+### One station, one series
+
+The forecast is for the official ePIN station in Munich, DEMUNC, and since
+November 2026 that station's series — the one the LGL API serves — is the
+only thing the history calls a measurement. Until then the collector read
+pollenscience.eu under two station codes and kept the larger value per
+window, on the assumption that they were one station under two names.
+pollenscience.eu in fact serves up to two values per window under each
+code: the official series (filed under DEMUNC in 2019 and from 2023, under
+DEBIED in 2020–2022) and a second one that the LGL does not publish. The
+merge was a series no station measured: yearly sums 1.02–1.93 times the
+official ones, the daily level different on 6–45% of a year's pollen days,
+season starts moved by up to 20 days (the alder start of 2025 by 16), and
+readings such as 7 640 alder grains in a window in which the official
+station counted none. The four upwind stations had the same two series.
+
+`python -m src.main backfill-labels` rewrote every stored value from the
+LGL series (the files as they were are kept on the data release as
+`history_merged.csv.gz` and `upwind_merged.csv.gz`). 7.9% of the Munich
+values changed, and 1 848 windows — 8.7% — turned out to have no official
+measurement at all.
+
+Those windows keep their weather. A window the station did not report is
+one row with `species = "_weather"` and no value, so that everything
+computed from weather alone — thermal forcing, GDD, the rolling and streak
+features — runs over the windows that happened rather than over the
+windows the station was up; the official station is silent for 15–50
+whole days a year. Measurement code never sees these rows: they are not
+training rows, not forecast origins, not scored, and a forecast window
+that has only such a row is forecast, not assimilated.
+
 ### Upwind stations
 
 Pre-onset pollen is transport: in 2026 Munich measured 15–24 birch grains/m³
@@ -258,9 +288,9 @@ feature yet carries it (TASKS.md, B.5).
 
 ### Mould spores
 
-`Fungus` is the ePIN samplers' fungal-spore aggregate, reported by
-pollenscience.eu for Munich and the four upwind stations since 2019 and
-forecast here as a twelfth taxon since F.1 (TASKS.md). It runs through the
+`Fungus` is the ePIN samplers' fungal-spore aggregate, reported for Munich
+and the four upwind stations since 2019 and forecast here as a twelfth
+taxon since F.1 (TASKS.md). It runs through the
 same collector, model, benchmark and calibration as the pollen, with three
 differences: it has no flowering season (the gate never zeroes it), there
 is no DWD index to blend with, and its level thresholds — 50 / 150 / 300
@@ -325,7 +355,7 @@ export CAMS_ADS_KEY="<your-ads-key>"
 
 ```bash
 # Backfill historical data (run once to bootstrap)
-python -m src.main backfill 365
+python -m src.main backfill 3000
 
 # Train models on accumulated data (needs ≥ 14 data points per species)
 python -m src.main train
@@ -350,9 +380,10 @@ python -m src.main benchmark
 | `collect [days]` | Fetch recent pollen + weather + NDVI at 3h resolution, append to history (default: 14 days) |
 | `train` | Train three-stage XGBoost models per species on all history |
 | `forecast` | Generate 5-day forecast at 3h resolution using trained models |
-| `backfill [days]` | Bulk import historical pollen, weather, and NDVI data (default: 365 days) |
-| `backfill-ps [start_year]` | Bulk import from pollenscience.eu at 3h resolution (default: 2019, 5s rate limit) |
-| `backfill-upwind [start_year]` | Fetch the upwind stations' history into `data/upwind.csv` (default: 2019, same pacing) and back it up to the data release |
+| `backfill [days]` | Collect that many days in one go — the same code path as `collect`, for bootstrapping an empty store (default: 365 days) |
+| `backfill-labels [start_year]` | Rewrite every stored measurement, Munich and upwind, from the official LGL series; the history keeps its windows and weather (see [One station, one series](#one-station-one-series)) |
+| `backfill-upwind [start_year]` | Fetch the upwind stations' history into `data/upwind.csv` (default: 2019) and back it up to the data release |
+| `backfill-species <taxon> [start_year]` | Add one taxon's history, Munich and upwind, to the stored files |
 | `backfill-weather [start] [end]` | Rewrite every weather column of the existing history from the Open-Meteo archive; pollen values untouched |
 | `backfill-ndvi [start] [end]` | Rewrite the NDVI columns of the existing history from MODIS composites |
 | `run-backfill` | Both of the above against the data release (what `mode: backfill` runs in Actions) |
@@ -536,7 +567,7 @@ for public repositories.
 |---------|-----------|---------|
 | Forecast | `17 2,5,8,11,14,17,20,23 * * *` (every 3h) | `python -m src.main run` |
 | Retrain | `43 4 1 * *` (1st of the month) | `python -m src.main run-train` |
-| Manual | `workflow_dispatch` with a `mode` input | `forecast`, `train`, `backfill` (`run-backfill`) or `backfill-upwind`; the last two publish nothing |
+| Manual | `workflow_dispatch` with a `mode` input | `forecast`, `train`, `backfill` (`run-backfill`) or `backfill-labels`; the last two publish nothing |
 
 The schedules sit at `:17` and `:43` on purpose: GitHub queues scheduled
 workflows and the top of the hour is the most congested slot. Scheduled runs
@@ -553,10 +584,11 @@ Runners are ephemeral, so accumulated state lives on a GitHub release tagged
 
 | Asset | Contents |
 |-------|----------|
-| `history.csv.gz` | Accumulated 3h pollen + weather + NDVI observations |
+| `history.csv.gz` | Accumulated 3h pollen + weather + NDVI observations, one weather-only row per window the station did not report |
 | `phenology.csv.gz` | DWD flowering-onset records |
 | `upwind.csv.gz` | 3h measurements of the four upwind stations (date, station, species, value) |
 | `models.tar.gz` | All trained `*.joblib` models |
+| `history_merged.csv.gz`, `upwind_merged.csv.gz` | The two files as they were before `backfill-labels`, written once |
 
 Release assets are used rather than commits because `history.csv` is far too
 large to commit on every run — git rejects any single file over 100 MB, and
