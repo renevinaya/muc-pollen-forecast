@@ -43,7 +43,8 @@ from .clock import local_now
 from .weather import fetch_weather_forecast
 from .trainer import TwoStageModel, finalize_features, load_models, inv_log_transform
 from .confidence import confidence_for, load_table, value_interval
-from .features import FeatureContext, LagState, build_context, build_feature_row
+from .features import FeatureContext, LagState, build_context, build_feature_row, combined_weather
+from .outlook import OUTLOOK_FORECAST_DAYS, SeasonOutlook, season_outlook
 from .cams import fetch_cams_forecast
 
 WINDOW = pd.Timedelta(hours=3)
@@ -171,6 +172,32 @@ def _soil_defaulted(weather: pd.DataFrame) -> bool:
     return not (weather[cols].fillna(0.0) != 0.0).any().any()
 
 
+def _season_outlook(
+    history: pd.DataFrame, weather: pd.DataFrame, defaulted: dict[str, str]
+) -> list[SeasonOutlook]:
+    """The season outlook on the measured-plus-forecast temperature.
+
+    The forecast must not die of its outlook: a failure leaves the block out
+    and is recorded in *defaulted*.
+    """
+    if history.empty:
+        return []
+    try:
+        combined = combined_weather(history, weather)
+        daily_temp = (
+            combined["temperature_mean"]
+            .groupby(pd.DatetimeIndex(combined.index).normalize())
+            .mean()
+            .dropna()
+            .sort_index()
+        )
+        return season_outlook(history, local_now(), daily_temp=daily_temp)
+    except Exception as exc:  # noqa: BLE001 — optional block, never fatal
+        print(f"  Season outlook failed ({exc}); left out")
+        defaulted["outlook"] = f"failed ({exc}); left out"
+        return []
+
+
 def windows_since(last: pd.Timestamp, now: pd.Timestamp) -> int:
     """Complete 3 h windows since the window that starts at *last*, with no measurement.
 
@@ -245,7 +272,12 @@ def generate_forecast(
     # Which input groups fell back to a default this run (D.3), by name.
     defaulted: dict[str, str] = {}
 
-    weather = fetch_weather_forecast(FORECAST_DAYS)
+    # One request covers both: the season outlook reads a week of forecast
+    # temperature, the forecast itself the first FORECAST_DAYS of it.
+    long_weather = fetch_weather_forecast(max(FORECAST_DAYS, OUTLOOK_FORECAST_DAYS))
+    weather = long_weather[
+        long_weather.index < long_weather.index.min() + pd.Timedelta(days=FORECAST_DAYS)
+    ]
     print(f"Weather forecast: {len(weather)} windows ({FORECAST_DAYS} days)")
     if _soil_defaulted(weather):
         defaulted["weather_soil"] = "soil variables not in the weather response; zeros"
@@ -322,6 +354,8 @@ def generate_forecast(
     no_model = [sp for sp in ALL_SPECIES if sp not in models]
     if no_model:
         defaulted["model"] = "no trained model, persistence for " + ", ".join(no_model)
+
+    seasons = _season_outlook(history, long_weather, defaulted)
 
     status = RunStatus(
         observations=worst_observation(obs_status), species=obs_status, defaulted=defaulted
@@ -443,4 +477,5 @@ def generate_forecast(
             for date_str, windows in days_dict.items()
         ],
         status=status,
+        seasons=seasons,
     )

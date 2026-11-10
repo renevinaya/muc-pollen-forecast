@@ -16,6 +16,7 @@ Usage:
     python -m src.main run-backfill # Both of the above against the data release (Actions)
     python -m src.main benchmark [--folds N | --months YYYY-MM,...]  # Walk-forward rollout of the 5-day forecast
     python -m src.main benchmark-onset [--species A,B] [--years N] [--classic]  # The shipped forecast around the season starts
+    python -m src.main outlook      # The season outlook and its start-date error by lead
     python -m src.main calibrate    # Regenerate the confidence table
     python -m src.main dwd          # Show DWD pollen forecast for Oberbayern
     python -m src.main phenology    # Download DWD phenology data for Munich
@@ -53,7 +54,7 @@ from .evaluate import (
 from .rollout import rollout_evaluate, print_rollout_report, record_months
 from .onset_report import WINDOW_DAYS
 from .types import ALL_SPECIES, FORECAST_DAYS, LOCATION
-from .clock import local_today
+from .clock import local_now, local_today
 from .upwind import (
     UPWIND_ASSET,
     UPWIND_FILE,
@@ -120,6 +121,8 @@ def cmd_forecast(history: pd.DataFrame | None = None) -> None:
         top_str = ", ".join(f"{s.name}({s.level}:{s.value:.0f})" for s in top)
         print(f"  {day.date} ({len(day.windows)} windows): {top_str or 'no pollen'}")
 
+    _print_outlook(forecast.seasons)
+
     # The workflow publishes this file to GitHub Pages.
     output_path = DATA_DIR / "forecast.json"
     DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -138,6 +141,61 @@ def cmd_forecast(history: pd.DataFrame | None = None) -> None:
             upload_csv(pheno_file, PHENOLOGY_ASSET)
         if UPWIND_FILE.exists():
             upload_csv(UPWIND_FILE, UPWIND_ASSET)
+
+
+def _print_outlook(seasons: list[Any]) -> None:
+    """The season outlook, one line per species, soonest start first."""
+    if not seasons:
+        return
+    print("\nSeason outlook:")
+    for season in sorted(seasons, key=lambda s: (s.state != "before", s.expected_start)):
+        if season.state == "started":
+            print(f"  {season.species:<10} started {season.expected_start}")
+            continue
+        line = f"  {season.species:<10} expected {season.expected_start}"
+        if season.earliest is not None and season.latest is not None:
+            line += f"  ({season.earliest} to {season.latest})"
+        if season.p_start_7d is not None:
+            line += f"  P(within 7 days) {season.p_start_7d:.0%}"
+        print(f"{line}  [{season.basis}]")
+
+
+def cmd_outlook() -> None:
+    """Print the season outlook and how it would have done on the measured seasons.
+
+    The outlook as the forecast publishes it (with the weather forecast when
+    it can be fetched, on the history alone otherwise), then the replay
+    report: start-date error by how many days ahead the projection was
+    issued, walk-forward, next to the calendar. Thermal only — no model is
+    trained, so it runs in seconds.
+    """
+    from .features import combined_weather
+    from .outlook import OUTLOOK_FORECAST_DAYS, print_outlook_report, replay, season_outlook
+    from .weather import fetch_weather_forecast
+
+    print("=" * 60)
+    print("SEASON OUTLOOK")
+    print("=" * 60)
+    history = sync_historical_data(HISTORY_FILE)
+    if history.empty:
+        print("No history.")
+        return
+    daily_temp = None
+    try:
+        combined = combined_weather(history, fetch_weather_forecast(OUTLOOK_FORECAST_DAYS))
+        daily_temp = (
+            combined["temperature_mean"]
+            .groupby(pd.DatetimeIndex(combined.index).normalize()).mean().dropna().sort_index()
+        )
+    except Exception as exc:  # noqa: BLE001 — the report does not need the forecast
+        print(f"Weather forecast unavailable ({exc}); outlook from the history alone")
+    replayed = replay(history)
+    from .outlook import residual_table
+
+    _print_outlook(
+        season_outlook(history, local_now(), daily_temp=daily_temp, table=residual_table(replayed))
+    )
+    print_outlook_report(replayed)
 
 
 def cmd_backfill(days: int = 365) -> pd.DataFrame:
@@ -366,6 +424,9 @@ def cmd_benchmark_onset(
         return
     print_rollout_report(results, history)
     print_onset_rollout_report(results, history, targets, years)
+    from .outlook import print_outlook_report, replay
+
+    print_outlook_report(replay(history))
     results_path = DATA_DIR / "benchmark_onset_rollout.csv"
     results.to_csv(results_path, index=False)
     print(f"\nDetailed rollout results saved to {results_path}")
@@ -831,6 +892,8 @@ def main() -> None:
         cmd_benchmark(**_parse_benchmark_args(sys.argv[2:]))
     elif command == "benchmark-onset":
         cmd_benchmark_onset(**_parse_onset_args(sys.argv[2:]))
+    elif command == "outlook":
+        cmd_outlook()
     elif command == "calibrate":
         cmd_calibrate(rebuild="--rebuild" in sys.argv[2:])
     elif command == "dwd":

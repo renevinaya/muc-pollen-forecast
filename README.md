@@ -237,6 +237,60 @@ The DWD phenology fetch (`python -m src.main phenology`) is unrelated to these
 features now. It returns a single year of Munich observations with no Alnus at
 all, which put Corylus 24 days and Alnus 17 days off their measured medians.
 
+### Season outlook
+
+*When does the season start?* cannot be read off the forecast: it covers a
+few days, a species below 0.5 grains is simply absent from it, and a start
+only counts as one after three days above the low level. `src/outlook.py`
+answers the question on its own, from the onset candidates above:
+
+- For any day, each forcing rule says when it will cross its threshold:
+  measured temperatures up to that day, the weather forecast for the week
+  after it, and beyond that the average contribution of that part of the
+  year in earlier years (averaged over contributions, not temperatures — a
+  January that averages 0 °C still has days at 6 °C).
+- The projected start is the median of the five best candidates' answers. It
+  uses nothing from after the day it is made on, and it approaches the
+  crossing continuously instead of jumping to it.
+- Its uncertainty is measured: the projection is replayed on each of the 90
+  days before every measured start, from the seasons before it only, and
+  the residuals — pooled over species, by how far ahead the start was
+  projected — give the 80% interval and the probability of a start within
+  seven days that are published with it.
+
+Start-date error by how many days ahead the projection was issued (mean
+absolute error in days, each of 2023–2026 projected from the seasons before
+it, seven days of measured temperature standing in for the weather
+forecast):
+
+| days ahead | 21 | 14 | 10 | **7** | 5 | 3 | 1 |
+|---|---|---|---|---|---|---|---|
+| hazel | 9.5 | 10.0 | 10.2 | **9.0** | 6.2 | 5.5 | 5.2 |
+| alder | 6.5 | 4.0 | 1.0 | **3.0** | 2.5 | 2.8 | 3.0 |
+| birch | 8.0 | 8.0 | 6.5 | **5.2** | 5.2 | 5.2 | 5.2 |
+| ash | 3.2 | 3.2 | 2.2 | **2.2** | 1.2 | 1.2 | 1.2 |
+| grass | 3.8 | 3.2 | 4.0 | **4.0** | 3.8 | 4.0 | 4.0 |
+| poplar | 7.2 | 8.0 | 7.5 | **6.8** | 6.2 | 6.2 | 6.0 |
+| **mean, projection** | 6.4 | 6.1 | 5.2 | **5.0** | 4.2 | 4.2 | 4.1 |
+| mean, what the forecast knew before | 9.4 | 9.3 | 9.4 | 8.8 | 5.7 | 5.1 | 4.9 |
+| mean, calendar | 9.2 | 9.2 | 9.2 | 9.2 | 9.2 | 9.2 | 9.2 |
+
+"What the forecast knew before" is the onset estimate without projection:
+the calendar until the forcing has actually crossed. A week ahead it was no
+better than the calendar; the projection is at 5 days, most of the way to
+what is known on the eve of the start. Scored with each year reading the
+residuals of the other years, the 80% interval covers 81% of the starts
+(mean width 23 days), the probability of a start within a week has a Brier
+score of 0.040 against 0.072 for the base rate, and it is at least one half
+on 46% of the days a start is within a week against 2% of the days it is
+not. Hazel is the weak one: it is the first of the year, with the least
+warmth behind it to read, and the pooled interval covers under half of its
+starts. Four seasons per species; `python -m src.main outlook` prints the
+table for the current history in seconds.
+
+The forecast publishes the outlook as a `seasons` block (see
+[Output Format](#output-format)).
+
 ### One station, one series
 
 The forecast is for the official ePIN station in Munich, DEMUNC, and since
@@ -408,6 +462,7 @@ python -m src.main benchmark
 | `run-backfill` | Both of the above against the data release (what `mode: backfill` runs in Actions) |
 | `benchmark [days]` | Walk-forward **rollout** of the shipped forecast, scored per forecast day (default: 5), over the six record months (`RECORD_MONTHS` in `src/rollout.py`). `--months 2026-02,2026-04` names other months, `--folds N` samples N across the year; `--species A,B`, `--classic` |
 | `benchmark-onset` | The shipped rollout over the months containing each measured season start of the last three seasons (default: Corylus, Alnus, Betula): timing, amount and false starts per species-year and horizon. `--species A,B`, `--years N`, `--classic` (old one-window-ahead diagnostic) |
+| `outlook` | Print the season outlook as the forecast publishes it, and its start-date error by lead on the measured seasons (thermal only, runs in seconds) |
 | `calibrate [--rebuild]` | Regenerate `src/confidence.json` from `data/benchmark_rollout.csv`; `--rebuild` runs the rollout first, over 10 days so stale runs read a measured rate |
 | `dwd` | Display the current DWD pollen danger index for Oberbayern |
 | `phenology` | Download DWD phenology data and show flowering-onset statistics |
@@ -772,6 +827,34 @@ value:
   ]
 }
 ```
+
+Beside `measurements` the file carries the season outlook, one entry per
+species that has a season:
+
+```json
+"seasons": [
+  { "polle": "Corylus", "state": "before", "expected_start": "2027-01-27",
+    "basis": "forcing", "earliest": "2027-01-10", "latest": "2027-02-06",
+    "p_start_7d": 0.0 },
+  { "polle": "Betula", "state": "started", "expected_start": "2026-04-03",
+    "basis": "measured" }
+]
+```
+
+- `state` is `started` once this year's start has been measured (three days
+  at or above the low level, inside the season window) and `before`
+  otherwise — before this year's season or, once it is over, before next
+  year's.
+- `expected_start` is the measured start in the first case and the projected
+  one in the second, never earlier than tomorrow. `earliest`/`latest` bound
+  its central 80%, and `p_start_7d` is the probability that the season
+  starts within the next seven days.
+- `basis` is `forcing` (thermal rules vote), `calendar` (only the median of
+  earlier seasons does), `baseline` (the station has never measured a start
+  for this species — mugwort, ragweed; a textbook date without an interval)
+  or `measured`.
+
+See [Season outlook](#season-outlook) for how it is made and how wrong it is.
 
 `from`/`to` are Unix seconds bounding the 3-hour window. `confidence` is
 P(the level is exactly right) and `confidence_within_one` P(the truth is

@@ -584,6 +584,9 @@ class ForecastOutput:
     location: str
     forecast: list[DayForecast] = field(default_factory=list)
     status: RunStatus | None = None
+    # One :class:`src.outlook.SeasonOutlook` per species that has a season:
+    # whether it has started, and when it is expected to if not.
+    seasons: list[Any] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize to a JSON-compatible dict."""
@@ -592,6 +595,8 @@ class ForecastOutput:
             "location": self.location,
             "forecast": [d.to_dict() for d in self.forecast],
         }
+        if self.seasons:
+            out["seasons"] = [season.to_dict() for season in self.seasons]
         if self.status is not None:
             out["status"] = self.status.to_dict()
         return out
@@ -606,7 +611,7 @@ class ForecastOutput:
         pair and the value interval from :class:`SpeciesForecast`, which the
         measurement format has no slot for; the frontend reads them alongside
         ``value``. The run's ``status`` block (observation age, defaulted
-        inputs) is top-level.
+        inputs) and the ``seasons`` outlook are top-level.
         """
         from datetime import datetime, timedelta
         from .clock import LOCAL_TZ
@@ -657,6 +662,8 @@ class ForecastOutput:
             "location": self.location,
             "measurements": measurements,
         }
+        if self.seasons:
+            out["seasons"] = [season.to_dict() for season in self.seasons]
         if self.status is not None:
             out["status"] = self.status.to_dict()
         return out
