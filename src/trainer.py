@@ -1,12 +1,18 @@
 """
-Model trainer: two-stage XGBoost pipeline per pollen species.
+Model trainer: three-stage XGBoost pipeline per pollen species.
 
-Stage 1 – **Classifier**: predicts P(pollen > 0) for a given day.
-Stage 2 – **Regressor**: predicts log1p(pollen count) for active days.
+Stage 1 – **Classifier**: predicts P(pollen > 0) for a 3-hour window.
+Stage 2 – **Quantile regressor**: predicts log1p(pollen count).
+Stage 3 – **Extreme regressor** (optional): fitted to windows above the
+          extreme threshold, blended in by a separate P(value > threshold)
+          gate classifier.
 
-The combined prediction is:
-    if P(active) < 0.5 and not in-season  →  0
-    else  →  expm1(stage2_prediction)
+The combined prediction, in log space:
+    0                                    if P(active) < 0.3
+    stage2 × clip(P(active), 0.5, 1)     otherwise
+and stage 3 is then blended into that in proportion to the gate's
+P(value > threshold). The forecaster zeroes a species outside its widened
+season window.
 
 Key design decisions:
   - Log-transform on the target to handle extreme skew
@@ -1130,8 +1136,9 @@ def check_feature_coverage(
 
 def train_all(history: pd.DataFrame, upwind: pd.DataFrame | None = None) -> dict[str, TwoStageModel]:
     """
-    Train one two-stage model per species.  Returns dict[species → TwoStageModel].
-    Only trains if there are enough data points (>= 14 days).
+    Train one three-stage model per species.  Returns dict[species → TwoStageModel].
+    A species with fewer than 14 training rows (across all leads), or with
+    only one class, gets no model.
 
     Refuses (``FeatureCoverageError``) when a model input is missing on most
     of the rows — see :func:`check_feature_coverage`.

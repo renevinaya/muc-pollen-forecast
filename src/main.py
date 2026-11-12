@@ -241,7 +241,7 @@ def cmd_benchmark(
     species: list[str] | None = None,
     months: list[pd.Period] | None = None,
 ) -> None:
-    """Walk-forward backtest of the real autoregressive forecast.
+    """Walk-forward backtest of the shipped direct forecast.
 
     *horizon* is the forecast depth in days — the thing the product ships and
     the thing this reports skill for, per day. It used to be passed straight in
@@ -260,7 +260,7 @@ def cmd_benchmark(
     if months is None and folds is None:
         months = record_months()
     print("=" * 60)
-    print("BENCHMARK: Autoregressive Rollout")
+    print("BENCHMARK: Direct Rollout")
     print("=" * 60)
     if not HISTORY_FILE.exists():
         print("No history file found. Run 'collect' or 'backfill' first.")
@@ -443,7 +443,7 @@ def cmd_calibrate(rebuild: bool = False) -> None:
 
     print("\n  Per species x level (diagnostic only — NOT published).")
     print("  These vary 5x in-sample but do not generalise to a held-out fold,")
-    print("  which is why the published table is flat:")
+    print("  which is why the published residuals are not split by species or level:")
     detail = breakdown(results)
     print("    " + detail.to_string(index=False,
                                     float_format=lambda v: f"{v:.2f}").replace("\n", "\n    "))

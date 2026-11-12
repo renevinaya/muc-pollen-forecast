@@ -259,11 +259,12 @@ GDD_T_BASE = 5.0
 # Species-specific GDD thresholds for pollen burst readiness (#2)
 # When cumulative GDD exceeds this, species is primed for explosive release.
 #
-# These are a FALLBACK, not the live values. src/onset.py calibrates the
-# threshold per species per year from the seasons before it, and that
-# calibration is what the features actually use once two seasons of history
-# exist. Measured against eight Munich seasons these constants cross 15–23 days
-# after the observed onset, so they are kept only for a cold start.
+# These are not the live values, and no feature reads them: the readiness
+# features compare forcing under each species' selected rule against that
+# rule's own walk-forward threshold (src/onset.py), and are 0 before two
+# seasons exist. The constants only back the base-5 threshold helpers in
+# src/onset.py, which only the tests call. Measured against eight Munich
+# seasons they cross 15–23 days after the observed onset.
 SPECIES_GDD_THRESHOLD: dict[str, float] = {
     "Alnus":     30.0,
     "Ambrosia":  800.0,

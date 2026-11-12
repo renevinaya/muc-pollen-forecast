@@ -1,12 +1,14 @@
 """
-Forecaster: generates a multi-day pollen forecast at 3-hour resolution
-using trained two-stage models.
+Forecaster: generates a seven-day pollen forecast at 3-hour resolution
+using the trained three-stage models.
 
-Loads trained XGBoost models (classifier + regressor), fetches the hourly
-weather forecast from Open-Meteo (aggregated to 3h windows), and predicts
-pollen counts per species per 3h window. Predictions are made in log-space and
-converted back. Lag features start from the most recent measurements and are
-then fed autoregressively from the predictions themselves.
+Loads trained XGBoost models (classifier, quantile regressor, extreme
+regressor and its gate), fetches the hourly weather forecast from Open-Meteo
+(aggregated to 3h windows), and predicts pollen counts per species per 3h
+window. Predictions are made in log-space and converted back. The forecast is
+direct: every window is predicted from one lag block of measurements at the
+forecast origin, with ``lead_windows`` saying how far ahead it is; no
+prediction feeds another.
 
 The feature vectors come from :mod:`src.features`, which the rollout benchmark
 also uses — a backtest that built its own features would stop measuring the
@@ -251,8 +253,8 @@ def generate_forecast(
 
     Every window is predicted directly from the measurements available at the
     forecast origin, with ``lead_windows`` saying how far ahead it is. Nothing
-    is fed back: the forecast is 40 independent predictions off one shared block
-    of real data, not a chain of 40 predictions each standing on the last.
+    is fed back: the forecast is 56 independent predictions off one shared block
+    of real data, not a chain of 56 predictions each standing on the last.
 
     All internal lag/prediction values are in log-space (log1p).
     Final output values are converted back to original pollen-count scale.

@@ -1,8 +1,8 @@
-"""Train/serve parity for the 72-feature vector.
+"""Train/serve parity for the 65-feature vector.
 
 The trainer builds features in vectorised batches over a whole history frame;
-the forecaster builds them one row at a time so each prediction can feed the
-next window's lags. Those are two implementations of one definition, and when
+the forecaster builds them one row at a time, from a lag block taken at the
+forecast origin. Those are two implementations of one definition, and when
 they disagree the model is served inputs it never trained on — silently, since
 a forecast built from skewed features still looks like a forecast.
 

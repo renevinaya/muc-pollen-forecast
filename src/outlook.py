@@ -26,7 +26,7 @@ causal by construction — nothing later than the day asked about goes in —
 and it approaches the crossing continuously instead of jumping to it.
 
 How wrong it is, is measured rather than assumed: :func:`replay` issues the
-projection on every day of the six weeks before each measured start, from
+projection on every day of the 90 days before each measured start, from
 the seasons before it only, and the residuals of those replays — pooled over
 species, by how far ahead the projected start lay — give the interval and
 the probability of a start within a week that are published with it.

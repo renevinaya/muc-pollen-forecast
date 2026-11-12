@@ -1,9 +1,9 @@
 """Row-wise feature assembly, shared by the forecaster and its backtest.
 
 The trainer builds features in vectorised batches over a whole history frame
-(``trainer._add_*_features``); the forecaster has to build them one
-(window, species) at a time, because each prediction feeds the next window's
-lag inputs. That is two implementations of one definition, and when they drift
+(``trainer._add_*_features``); the forecaster builds them one
+(window, species) at a time, from a snapshot of the lag block at the forecast
+origin. That is two implementations of one definition, and when they drift
 the model is served inputs it never saw while training — silently, because
 nothing about a forecast with skewed features *looks* wrong.
 
@@ -60,8 +60,9 @@ NEVER_ACTIVE = 999.0
 def _f(value: object) -> float:
     """Coerce a lookup result to float, treating a missing key as 0.
 
-    NaN is deliberately preserved: XGBoost treats it as a missing value, and
-    the trainer's batch path leaves NaN in place too.
+    NaN is preserved here, as the trainer's batch path preserves it, and
+    becomes 0 for both in :func:`src.trainer.finalize_features` — XGBoost
+    never sees a NaN.
     """
     return float(value if value is not None else 0.0)  # type: ignore[arg-type]
 
@@ -326,7 +327,7 @@ def _row_from(table: pd.DataFrame, key: object, columns: list[str]) -> dict[str,
 def static_features(ctx: FeatureContext, species: str, dt: pd.Timestamp) -> dict[str, float]:
     """Every feature for one (window, species) *except* the lag group.
 
-    Split out because none of these depend on the autoregressive state, so a
+    Split out because none of these depend on the forecast origin, so a
     backtest that rolls many forecast origins through the same windows can
     build them once instead of once per origin per step.
 

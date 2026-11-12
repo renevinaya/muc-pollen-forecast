@@ -1,7 +1,7 @@
 [project]
 name = "muc-pollen-forecast"
 version = "2.0.0"
-description = "ML-based daily pollen forecast for Munich using XGBoost"
+description = "ML-based seven-day, 3-hourly pollen forecast for Munich using XGBoost"
 requires-python = ">=3.12"
 
 dependencies = [

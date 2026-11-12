@@ -1,5 +1,5 @@
 """
-Autoregressive rollout backtest — the benchmark that scores what ships.
+Direct rollout backtest — the benchmark that scores what ships.
 
 The first benchmark this project had built every test row's lag features from
 *measured* pollen at the target window, so it answered "given yesterday's true
@@ -25,7 +25,7 @@ mean actual was flat at 9.0 -> 7.7, and MAE degraded 43% across the horizon.
 Two things it deliberately does not simulate, both of which flatter the model
 and are called out in the report rather than hidden:
 
-* **Weather is actual, not forecast.** A real 5-day forecast carries the
+* **Weather is actual, not forecast.** A real 7-day forecast carries the
   weather model's own error; this backtest hands the model perfect weather.
 * **No DWD blend.** The DWD index is only published for today + 2 days and is
   not archived, so the inference-time blend cannot be replayed historically.
@@ -193,13 +193,14 @@ def rollout_evaluate(
     origin_hour: int = 0,
     upwind: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
-    """Walk-forward backtest of the real autoregressive forecast.
+    """Walk-forward backtest of the shipped direct forecast.
 
     For every day in a test month, a forecast is launched from that day at
-    *origin_hour* and rolled *horizon_days* forward, feeding each prediction
-    into the next window's lag features. Lag state is seeded only from
-    measurements strictly before the origin, so the rollout starts knowing
-    exactly what production knows.
+    *origin_hour* and rolled *horizon_days* forward: every window is predicted
+    from one lag block built at the origin, with ``lead_windows`` saying how
+    far ahead it is. Lag state is seeded only from measurements strictly
+    before the origin, so the rollout starts knowing exactly what production
+    knows.
 
     Returns one row per scored (origin, window, species) with a ``horizon_day``
     column running 1…*horizon_days*.
@@ -376,7 +377,7 @@ def print_rollout_report(results: pd.DataFrame, history: pd.DataFrame | None = N
         return
 
     print("\n" + "=" * 70)
-    print("AUTOREGRESSIVE ROLLOUT EVALUATION")
+    print("DIRECT ROLLOUT EVALUATION")
     print("=" * 70)
 
     baseline = persistence_baseline(results, history) if history is not None else pd.DataFrame()

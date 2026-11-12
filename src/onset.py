@@ -1,10 +1,11 @@
 """
 Data-driven pollen season onset.
 
-Four model features are parameterised by *when the season is expected to
-start*: ``days_since_typical_onset``, ``onset_anomaly``, ``gdd_above_threshold``
-and ``cold_to_warm_flip``. They previously drew that parameter from two sources
-that measurement showed to be unreliable:
+Three model features are parameterised by *when the season is expected to
+start*: ``days_since_typical_onset``, ``onset_anomaly`` and
+``gdd_above_threshold`` (``cold_to_warm_flip`` was a fourth until B.4 dropped
+it). They previously drew that parameter from two sources that measurement
+showed to be unreliable:
 
   * ``data/phenology.csv`` — the DWD fetch yields a single year (2017) for
     Munich, with no Alnus at all, so ``typical_onset_doy`` was returning a
@@ -24,14 +25,19 @@ eight complete seasons. Two rules keep it honest:
     the identical rule — at no point does a training row use a value the
     forecaster could not have computed on that date.
 
-Two GDD accumulations appear here, deliberately:
+Two GDD accumulations appear here:
 
-  * ``ONSET_GDD_BASE`` (0 °C) drives the onset *projection*. Leave-one-out over
-    the eight seasons put base 0 well ahead of the alternatives for Corylus
-    (4.6 d mean absolute error vs 8.6 d at base 5).
-  * ``GDD_T_BASE`` (5 °C) is what the existing ``gdd`` feature accumulates, so
-    thresholds meant for comparison against that feature are calibrated in the
-    same units. Changing the feature's base would perturb every model.
+  * The onset *projection* and the readiness features use a forcing rule per
+    species — a start date and a base temperature from a grid ranked
+    leave-one-out (:func:`select_forcing_rule`), the five best voting
+    (:func:`onset_ensemble`). ``ONSET_GDD_BASE`` (0 °C from 1 January) is the
+    default rule, used before enough seasons exist to rank the grid and by
+    the transport filter of the onset detector.
+  * ``GDD_T_BASE`` (5 °C) is what the ``gdd`` feature accumulates. The base-5
+    threshold helpers (:func:`calibrated_gdd_threshold`,
+    :func:`gdd_threshold_by_year`) calibrate in those units; since B.4 no
+    feature reads them — the readiness features compare against the selected
+    rule's own threshold — and only the tests call them.
 """
 
 from __future__ import annotations

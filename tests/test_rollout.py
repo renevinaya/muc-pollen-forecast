@@ -1,8 +1,9 @@
-"""Tests for the autoregressive rollout backtest.
+"""Tests for the direct rollout backtest.
 
 The rollout exists to stop the benchmark flattering the product, so the
 properties worth pinning are the ones that would quietly restore the flattery:
-that predictions really are fed back into the lags, that the model is never
+that every window is predicted from the measurements at its origin and never
+from an earlier prediction, that the model is never
 trained on the fold it is scored on, and that the horizon labelling lines up
 with the windows it claims to describe.
 """
