@@ -10,7 +10,7 @@ for Munich, a second instrument under the code DEBIED), up to two values per
 window. Taking the larger, as the collector did, built a series no station
 measured: yearly sums 1.02–1.93 times the official ones, the daily level
 different on up to 45% of the pollen days of a year, and season starts moved
-by up to 20 days (TASKS.md, G.1).
+by up to 20 days (README, *One station, one series*).
 
 API: https://d1ppjuhp1nvtc2.cloudfront.net/measurements
   - from/to: Unix timestamps

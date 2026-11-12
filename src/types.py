@@ -202,7 +202,8 @@ LOAD_FEATURES = [
 # removed in November 2026. The European pollen forecast is served without
 # credentials by Open-Meteo's air-quality API if it is ever wanted: measured
 # against Munich it finds the birch and grass starts to within a few days in
-# most years but does not know a heavy year from a light one (TASKS.md).
+# most years but does not know a heavy year from a light one (README,
+# *Tried, not adopted*).
 
 # Intra-day relative features (capture diurnal position and short-term dynamics)
 INTRADAY_FEATURES = [

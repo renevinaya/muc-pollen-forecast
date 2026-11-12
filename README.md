@@ -57,15 +57,15 @@ release and, with a token, backs them up to it again (see [State](#state)).
 | [LGL Bayern ePIN](https://d1ppjuhp1nvtc2.cloudfront.net/measurements) | Pollen and spore measurements | The official station series: 3-hour pollen counts and the fungal-spore aggregate (`Fungus`) for Munich (station DEMUNC, 2019+), plus the four ePIN stations around it (Mindelheim, Altötting, Feucht, Viechtach) as upwind context — see [One station, one series](#one-station-one-series), [Upwind stations](#upwind-stations) and [Mould spores](#mould-spores) |
 | [Open-Meteo](https://open-meteo.com/) | Weather forecast + historical archive | Hourly weather aggregated to 3-hour windows: temperature, precipitation, wind speed and direction, humidity, sunshine, boundary layer height, dew point, day/night, soil temperature + moisture (no API key required) |
 | [MODIS (ORNL DAAC)](https://modis.ornl.gov/rst/api/v1) | NDVI satellite data | MOD13Q1 250 m 16-day vegetation index, cubic-interpolated to daily resolution |
-| [DWD Open Data](https://opendata.dwd.de/) | Pollenflug-Gefahrenindex | Official pollen danger levels for Oberbayern (partregion 121) — used both for benchmarking and an inference-time level blend |
+| [DWD Open Data](https://opendata.dwd.de/) | Pollenflug-Gefahrenindex | Official pollen danger levels for Oberbayern (partregion 121) for seven of the taxa (hazel, alder, birch, ash, grass, mugwort, ragweed) — blended into the days it covers at forecast time; it is not archived, so no benchmark replays it |
 
 ## Model
 
 Each species gets a **three-stage pipeline** with species-specific hyperparameters:
 
 1. **Stage 1 — XGBClassifier**: predicts P(pollen > 0). 200 estimators, learning rate 0.08, adaptive `scale_pos_weight`.
-2. **Stage 2 — XGBRegressor**: predicts log1p(pollen count) via quantile regression (α 0.85–0.92 per species). That raised quantile is the one peak-emphasis mechanism; the `1 + √(value)` sample weights with tier bonuses it used to carry as well were removed in E.2 (they shifted the effective quantile above the nominal one, and the A/B without them is MAE 6.9 → 6.1).
-3. **Stage 3 — Extreme Regressor** (optional): fitted only to high-pollen samples (>50), squared error in log space. Blended into Stage 2 in proportion to a **separate gate classifier for P(pollen > 50)**, ramping from 0.5 to 0.9 and capped at 70% weight.
+2. **Stage 2 — XGBRegressor**: predicts log1p(pollen count) via quantile regression (α 0.85–0.92 per species). That raised quantile is the one peak-emphasis mechanism; the `1 + √(value)` sample weights with tier bonuses it used to carry as well were removed in E.2 (they shifted the effective quantile above the nominal one, and the A/B without them is MAE 6.9 → 6.1). The one sample weight it keeps is the onset ramp (B.6): the 15 days from each year's measured onset weigh ×4.
+3. **Stage 3 — Extreme Regressor** (optional): fitted only to high-pollen samples (>50), squared error in log space, weighted `1 + √(value)`. Blended into Stage 2 in proportion to a **separate gate classifier for P(pollen > 50)** (trained with the onset-ramp weight), ramping from 0.5 to 0.9 and capped at 70% weight.
 
    The gate used to be the Stage 1 classifier's P(pollen > 0) at a 0.6 cutoff. In peak season that sits near 1.0 for weeks, so a regressor that has never seen an ordinary window was given its full weight on one: measured over this history the blend fired on **20–28% of all windows**, and at those windows the truth was at or below the threshold ~75% of the time and exactly zero 14–28% of the time. With the dedicated gate it fires on 4–7% of windows, and the truth is above the threshold 97–99% of the time.
 
@@ -77,9 +77,10 @@ Each species gets a **three-stage pipeline** with species-specific hyperparamete
 | Urtica, Poaceae | 5 | 6 | 400 | 0.90 |
 | Quercus | 5 | 6 | 400 | 0.88 |
 | Populus | 4 | 6 | 400 | 0.88 |
+| Fungus (mould) | 4 | 5 | 600 | 0.85 |
 | Others (default) | 4 | 5 | 300 | 0.85 |
 
-**Combined prediction**: regression output is scaled by clamped activation probability. Out-of-season species are forced to zero, but only outside a **widened season window** (the core month range ± a one-month shoulder) so unusually early onsets — e.g. a warm-December hazel/alder bloom — are no longer structurally suppressed. On the 1–3 days the DWD Pollenflug-Gefahrenindex covers, the day's mean is **blended** one step toward DWD's expert forecast — the nudge is spread over the day's predicted windows, keeping their diurnal shape (most useful at season onset, when lag features are near zero).
+**Combined prediction**: in log space, the regression output times the activation probability clipped to 0.5–1, and zero where that probability is under 0.3. Out-of-season species are forced to zero, but only outside a **widened season window** (the core month range ± a one-month shoulder) so unusually early onsets — e.g. a warm-December hazel/alder bloom — are no longer structurally suppressed. On the 1–3 days the DWD Pollenflug-Gefahrenindex covers, and for the seven taxa it forecasts, the day's mean is **blended** at most one level toward DWD's expert forecast — the nudge is spread over the day's predicted windows, keeping their diurnal shape (most useful at season onset, when lag features are near zero).
 
 **Pollen levels** (`none`, `low`, `moderate`, `high`, `very_high`) use the
 species-specific DWD/ePIN thresholds, which are defined on **daily means**.
@@ -92,7 +93,7 @@ the night windows of any pollen day as `none`. The DWD blend and the
 benchmark's level accuracy follow the same definition (`src/types.py`,
 `daily_levels`).
 
-**Real-time observation assimilation**: when the pipeline runs every 3 hours, forecast windows that already have real pollen measurements use the observed values instead of model predictions. This breaks the autoregressive error cascade and grounds lag features for subsequent windows in actual data.
+**Real-time observation assimilation**: the forecast starts at midnight of the current day, so on a 3-hourly run some of its windows have already been measured. Those windows publish the measurement instead of a prediction (the DWD blend leaves them alone), and each species' forecast origin is the window after its newest measurement, so the lag block holds every measurement there is.
 
 ## Features (65 total)
 
@@ -108,13 +109,13 @@ benchmark's level accuracy follow the same definition (`src/types.py`,
 | Season load | 3 | last season's total vs. the seasons before it, the last two seasons vs. the seasons before them, last season vs. the one before — all log ratios per species, 0 when unknown; constant within a season year and computed only from seasons that ended before it (`src/season_load.py`) |
 | Intra-day | 3 | temp vs. daily max (ratio), precipitation in prior window (binary), temperature rate of change |
 | Lead | 1 | `lead_windows` — 3h windows between the last measurement and this one |
-| Lag | 13 | pollen at t-1/t-2/t-3/t-8(24h)/t-16(48h)/t-24(72h)/t-56(7d), 24h + 7d rolling mean, 24h + 7d rolling max, morning average (today's earlier windows), days since active (all log-space) |
-| Upwind | 3 | highest reading at any of the four upwind stations over the 24 h and 7 d before the origin (log-space), and the 24 h maximum minus Munich's own; anchored at the origin like the lag block, NaN where no station reported (`src/upwind.py`) |
+| Lag | 13 | pollen at t-1/t-2/t-3/t-8(24h)/t-16(48h)/t-24(72h)/t-56(7d), 24h + 7d rolling mean, 24h + 7d rolling max, morning average (the origin day's earlier windows), days since active (log-space, except days since active, a count of windows) |
+| Upwind | 3 | highest reading at any of the four upwind stations over the 24 h and 7 d before the origin (log-space), and the 24 h maximum minus Munich's own; anchored at the origin like the lag block, NaN where no station reported — which the model, like every missing input, reads as 0 (`src/upwind.py`) |
 
 Lag features carry about a third of all model gain, which is why forecast skill
 is reported per horizon day — see [Evaluation](#evaluation).
 
-**Twelve features were removed after measuring what they earned** (`temperature_max`,
+**Thirteen features were removed after measuring what they earned** (`temperature_max`,
 `temperature_min`, `shortwave_radiation_sum`, `direct_radiation_sum`,
 `wind_direction`, `cape_max`, `wind_from_south`, `wind_from_north`,
 `transport_north`, `evi`, `cams_pollen`, plus raw `day_of_year` and `month`).
@@ -156,17 +157,18 @@ the model learns directly how much a day-old lag is worth versus a week-old
 one. That is about 175k rows per species (19 476 measured windows × nine leads).
 
 Models record the feature columns they were fitted on, and `load_models`
-refuses any that disagree. The pipeline checks out new code every run but keeps
-serving the release's models until the next retrain, so a commit that changes
-the feature set is briefly live against models fitted on the old one — and
-XGBoost raises on that mismatch, which would take the forecast down rather than
-degrade it. A refused species falls back to the no-model path for one cycle.
+refuses any that disagree. The pipeline checks out new code every run but
+keeps serving the release's models until the next retrain, so a commit that
+changes the feature set is briefly live against models fitted on the old one —
+and XGBoost raises on that mismatch, which would take the forecast down rather
+than degrade it. A refused species falls back to the no-model path (its last
+measurement × 0.8, held flat) until the next retrain.
 
 ### Train/serve parity
 
 The trainer builds features in vectorised batches over the whole history; the
-forecaster has to build them one window at a time, because each prediction
-feeds the next window's lags. Those were two independent implementations of one
+forecaster builds them one row per window and taxon, from a snapshot of the lag
+block at the forecast origin. Those were two independent implementations of one
 definition, and a mismatch is invisible in the output — a forecast built from
 skewed features still looks like a forecast.
 
@@ -218,19 +220,21 @@ Together they carry 3–9% of model gain per species, so what feeds them
 matters. `src/onset.py` derives it from the accumulated history rather than from
 constants:
 
-- **Onset** is the first of three consecutive days at or above the species'
-  low/moderate boundary, inside its core season window. The window requirement
-  is what keeps long-range transport out — a February birch cloud over Munich
-  is not Munich's birches flowering. A run whose accumulated forcing is under
-  half the median at the other years' onsets is skipped for the year's next
-  run: the trees have never flowered with half the warmth, so it is transport
-  (the 2025 birch "onset" on 4 March, six days of Italian birch then a week of
-  zeros) or a calendar artefact (hazel already running on 1 January after a
-  warm December). On the real history that moves exactly those two onsets.
-- **The GDD threshold** is the median accumulated GDD at those onsets, in the
-  same units the `gdd` feature uses. The hand-set constants it replaces crossed
-  15–23 days *after* the observed onset, so the burst features opened their gate
-  long after the season had begun.
+- **Onset** is the first of three consecutive measured days at or above the
+  species' low/moderate boundary, inside its core season window. The window
+  requirement is what keeps long-range transport out — a February birch cloud
+  over Munich is not Munich's birches flowering. A run whose accumulated
+  forcing is under half the median at the other years' onsets is skipped for
+  the year's next run: the trees have never flowered with half the warmth, so
+  it is transport (the 2025 birch "onset" on 4 March, six days of Italian
+  birch then a week of zeros) or a calendar artefact (hazel already running on
+  1 January after a warm December). On the real history that moves exactly
+  those two onsets.
+- **The forcing threshold** is the median forcing accumulated by those
+  onsets under the species' selected rule (below), from earlier seasons only.
+  The hand-set GDD constants it replaces crossed 15–23 days *after* the
+  observed onset, so the burst features opened their gate long after the
+  season had begun.
 - **The onset estimate is per year, and causal.** Until the year's warmth
   reaches the threshold it is the median of previous seasons; from the crossing
   onwards it is the crossing day. That switch is what carries the signal — it
@@ -324,7 +328,8 @@ on 46% of the days a start is within a week against 2% of the days it is
 not. Hazel is the weak one: it is the first of the year, with the least
 warmth behind it to read, and the pooled interval covers under half of its
 starts. Four seasons per species; `python -m src.main outlook` prints the
-table for the current history in seconds.
+table for the current history in seconds (its mean row also counts willow,
+oak and nettle, so it is not the six-species mean above).
 
 The forecast publishes the outlook as a `seasons` block (see
 [Output Format](#output-format)).
@@ -396,24 +401,23 @@ Viechtach's 2024 and 2026 peaks are 16 000 and 17 500 grains against 1 000–
 3 000 in the light years — but a 24 h or 7 d maximum at onset is a level the
 model has seen in every year, and it still predicts the average of them. The
 year's *amount* is a property of the season, not of the last day, and no
-feature yet carries it (TASKS.md, B.5).
+feature yet carries it (TASKS.md, H.3).
 
 ### Mould spores
 
-`Fungus` is the ePIN samplers' fungal-spore aggregate, reported for Munich
-and the four upwind stations since 2019 and forecast here as a twelfth
-taxon since F.1 (TASKS.md). It runs through the
-same collector, model, benchmark and calibration as the pollen, with three
-differences: it has no flowering season (the gate never zeroes it) and so
-no onset, no ramp weight and no season outlook; there is no DWD index to
-blend with; and its level thresholds — 50 / 150 / 300 spores/m³ for low /
-moderate / high — are the app's own, because no official classification
-exists. They were set in F.1 as quantiles of the merged series' 2024+
-daily means. On the official series they sit at the 58th, 88th and 97th
-percentile of the daily means since 2025 and were left where they are —
-2025 is when the station's spore counts rose (yearly median 0–5 through
-2024, 27 in 2025, 57 in 2026; what F.1 read as a regime change in 2024 was
-the second series).
+`Fungus` is the ePIN samplers' fungal-spore aggregate, reported for Munich and
+the four upwind stations since 2019 and forecast here as a twelfth taxon since
+F.1 ([Development history](#development-history)). It runs through the same
+collector, model, benchmark and calibration as the pollen, with three
+differences: it has no flowering season (the gate never zeroes it) and so no
+onset, no ramp weight and no season outlook; there is no DWD index to blend
+with; and its level thresholds — 50 / 150 / 300 spores/m³ for low / moderate /
+high — are the app's own, because no official classification exists. They were
+set in F.1 as quantiles of the merged series' 2024+ daily means. On the
+official series they sit at the 58th, 88th and 97th percentile of the daily
+means since 2025 and were left where they are — 2025 is when the station's
+spore counts rose (yearly median 0–5 through 2024, 27 in 2025, 57 in 2026;
+what F.1 read as a regime change in 2024 was the second series).
 
 The quantile target was 0.70 while the labels were the merged series,
 where the pollen default of 0.85 was a bias of +11 spores/m³. On the
@@ -426,14 +430,29 @@ record months it scores, against persistence:
 
 | Horizon | MAE | Persistence MAE | Skill | Level acc. | Persistence level acc. | Bias |
 |---------|-----|-----------------|-------|------------|------------------------|------|
-| day 1 | 22.7 | 30.8 | +30% | 78.9% | 54.2% | −7.8 |
-| day 3 | 22.2 | 35.6 | +39% | 75.7% | 55.6% | −7.6 |
+| day 1 | 22.7 | 30.8 | +26% | 78.9% | 54.2% | −7.8 |
+| day 3 | 22.2 | 35.6 | +38% | 75.7% | 55.6% | −7.6 |
 | day 5 | 22.5 | 37.3 | +40% | 77.2% | 53.2% | −6.1 |
-| day 7 | 23.1 | 36.7 | +38% | 76.3% | 47.7% | −5.4 |
+| day 7 | 23.1 | 36.7 | +37% | 76.3% | 47.7% | −5.4 |
 
 The model that was live until then — trained on the merged labels — scores
 MAE 30.8 at day 1 on the same official rows, no better than persistence
-there (+19% at day 5).
+there (+19% at day 5). Step by step, on the 5 977 mould predictions of
+days 1–5 (persistence 30.8 / 37.3 at days 1 / 5):
+
+| Stage | day-1 MAE | day-5 MAE | day-1 bias | day-1 skill | day-5 skill | level acc. |
+|---|---|---|---|---|---|---|
+| F.1 as released (trained on the merged labels) | 30.8 | 30.3 | +9.2 | −0.1% | +18.6% | 78.2% |
+| G.1 trained on the official series (quantile 0.70) | 22.6 | 22.1 | −12.9 | +26.6% | +40.8% | 69.8% |
+| G.2c no spore onset | 23.1 | 22.7 | −14.4 | +24.9% | +39.0% | 75.6% |
+| G.1b quantile 0.85 | 22.8 | 22.6 | −8.3 | +25.8% | +39.3% | 78.9% |
+| G.2a trained to seven days | 23.3 | 22.9 | −8.2 | +24.4% | +38.6% | 78.2% |
+| G.5 rolling statistics over measured windows | **22.7** | **22.5** | **−7.8** | **+26.4%** | **+39.7%** | **77.5%** |
+
+On the merged labels, when F.1 introduced it, the mould model scored MAE
+27.8 / 29.5 / 30.3 at days 1 / 3 / 5 against persistence 33.2 / 39.4 /
+42.3.
+
 Spores are a persistent, slowly varying series, so the level is right
 on more than three days in four and within one level on practically all
 of them; what
@@ -451,13 +470,20 @@ uv sync
 
 Requires Python ≥ 3.12 (the version the pipeline runs, and the minimum for current numpy/xgboost). Dependencies: httpx, pandas, numpy, xgboost, scikit-learn, joblib.
 
+The tests need the `dev` extra (pytest, ruff):
+
+```bash
+uv sync --extra dev
+uv run pytest
+```
+
 ## Usage
 
 ```bash
 # Backfill historical data (run once to bootstrap)
 python -m src.main backfill 3000
 
-# Train models on accumulated data (needs ≥ 14 data points per species)
+# Train models on accumulated data (a taxon needs ≥ 14 training rows)
 python -m src.main train
 
 # Generate forecast (writes data/forecast.json)
@@ -487,10 +513,10 @@ python -m src.main benchmark
 | `backfill-weather [start] [end]` | Rewrite every weather column of the existing history from the Open-Meteo archive; pollen values untouched |
 | `backfill-ndvi [start] [end]` | Rewrite the NDVI columns of the existing history from MODIS composites |
 | `run-backfill` | Both of the above against the data release (what `mode: backfill` runs in Actions) |
-| `benchmark [days]` | Walk-forward **rollout** of the shipped forecast, scored per forecast day (default: 7), over the six record months (`RECORD_MONTHS` in `src/rollout.py`). `--months 2026-02,2026-04` names other months, `--folds N` samples N across the year; `--species A,B` |
+| `benchmark [days]` | Walk-forward **rollout** of the shipped forecast, scored per forecast day (default: 7), over the six record months (`RECORD_MONTHS` in `src/rollout.py`). `--months 2026-02,2026-04` names other months, `--folds N` samples N across the year; `--species A,B`. Writes `data/benchmark_rollout.csv` and `.txt` |
 | `benchmark-onset` | The shipped rollout over the months containing each measured season start of the last three seasons (default: Corylus, Alnus, Betula): timing, amount and false starts per species-year and horizon. `--species A,B`, `--years N`. Ends with the season outlook's start-date error by lead |
 | `outlook` | Print the season outlook as the forecast publishes it, and its start-date error by lead on the measured seasons (thermal only, runs in seconds) |
-| `calibrate [--rebuild]` | Regenerate `src/confidence.json` from `data/benchmark_rollout.csv`; `--rebuild` runs the rollout first, over twice the shipped horizon so stale runs read a measured rate |
+| `calibrate [--rebuild]` | Regenerate `src/confidence.json` from `data/benchmark_rollout.csv`; `--rebuild` (or a missing file) runs the rollout first, over the record months and twice the shipped horizon so stale runs read a measured rate. Without it, a file left by `benchmark` gives a table that stops at day 7 |
 | `dwd` | Display the current DWD pollen danger index for Oberbayern |
 | `run` | Execute collect → forecast in sequence (every 3 hours) |
 | `run-train` | Execute collect → train → forecast in sequence (monthly retraining); a refused retrain falls back to the released models |
@@ -498,16 +524,19 @@ python -m src.main benchmark
 ## Evaluation
 
 Two benchmarks, measuring two different things. The distinction matters more
-than it sounds: **lag features carry ~50% of total model gain**, and they are
-the only features whose quality depends on how far ahead you are forecasting.
+than it sounds: **lag features carry about a third of total model gain**, and
+they are the only features whose quality depends on how far ahead you are
+forecasting.
 
-### `benchmark` — autoregressive rollout (the shipped forecast)
+### `benchmark` — direct rollout (the shipped forecast)
 
-`src/rollout.py` replays the forecast exactly as `generate_forecast` runs it:
+`src/rollout.py` replays the forecast the way `generate_forecast` makes it:
 every window is predicted directly from the measured lag block at the forecast
-origin, through the same `src/features.py` code path production uses. A
-forecast is launched from every day of a test month and rolled seven days out,
-and skill is reported **per forecast day** against a persistence baseline.
+origin, through the same `src/features.py` code path production uses, by
+models trained only on the history before the test month. A forecast is
+launched at midnight of every day of a test month the station reported and
+rolled seven days out, and skill is reported **per forecast day** against a
+persistence baseline (the last measured window held flat).
 That comparison is the report's first block and its verdict — a forecast that
 loses to "nothing changes" has no claim on a user's attention, whatever its
 MAE — and everything else follows it.
@@ -527,7 +556,7 @@ printed with the report rather than hidden:
   weather model's error: against Open-Meteo's archived runs (January–June
   2024) the daily mean temperature is off by 0.5 °C a day ahead and 2.0 °C
   seven days ahead. Replaying the benchmark on those archived forecasts is
-  an open point (TASKS.md).
+  an open point (TASKS.md, H.2).
 - **No DWD blend.** The DWD index covers only today + 2 days and is not
   archived, so it cannot be replayed historically.
 
@@ -592,22 +621,26 @@ block on the time grid (E.1) costs 0.1 of that back for half a point of
 level accuracy, and dropping the value weights that compounded with the
 quantile target (E.2) takes it to 6.1.
 
-On the merged labels:
+On the merged labels (level accuracy on 3-hour levels until D.4, on
+daily-mean levels from then on):
 
-| | day 1 MAE | day 5 MAE | day 1 bias | day 5 bias | day 5 skill |
-|---|---|---|---|---|---|
-| original | 11.9 | 17.1 | +6.5 | +13.2 | −50.2% |
-| 3.1 stage-3 gate | 9.8 | 14.0 | +4.0 | +9.7 | −22.9% |
-| 3.5 direct forecast | 7.9 | 7.4 | +0.3 | +0.6 | +35.6% |
-| Phase 2 prune | **7.6** | **7.2** | **−0.2** | **+0.4** | **+37.3%** |
-| Phase A complete data (same model) | 8.2 | 7.7 | +0.9 | +1.5 | +32.5% |
-| C.1 season load | 7.4 | 6.8 | −0.2 | +0.1 | +40.7% |
-| B.2 + B.3 onset calibration | 7.3 | 6.7 | −0.5 | −0.2 | +41.4% |
-| B.4 rule-based readiness | 7.5 | 6.9 | +0.1 | +0.3 | +39.9% |
-| B.6 onset-ramp weighting | 7.3 | 6.8 | +0.1 | +0.5 | +40.3% |
-| B.5 upwind stations | 7.1 | 6.6 | −0.4 | −0.0 | +42.0% |
-| E.1 time-based lags | 7.3 | 6.8 | −0.0 | +0.2 | +40.8% |
-| E.2 one peak-emphasis mechanism | **6.4** | **5.9** | **−1.7** | **−1.5** | **+48.2%** |
+| | day 1 MAE | day 5 MAE | day 1 bias | day 5 bias | day 5 skill | level acc. |
+|---|---|---|---|---|---|---|
+| original | 11.9 | 17.1 | +6.5 | +13.2 | −50.2% | — |
+| 3.1 stage-3 gate | 9.8 | 14.0 | +4.0 | +9.7 | −22.9% | — |
+| 3.5 direct forecast | 7.9 | 7.4 | +0.3 | +0.6 | +35.6% | — |
+| Phase 2 prune (73 → 60 features) | **7.6** | **7.2** | **−0.2** | **+0.4** | **+37.3%** | — |
+| Phase A complete data (same model) | 8.2 | 7.7 | +0.9 | +1.5 | +32.5% | — |
+| C.1 season load | 7.4 | 6.8 | −0.2 | +0.1 | +40.7% | — |
+| B.2 + B.3 onset calibration | 7.3 | 6.7 | −0.5 | −0.2 | +41.4% | — |
+| B.4 rule-based readiness | 7.5 | 6.9 | +0.1 | +0.3 | +39.9% | 75.6% (3 h) |
+| B.6 onset-ramp weighting | 7.3 | 6.8 | +0.1 | +0.5 | +40.3% | 75.7% (3 h) |
+| B.5 upwind stations (65 features) | 7.1 | 6.6 | −0.4 | −0.0 | +42.0% | 76.3% (3 h) / 72.8% (daily) |
+| E.1 time-based lags | 7.3 | 6.8 | −0.0 | +0.2 | +40.8% | 73.3% |
+| E.2 one peak-emphasis mechanism | **6.4** | **5.9** | **−1.7** | **−1.5** | **+48.2%** | **74.5%** |
+
+Persistence there: MAE 10.4 / 11.4, level accuracy 66.6% / 64.5% at days
+1 / 5.
 
 **3.1** stopped the extreme regressor being consulted about ordinary windows.
 **3.5** removed the feedback loop that let a residual bias compound into the
@@ -650,16 +683,18 @@ instead of 78.9%, and the forecast is two days longer.
 
 ### `benchmark-onset` — the season starts
 
-The six sampled folds bracket the February hazel/alder start without covering
+The six record months bracket the February hazel/alder start without covering
 it, so the general benchmark cannot say when a season begins or how hard.
-`benchmark-onset` runs the same direct rollout over the months containing
-each measured onset of the last three seasons and reports, per species-year
-and horizon, the timing of the first predicted 3-day run at or above the low
-level, MAE and bias in the ±10-day window next to the MAE of predicting zero,
-false starts, and the predicted/actual ratio by days since onset.
+`benchmark-onset` runs the same direct rollout over the months containing each
+measured onset of the last three seasons and reports, per species-year and
+horizon, the timing of the first predicted 3-day run at or above the
+low/moderate boundary, MAE and bias in the ±10-day window next to the MAE of
+predicting zero, false starts, and the predicted/actual ratio by days since
+onset.
 
 The current picture, the live model on the official series (hazel,
-alder, birch, grass; the starts of 2024–2026):
+alder, birch and grass — `--species Corylus,Alnus,Betula,Poaceae`, the
+default leaves grass out; the starts of 2024–2026):
 
 | mean timing error, days (starts called) | d1 | d2 | d3 | d4 | d5 | d6 | d7 |
 |---|---|---|---|---|---|---|---|
@@ -688,21 +723,22 @@ Weighting the two weeks after each measured onset four times in training
 (B.6) improved the general benchmark and did not move that.
 
 The date of a start a week ahead is the [season outlook](#season-outlook)'s
-job, and its replay ends this report. TASKS.md tracks the numbers per
-change.
+job, and its replay ends this report. What is still open about the
+season start is in TASKS.md (H.1).
 
 ### Feature gain
 
 `train` prints the share of XGBoost gain each feature and feature family earns,
 so pruning decisions have evidence behind them. In the models now live
 (official series, trained to seven days, November 2026) the split is: lag
-34%, weather-derived 20%, `season_active` 11%, weather 9%, calendar 9%,
+34%, weather-derived 20%, `season_active` 11%, weather 9%, calendar (with
+the time-of-day encodings) 9%,
 phenology 5.5%, season load 4%, NDVI 3.5%, upwind 3%, intra-day 2%. Gain
 share counts how often trees could split on a feature, not whether the
 split helped — Phase 2 dropped 13% of gain and got a better model, Phase
 A's eight diurnal/soil features earn 2.6% between them while moving the
 benchmark by nothing, and the fifteen features that earn least are not
-free to drop as a block (TASKS.md, *Tried, not adopted*).
+free to drop as a block ([Tried, not adopted](#tried-not-adopted)).
 
 ### Data coverage
 
@@ -764,11 +800,13 @@ Reads are unauthenticated, so a local checkout picks up production history with
 no credentials:
 
 ```bash
-python -m src.main run    # downloads history + models, forecasts locally
+python -m src.main run    # downloads history + models, collects, forecasts locally
 ```
 
-Writes need `GITHUB_TOKEN`, which Actions injects automatically. Without a
-token the pipeline still runs end to end and simply skips the backup step.
+Writes need `GITHUB_TOKEN` (or `GH_TOKEN`), which Actions injects
+automatically. Without a token the pipeline still runs end to end and simply
+skips the backup step — and a local run *with* one writes to the production
+data release, so unset it for anything that is not meant to.
 
 ### Publishing
 
@@ -791,7 +829,7 @@ file cross-origin.
 
 | Variable | Set by | Description |
 |----------|--------|-------------|
-| `GITHUB_TOKEN` | Actions (automatic) | Required to write release assets and push `gh-pages`. Unset locally, in which case uploads are skipped. |
+| `GITHUB_TOKEN` | Actions (automatic) | Required to write release assets and push `gh-pages`. Unset locally, in which case uploads are skipped. `GH_TOKEN` is read as a fallback. |
 | `GITHUB_REPOSITORY` | Actions (automatic) | `owner/repo` holding the data release. Falls back to `renevinaya/muc-pollen-forecast`. |
 | `DATA_REPO` | optional | Overrides `GITHUB_REPOSITORY` when pointing at a fork. |
 | `DATA_RELEASE_TAG` | optional | Release tag holding the data assets (default: `data`). |
@@ -819,19 +857,19 @@ difference means something. Two numbers are published per prediction, because
 | `confidence_within_one` | P(the truth is within one level of it) | ~0.9 – 0.99 |
 | `value_low`, `value_high` | central 80% interval for `value` | 0.3 – 35 for a value of 10 at day 1 |
 
-All of them are **conformal**: `src/confidence.json`, generated by
-`python -m src.main calibrate` from the 14-day rollout benchmark, stores per
-forecast horizon the distribution of the benchmark's residuals in log space —
-`log1p(actual) − log1p(predicted)` — once for daily means (levels are daily
-means) and once for 3-hour windows. A prediction's confidence is the share of
-that distribution that keeps the truth inside its level's band: a daily mean of
-30 grains/m³ sits in the middle of birch's *moderate* band (10–50) and gets
-about 0.7; one of 12 sits a few grains above the threshold and gets about 0.5.
-The interval is the same distribution's 10th and 90th percentile applied to
-the window's value. The table is committed so every published number is
-auditable against the run that produced it. **Re-run `calibrate` whenever the
-model changes materially** — a stale table advertises the accuracy of a model
-that no longer exists.
+All of them are **conformal**: `src/confidence.json`, generated by `python -m
+src.main calibrate --rebuild` from a 14-day rollout over the record months,
+stores per forecast horizon the distribution of the benchmark's residuals in
+log space — `log1p(actual) − log1p(predicted)` — once for daily means (levels
+are daily means) and once for 3-hour windows. A prediction's confidence is the
+share of that distribution that keeps the truth inside its level's band: a
+daily mean of 30 grains/m³ sits in the middle of birch's *moderate* band
+(10–50) and gets about 0.7; one of 12 sits a few grains above the threshold
+and gets about 0.5. The interval is the 10th and 90th percentile of the 3-hour
+residuals, applied to the window's value. The table is committed so every
+published number is auditable against the run that produced it. **Re-run
+`calibrate` whenever the model changes materially** — a stale table advertises
+the accuracy of a model that no longer exists.
 
 Windows with a real measurement (assimilated) publish 1.0 and an interval of
 the value itself; a species with no trained model is marked down by half.
@@ -898,7 +936,7 @@ on 1 516 of the rows — poplar, ash and birch at once), which held out
 leaves the table five quieter months to learn from. Within one level it
 states 0.987 and is right 0.986; the 80% value interval covers 70–90% of
 the windows per held-out fold. The comparison of schemes has not been repeated on the
-official series (TASKS.md).
+official series (TASKS.md, H.4).
 
 ## Output Format
 
@@ -946,8 +984,8 @@ species that has a season:
 ]
 ```
 
-- `state` is `started` once this year's start has been measured (three days
-  at or above the low level, inside the season window) and `before`
+- `state` is `started` once this year's start has been measured (three days at
+  or above the low/moderate boundary, inside the season window) and `before`
   otherwise — before this year's season or, once it is over, before next
   year's.
 - `expected_start` is the measured start in the first case and the projected
@@ -955,8 +993,9 @@ species that has a season:
   its central 80%, and `p_start_7d` is the probability that the season
   starts within the next seven days.
 - `basis` is `forcing` (thermal rules vote), `calendar` (only the median of
-  earlier seasons does), `baseline` (the station has never measured a start
-  for this species — mugwort, ragweed; a textbook date without an interval)
+  earlier seasons does), `baseline` (the station has measured fewer than two
+  starts for this species — mugwort, ragweed; a textbook date without an
+  interval)
   or `measured`.
 
 See [Season outlook](#season-outlook) for how it is made and how wrong it is.
@@ -964,11 +1003,13 @@ See [Season outlook](#season-outlook) for how it is made and how wrong it is.
 `from`/`to` are Unix seconds bounding the 3-hour window. `confidence` is
 P(the level is exactly right) and `confidence_within_one` P(the truth is
 within one level of it); `value_low`/`value_high` bound the central 80%
-interval for `value`, and are absent on a point that has no interval (a
-value of 0). All from the calibration described above; a frontend that
-ignores the extra keys keeps working. `ForecastOutput.to_dict()` is the
-window-centric form of the same forecast (date → window → species), used
-for logging and tests.
+interval for `value`, and are absent when there is no calibration table;
+a measured window carries its value as both. All from the calibration
+described above; a frontend that ignores the extra keys keeps working. Only
+points above 0.5 grains/m³ are published: a species has no point in a window
+below that, and no entry at all in a week without one.
+`ForecastOutput.to_dict()` is the window-centric form of the same forecast
+(date → window → species), used by the tests.
 
 Beside `measurements` the file carries a `status` block saying what the run
 was built from — the part of the output that used to be silent:

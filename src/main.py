@@ -516,7 +516,7 @@ def cmd_backfill_labels(start_year: int = 2019) -> None:
 
     Until November 2026 both files were filled from pollenscience.eu, whose
     station codes carry a second series beside the official one; the stored
-    value was the larger of the two (TASKS.md, G.1). This fetches the
+    value was the larger of the two (README, G.1). This fetches the
     official series for the whole span and replaces the values in place: the
     history keeps its windows and weather (:func:`src.backfill.relabel_history`),
     the upwind file is rewritten whole. The files as they were are stored on

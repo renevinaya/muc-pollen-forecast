@@ -63,7 +63,7 @@ from .trainer import finalize_features, prepare_training_data, train_species_mod
 
 WINDOW = pd.Timedelta(hours=3)
 
-# The six test months the record in TASKS.md and the README is measured on:
+# The six test months the record in the README is measured on:
 # one in each part of the pollen year. They are named rather than sampled
 # because "the most recent instance of each" moves as the history grows —
 # by November 2026 the sample had become Jan–Nov 2026, the running month
