@@ -6,32 +6,49 @@ ML-based pollen forecast for Munich: seven days at 3-hour resolution from a thre
 
 ## Architecture
 
+Everything between the data sources and the web app is this repository;
+the Vue frontend (`muc-pollen`) is a separate one.
+
+```mermaid
+flowchart TB
+    subgraph sources["Data sources"]
+        lgl["LGL Bayern ePIN<br/>Munich + four upwind stations"]
+        modis["MODIS NDVI<br/>ORNL DAAC"]
+        meteo["Open-Meteo<br/>archive + forecast"]
+        dwd["DWD<br/>Pollenflug-Gefahrenindex"]
+    end
+
+    collector["1 · Collector<br/>3 h windows, sources fetched in parallel"]
+    history[("history.csv.gz + upwind.csv.gz<br/>on the GitHub release 'data'")]
+    evaluator["4 · Evaluator<br/>direct rollout, scored per forecast day"]
+    calibrate["calibrate"]
+    trainer["2 · Trainer<br/>three-stage XGBoost per taxon"]
+    models[("models.tar.gz<br/>on the release")]
+    forecaster["3 · Forecaster<br/>7 days at 3 h, observation assimilation,<br/>season outlook"]
+    pages["GitHub Pages<br/>gh-pages branch"]
+    app["Vue frontend<br/>muc-pollen"]
+
+    lgl --> collector
+    modis --> collector
+    meteo --> collector
+    collector -->|append| history
+    history --> evaluator
+    evaluator -->|"benchmark_rollout.csv"| calibrate
+    history --> trainer
+    trainer --> models
+    history --> forecaster
+    calibrate -->|"src/confidence.json"| forecaster
+    models --> forecaster
+    meteo -->|"weather forecast"| forecaster
+    dwd -->|"level blend, days 1–3"| forecaster
+    forecaster -->|"forecast.json"| pages
+    pages --> app
 ```
-┌──────────────────────────────────────────────────────────┐
-│  Python backend (this repo)                              │
-│                                                          │
-│  1. Collector  — fetch pollen + weather + NDVI (3h res)  │
-│     → parallel fetching via ThreadPoolExecutor            │
-│     → append to data/history.csv                         │
-│                                                          │
-│  2. Trainer    — train three-stage XGBoost per species   │
-│     → save models to models/*.joblib                     │
-│                                                          │
-│  3. Forecaster — predict 7-day pollen forecast           │
-│     → real-time observation assimilation                 │
-│     → season outlook: projected start per species        │
-│     → write data/forecast.json                           │
-│                                                          │
-│  4. Evaluator  — autoregressive rollout, scored per day  │
-│     → data/benchmark_rollout.csv                         │
-└───────────────────────┬──────────────────────────────────┘
-                        │ forecast.json
-                        ▼
-┌──────────────────────────────────────────────────────────┐
-│  Vue frontend (muc-pollen)                               │
-│  → fetches forecast.json from GitHub Pages               │
-└──────────────────────────────────────────────────────────┘
-```
+
+Locally the same files are `data/history.csv`, `data/upwind.csv`,
+`models/*.joblib`, `data/forecast.json` and `data/benchmark_rollout.csv`.
+A run restores the history, the upwind file and the models from the
+release and, with a token, backs them up to it again (see [State](#state)).
 
 ## Data Sources
 
