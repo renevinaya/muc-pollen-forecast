@@ -171,10 +171,52 @@ def upwind_block(series: pd.Series, dates: pd.Series | pd.DatetimeIndex, lead: i
     )
 
 
-def with_lead_feature(block: pd.DataFrame, local_max_8: pd.Series | np.ndarray | float) -> pd.DataFrame:
-    """Add ``upwind_lead_8``: how far the upwind 24 h maximum sits above Munich's."""
+def fill_from_local(
+    upwind_max_8: np.ndarray | float,
+    upwind_max_56: np.ndarray | float,
+    local_max_8: np.ndarray | float,
+    local_max_56: np.ndarray | float,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """The three upwind features, with a span no station reported read as Munich's own.
+
+    A span without a single upwind reading is not "nothing in the air", and
+    the model cannot be told it is missing either: every NaN reaches XGBoost
+    as 0 (:func:`src.trainer.finalize_features`), which in log space is clean
+    air upwind, and turned the lead feature into "the region equals the city"
+    at the same time. So the region is taken to read what Munich read over
+    the same span, and the lead is 0 — a combination the model has seen on
+    every ordinary day. Training almost never has such a span (at most 13 of
+    19 501 rows per lead: January 2019, October 2022); serving has one
+    whenever the upwind file is stale or all four stations are silent.
+
+    Works on arrays (the trainer's batch) and scalars (the forecaster's row).
+    """
+    local_8 = np.asarray(local_max_8, dtype=float)
+    local_56 = np.asarray(local_max_56, dtype=float)
+    max_8 = np.asarray(upwind_max_8, dtype=float)
+    max_56 = np.asarray(upwind_max_56, dtype=float)
+    max_8 = np.where(np.isnan(max_8), local_8, max_8)
+    max_56 = np.where(np.isnan(max_56), local_56, max_56)
+    return max_8, max_56, max_8 - local_8
+
+
+def with_lead_feature(
+    block: pd.DataFrame,
+    local_max_8: pd.Series | np.ndarray | float,
+    local_max_56: pd.Series | np.ndarray | float,
+) -> pd.DataFrame:
+    """Fill the block's gaps from Munich (:func:`fill_from_local`) and add
+    ``upwind_lead_8``: how far the upwind 24 h maximum sits above Munich's."""
     block = block.copy()
-    block["upwind_lead_8"] = block["upwind_max_8"] - np.asarray(local_max_8, dtype=float)
+    max_8, max_56, lead = fill_from_local(
+        block["upwind_max_8"].to_numpy(dtype=float),
+        block["upwind_max_56"].to_numpy(dtype=float),
+        local_max_8,
+        local_max_56,
+    )
+    block["upwind_max_8"] = max_8
+    block["upwind_max_56"] = max_56
+    block["upwind_lead_8"] = lead
     return block
 
 

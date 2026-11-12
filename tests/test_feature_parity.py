@@ -216,8 +216,9 @@ def test_serving_matches_training_features(
     all_windows = pd.DatetimeIndex(batch.index)
     windows = all_windows[(all_windows >= all_windows[600]) & (all_windows <= all_windows[1400])]
     served = serving_features(history, SPECIES, windows, lead=lead, upwind=upwind)
-    assert batch.loc[windows, "upwind_max_8"].notna().mean() > 0.9
-    assert batch.loc[windows, "upwind_max_8"].isna().any(), "the uncovered gap must stay NaN"
+    assert batch.loc[windows, "upwind_max_8"].notna().all(), "a gap is filled from Munich"
+    in_gap = batch.loc[windows, "upwind_lead_8"] == 0.0
+    assert in_gap.any(), "the uncovered gap must read as Munich's own"
 
     mismatches = []
     for col in FEATURE_COLS:

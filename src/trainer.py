@@ -576,11 +576,17 @@ def _add_upwind_features(df: pd.DataFrame, series: pd.Series, lead: int = 1) -> 
 
     Built on the time grid (:func:`src.upwind.upwind_block`), so it is
     attached by date rather than by row. Must run after the lag block: the
-    lead feature is the difference against ``pollen_max_8``.
+    lead feature is the difference against ``pollen_max_8``, and a span no
+    station reported is filled from ``pollen_max_8`` / ``pollen_max_56``
+    (:func:`src.upwind.fill_from_local`).
     """
     df = df.copy()
     block = upwind_block(series, df["date"], lead=lead)
-    block = with_lead_feature(block, df["pollen_max_8"].to_numpy(dtype=float))
+    block = with_lead_feature(
+        block,
+        df["pollen_max_8"].to_numpy(dtype=float),
+        df["pollen_max_56"].to_numpy(dtype=float),
+    )
     for col in UPWIND_FEATURES:
         df[col] = block[col].to_numpy()
     return df

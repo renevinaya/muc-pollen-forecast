@@ -88,9 +88,19 @@ def test_block_extends_past_the_last_reading() -> None:
 
 def test_lead_feature_is_upwind_minus_local() -> None:
     block = pd.DataFrame({"upwind_max_8": [2.0, np.nan], "upwind_max_56": [3.0, 3.0]})
-    out = with_lead_feature(block, np.array([0.5, 0.5]))
+    out = with_lead_feature(block, np.array([0.5, 0.5]), np.array([1.0, 1.0]))
     assert out["upwind_lead_8"].iloc[0] == 1.5
-    assert np.isnan(out["upwind_lead_8"].iloc[1])
+
+
+def test_a_span_no_station_reported_reads_as_munich_not_clean_air() -> None:
+    # NaN reaches XGBoost as 0: clean air upwind beside a city full of
+    # pollen. The region is taken to read what Munich read instead.
+    block = pd.DataFrame({"upwind_max_8": [np.nan, np.nan], "upwind_max_56": [np.nan, 4.0]})
+    out = with_lead_feature(block, np.array([2.5, 2.5]), np.array([3.5, 3.5]))
+    assert out["upwind_max_8"].tolist() == [2.5, 2.5]
+    assert out["upwind_max_56"].tolist() == [3.5, 4.0]
+    assert out["upwind_lead_8"].tolist() == [0.0, 0.0]
+    assert not out.isna().any().any()
 
 
 def test_lag_state_carries_the_upwind_block() -> None:
@@ -105,7 +115,9 @@ def test_lag_state_carries_the_upwind_block() -> None:
     assert feats["upwind_max_8"] == expected["upwind_max_8"]
     assert np.isclose(feats["upwind_lead_8"], expected["upwind_max_8"] - np.log1p(1.0))
     without = LagState.from_history(history, "Betula", origin).lag_features()
-    assert np.isnan(without["upwind_max_8"]) and np.isnan(without["upwind_lead_8"])
+    assert without["upwind_max_8"] == without["pollen_max_8"]
+    assert without["upwind_max_56"] == without["pollen_max_56"]
+    assert without["upwind_lead_8"] == 0.0
 
 
 def test_update_merges_by_station(tmp_path) -> None:

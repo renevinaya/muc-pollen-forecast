@@ -344,10 +344,11 @@ def generate_forecast(
         sp for sp in ALL_SPECIES if np.isnan(lags[sp].upwind.get("upwind_max_56", np.nan))
     ]
     if len(no_upwind) == len(ALL_SPECIES):
-        defaulted["upwind"] = "no station readings in the last 7 days; zeros"
+        defaulted["upwind"] = "no station readings in the last 7 days; read as Munich's own"
     elif no_upwind:
         defaulted["upwind"] = (
-            "no station readings in the last 7 days for " + ", ".join(no_upwind) + "; zeros"
+            "no station readings in the last 7 days for " + ", ".join(no_upwind)
+            + "; read as Munich's own"
         )
     no_model = [sp for sp in ALL_SPECIES if sp not in models]
     if no_model:

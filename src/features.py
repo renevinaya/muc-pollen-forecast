@@ -38,7 +38,7 @@ from .types import (
     LOAD_FEATURES,
     is_season_active,
 )
-from .upwind import upwind_state
+from .upwind import fill_from_local, upwind_state
 from .trainer import WINDOW, grid_series, intraday_table, weather_derived_table, window_weather
 from .season_load import load_features_for_years, season_totals, season_year
 from .onset import (
@@ -167,6 +167,7 @@ class LagState:
             return float(np.mean(window) if how == "mean" else np.max(window))
 
         max_8 = over_measured(8, "max")
+        max_56 = over_measured(56, "max")
         return {
             "pollen_lag_1": at(1),
             "pollen_lag_2": at(2),
@@ -178,19 +179,25 @@ class LagState:
             "pollen_rolling_8": over_measured(8, "mean"),
             "pollen_rolling_56": over_measured(56, "mean"),
             "pollen_max_8": max_8,
-            "pollen_max_56": over_measured(56, "max"),
+            "pollen_max_56": max_56,
             "pollen_morning_avg": float(np.mean(self.morning)) if self.morning else 0.0,
             "days_since_active": float(self.days_since_active),
-            **self.upwind_features(max_8),
+            **self.upwind_features(max_8, max_56),
         }
 
-    def upwind_features(self, local_max_8: float) -> dict[str, float]:
-        """The upwind block as of the origin, with the lead over Munich."""
-        short = float(self.upwind.get("upwind_max_8", float("nan")))
+    def upwind_features(self, local_max_8: float, local_max_56: float) -> dict[str, float]:
+        """The upwind block as of the origin, with the lead over Munich; a span
+        no station reported reads as Munich's own (:func:`fill_from_local`)."""
+        max_8, max_56, lead = fill_from_local(
+            self.upwind.get("upwind_max_8", float("nan")),
+            self.upwind.get("upwind_max_56", float("nan")),
+            local_max_8,
+            local_max_56,
+        )
         return {
-            "upwind_max_8": short,
-            "upwind_max_56": float(self.upwind.get("upwind_max_56", float("nan"))),
-            "upwind_lead_8": short - local_max_8,
+            "upwind_max_8": float(max_8),
+            "upwind_max_56": float(max_56),
+            "upwind_lead_8": float(lead),
         }
 
 

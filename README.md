@@ -110,7 +110,7 @@ benchmark's level accuracy follow the same definition (`src/types.py`,
 | Intra-day | 3 | temp vs. daily max (ratio), precipitation in prior window (binary), temperature rate of change |
 | Lead | 1 | `lead_windows` — 3h windows between the last measurement and this one |
 | Lag | 13 | pollen at t-1/t-2/t-3/t-8(24h)/t-16(48h)/t-24(72h)/t-56(7d), 24h + 7d rolling mean, 24h + 7d rolling max, morning average (the origin day's earlier windows), days since active (log-space, except days since active, a count of windows) |
-| Upwind | 3 | highest reading at any of the four upwind stations over the 24 h and 7 d before the origin (log-space), and the 24 h maximum minus Munich's own; anchored at the origin like the lag block, NaN where no station reported — which the model, like every missing input, reads as 0 (`src/upwind.py`) |
+| Upwind | 3 | highest reading at any of the four upwind stations over the 24 h and 7 d before the origin (log-space), and the 24 h maximum minus Munich's own; anchored at the origin like the lag block; a span no station reported reads as Munich's own (see [Upwind stations](#upwind-stations)) (`src/upwind.py`) |
 
 Lag features carry about a third of all model gain, which is why forecast skill
 is reported per horizon day — see [Evaluation](#evaluation).
@@ -384,9 +384,33 @@ history from 2019. Three features come out of it, all anchored at the forecast
 origin like the lag block: the highest reading at any station over the 24 h
 and 7 d before the origin, and the 24 h maximum minus Munich's own (positive
 = the region is ahead of the city). They are built on the time grid, so a
-station outage shifts nothing, and they are NaN where no station reported.
-Garmisch (75 km S, alpine, flowers later) and the two stations 250 km north
-are not read.
+station outage shifts nothing. Garmisch (75 km S, alpine, flowers later) and
+the two stations 250 km north are not read.
+
+A span in which no station reported at all is read as Munich's own: the
+region's 24 h and 7 d maxima are taken to be the city's, and the lead is 0.
+It used to reach the model as 0, like every missing input — clean air
+upwind, while the lead said the region equalled the city. Training almost
+never has such a span (at most 13 of 19 501 rows per lead), so the model
+had never learned what it meant; serving has one whenever the upwind file
+is stale or all four stations are silent, and the `status` block says so.
+With the stations reporting nothing changes (the published record is
+reproduced to the last printed digit). With every upwind reading removed at the
+forecast origin, the forecast moves far less from what the stations would
+have given:
+
+| simulated outage, seven days | 0 (before) | Munich's own (now) |
+|---|---|---|
+| record months, pollen: shift where pollen is present | −4.3 grains/m³ | −0.7 |
+| record months, pollen: level changed / MAE / level accuracy | 1.9% / 5.78 / 82.3% | 1.0% / 5.89 / 81.8% |
+| record months, mould: level changed / MAE / bias | 11.7% / 22.6 / −11.9 | 2.4% / 22.0 / −7.9 |
+| onset months, four taxa: level changed / MAE / level accuracy | 4.8% / 48.45 / 63.0% | 2.8% / 48.47 / 63.2% |
+
+(With the stations reporting: pollen 5.85 / 81.8%, mould 22.5 / −6.7, onset
+months 48.58 / 62.6%.) The pollen error is a wash either way — reading the
+gap as clean air shifts every forecast down, and on months that are mostly
+quiet a lower forecast scores a slightly lower MAE — but the forecast during
+an outage is now the forecast, not a different one.
 
 What it bought, on the same six folds and onset months as everything else
 (B.6 → B.5): general MAE 7.0 → 6.8, RMSE 44.0 → 43.6, level accuracy 75.7% →
@@ -1040,7 +1064,8 @@ was built from — the part of the output that used to be silent:
 - `defaulted` names every input group that fell back to a default this run,
   with the reason: `ndvi` (fetch failed or no composites), `dwd` (no index to
   blend), `weather_soil` (Open-Meteo answered without soil variables),
-  `upwind` (no station readings in the last 7 days, for some or all species),
+  `upwind` (no station readings in the last 7 days, for some or all species;
+  read as Munich's own),
   `model` (a species with no trained model, forecast by persistence), and
   `confidence` (no calibration table) and `outlook` (the season outlook
   could not be computed and is left out).
@@ -1162,6 +1187,15 @@ seven days long and carries the `seasons` block.
   hourly weather variables, the window's temperature extremes, EVI,
   `cams_pollen` and seven stored calendar columns — fourteen of the
   history's thirty-three columns. Feature matrices identical.
+- **Outlook buckets** (`8cfaeb6`) — a fractional replay lead (x.5 when the
+  calendar median is) fell between two lead buckets into the 31+ one; it
+  is rounded as production rounds it. No published number moved.
+- **Upwind gaps** — a span no upwind station reported reads as Munich's
+  own instead of as clean air (see [Upwind stations](#upwind-stations)).
+  Nothing changes while the stations report; in a simulated outage the
+  forecast moves a third to a half as far, mould is better on every
+  measure, pollen error unchanged. No retrain needed: training had at most
+  13 such rows per lead.
 
 ### Tried, not adopted
 
