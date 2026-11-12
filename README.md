@@ -988,3 +988,191 @@ was built from — the part of the output that used to be silent:
   could not be computed and is left out).
 - `degraded` is true when observations are stale or anything was defaulted.
   The same line is printed in the run log (`Inputs: ...`).
+
+## Development history
+
+The step names used throughout this README (E.2, G.5, …) are the steps
+below, in the order they landed. Each step that changed model behaviour
+merged only with a benchmark that could see the difference, one commit per
+step; its numbers are in the tables under [Evaluation](#evaluation) and
+[Mould spores](#mould-spores), its reasoning in the sections above and in
+the commit message. What is still open is in TASKS.md.
+
+The numbers come in two eras that are not comparable row to row. Up to E.2
+the labels were the merge of two series (see [One station, one
+series](#one-station-one-series)) and the six folds were resampled from the
+history as it grew (184 origins, 80 680 predictions over five days). From
+G.1 on the labels are the official LGL series and the folds are the six
+record months (157 origins, every day the station reported).
+
+Production runs the latest state: the data release was relabelled from the
+LGL series on 2026-11-10 (pipeline run 623) and the twelve models retrained
+(run 624, and again after G.5 in run 626); the forecast published since is
+seven days long and carries the `seasons` block.
+
+### Done
+
+- **Phase 1** — rollout benchmark per horizon, feature-gain report,
+  train/serve parity test, shared row-wise feature assembly
+  (`src/features.py`); `days_since_active` was a constant 0 in training.
+- **3.1** — stage 3 gated on a dedicated P(value > threshold) classifier.
+- **3.5** — direct multi-horizon forecast with `lead_windows`; horizon decay
+  +43% → −6%.
+- **Phase 2** — 73 → 60 features; the smaller model was better at every
+  horizon.
+- **Phase A** — weather, NDVI and soil backfilled to 2019; coverage guard at
+  retrain; 0.5 MAE of the earlier score was an accidental "recent years"
+  flag.
+- **C.1** — three interannual season-load features.
+- **B.1** — `benchmark-onset`: the shipped rollout around the season starts.
+- **B.2 + B.3** — transport-aware onset detection; per-species forcing rules
+  chosen leave-one-out.
+- **B.4** — readiness features follow the per-species rule;
+  `cold_to_warm_flip` dropped.
+- **B.6** — onset-ramp weighting (first 14 days after the measured onset
+  weigh ×4); timing better, amplitude unchanged.
+- **B.5** — four upwind ePIN stations (Mindelheim, Altötting, Feucht,
+  Viechtach) as a time-gridded feature block.
+- **D.4** — levels are daily-mean levels, in the forecaster and both
+  benchmarks.
+- **D.1** — level and confidence published per point.
+- **D.2 / D.3** — origin anchored at the newest measurement, confidence read
+  at the horizon a stale run really is; `status` block with observation
+  age and every defaulted input group.
+- **D.5** — conformal confidence and 80% value intervals from per-horizon
+  residual distributions.
+- **E.4** — skill vs persistence is the first block of the benchmark report.
+- **E.1** — lag block on the 3 h grid on both paths; same-hour-yesterday
+  fill inside gaps.
+- **E.2** — the raised quantile is the one peak-emphasis mechanism.
+- **E.3** — log-space probability scaling benchmarked against a hurdle form
+  and a plain threshold, and kept.
+- **F.1** — mould forecast: `Fungus` for Munich and the upwind stations.
+- **G.0** (`f1d63cc`, `9d7f9eb`) — weather-derived features computed once
+  per window grid instead of once per taxon over Python loops, the rule
+  ranking memoised (`build_context` for twelve taxa 21.2 s → 2.8 s;
+  identical feature matrices); the benchmark's default folds are the six
+  record months.
+- **G.1** (`8b43111`) — the official LGL series is the only measurement,
+  for Munich and the four upwind stations; `backfill-labels` rewrote the
+  stored values (7.9% of the Munich values changed, 1 848 windows have no
+  official measurement) and keeps the files as they were on the release;
+  a window the station did not report is a weather-only row, so forcing
+  and the rolling weather features run on the windows that happened.
+  Level accuracy 78.9 → 81.6%, mould MAE −25%; pollen MAE unchanged.
+- **G.1b** (`13f888e`) — mould quantile 0.70 → 0.85: bias −13.8 → −7.9,
+  level 75.6 → 78.9%, MAE unchanged.
+- **G.2c** (`4055f5d`) — poplar's season is February–April (its "onset"
+  sat on 1–2 March in five of eight years, clipped by the window); spore
+  taxa have no onset, no ramp weight, no phenology features.
+- **G.2b** (`6b1b3f0`) — the onset estimate is the median vote of the five
+  best candidates (forcing rules and the calendar) instead of the single
+  leave-one-out winner: walk-forward date error 8.7 → 4.0 d (calendar
+  9.4), day-5 MAE 5.85 → 5.59. The retrain log prints the walk-forward
+  error.
+- **G.2d** (`014feeb`) — production carries the onset estimate through the
+  weather forecast, as training and the benchmark always did
+  (`days_since_typical_onset` read 16 for 0 on the day hazel started in
+  2026); a parity test that calibrates a threshold.
+- **G.2e** (`a079a70`) — season outlook: projected start per species,
+  80% interval and P(start within 7 days) from a walk-forward replay,
+  published as `seasons` in `forecast.json`; `outlook` command;
+  `benchmark-onset` ends with the replay. 5.0 d a week ahead against 8.8
+  before and 9.2 for the calendar; the interval covers 81% of the starts.
+- **G.2a** (`eb349b4`) — seven days: leads to 56 windows, calibration to
+  14 days. Costs 0.07 MAE on days 1–5, days 6 and 7 at +53% and +57%
+  skill on measured weather.
+- **G.5** (`53e4ffe`) — the 24-hour and 7-day rolling statistics of the
+  lag block are taken over the windows that were measured, and over the
+  carried values only where the whole span is dark; the official station
+  is silent for 15–50 days a year. General: pollen MAE 5.87 → 5.85, level
+  accuracy 81.6 → 81.8%, mould MAE 23.1 → 22.5 at 78.4 → 77.2%. Onset
+  months: level accuracy 45.5 → 47.9%, false starts 18 → 7 run-days, MAE
+  101.3 → 102.2.
+- **G.3** (`569fd02`, `3843904`, `c2c300d`) — a 429 from Open-Meteo is
+  retried as a rate limit instead of being read as "soil parameters
+  rejected"; the collector asks the forecast API for the last five days,
+  so the evening windows the station publishes after midnight are no
+  longer dropped until the archive catches up, and an archive failure no
+  longer kills the run; `backfill-weather` adds a weather-only row for
+  every window the history lacks.
+- **G.4** (`2dd0cf8`, `384020c`, `fbef64f`, `a60c358`) — removed: the
+  phenology download/upload/refetch (fed nothing since B.2, and its fetch
+  could only ever match the 1930–2018 file); the Copernicus client and
+  the `cams` extra (never ran, never populated); the `--classic`
+  one-window benchmark (had been raising a KeyError since C.1); three
+  hourly weather variables, the window's temperature extremes, EVI,
+  `cams_pollen` and seven stored calendar columns — fourteen of the
+  history's thirty-three columns. Feature matrices identical.
+
+### Tried, not adopted
+
+- **A.5 NaN passthrough** (XGBoost sees missing raw inputs instead of 0):
+  general a wash (6.79 → 6.77), onset false starts 46 → 60.
+- **B.8 upwind season load** (cumulative upwind features): general 7.07,
+  false starts 60, heavy-year ramp unchanged.
+- **B.7 December continuity** (forcing from 1 Nov / 1 Dec): the autumn rules
+  lose the leave-one-out for hazel (8.6 d vs 4.0 d) and alder (21.5 vs
+  6.5 d); the November turn alone raised false starts 46 → 59.
+- **E.1 variants**: plain carry-forward (MAE 7.0, hazel onset d2 1.3 → 6.0 d)
+  and dropping every gap-spanning training block (level 72.7%).
+- **E.2 variants**: value weights with median regression (RMSE 45.5, bias
+  −3.9); quantile +0.03 (bias −0.8 at +0.4 MAE).
+- **E.3 variants**: hurdle scaling after `expm1`, plain threshold at p = 0.5.
+- **F.1 variants**: stage-3 threshold none–400 (±0.4), tree depth 3–7
+  (±0.5).
+- **Pruning the low-gain block** (G.4; the six point lags beyond
+  `pollen_lag_1`, `pollen_morning_avg`, the hour encodings, `is_day`,
+  `gdd_above_threshold`, the within-window slopes, `upwind_lead_8`, NDVI;
+  65 → 48 features, five taxa, merged labels): MAE 8.6 → 8.8, level
+  accuracy 64.5 → 62.9%, most of it at day 1 and in alder, for a 17%
+  faster retrain.
+- **Scaling the forecast by yesterday's error** (ratio of measured to
+  forecast daily mean before the origin, fading over the horizon; merged
+  labels): onset months MAE 88.6 → 80.6 and timing 4.3 → 1.5 d at day 1,
+  but false starts 1 → 11 run-days and the general folds 8.6 → 9.6; no
+  restricted form did better than 8.6 → 9.0.
+- **CAMS** (Open-Meteo air-quality API, no key): finds the birch start to
+  +19, +2, −12, +4, −1, +3 d over 2021–2026, no better than the outlook
+  does from temperature; does not know a heavy year (its birch totals are
+  1 119–2 138 against 2 817–24 525 measured; 2026, the record, is its
+  third lowest).
+- **G.2b variants**: selecting on a smoothed leave-one-out criterion
+  (8.2 d); four, six, seven candidates instead of five (5.8, 4.2, 5.2 d).
+- **G.2c variant**: searching the gate window instead of the core season
+  for every species moves birch 2024 to 13 February and oak into March.
+- **G.2e variants**: residuals per species instead of pooled (the 80%
+  interval covers 52%).
+- **G.1b variants**: quantile 0.75, 0.80, 0.90 (see [Mould
+  spores](#mould-spores)).
+- **The projection inside the model** (G.2e): `days_since_typical_onset`
+  counted from the outlook's continuous projection instead of from the
+  estimate that jumps at the crossing. Record months, nine taxa: MAE
+  7.20 → 7.29, level accuracy 78.2 → 78.4%; onset months: MAE 97.0 → 96.1,
+  timing unchanged, false starts 26 → 29 run-days.
+
+The parked variants (A.5, B.8, B.7) are on the branch
+`claude/forecast-app-review-xwisqv`.
+
+### Corrections
+
+The review that opened the G series (`f882889`) made two claims that did
+not survive implementation, both from one mistake: its analysis copy of
+the relabelled history had dropped the weather of the windows the official
+station did not report, so the forcing filter of the onset detector
+rejected a real start.
+
+- "Alnus 2025 moves from 4 February to 20 February" — it moves to
+  8 February, four days. The starts that the relabel moves are oak 2023
+  (+20 d), hazel 2023 (−7), grass 2026 (+7), alder 2025 (+4), oak 2024
+  (+4), alder 2023 (−3), alder 2026 (+1), and willow 2024, which no longer
+  has one.
+- "Alder's day-1 timing error falls from 7.7 to 3.3 days on the official
+  labels" — it does not. On the official labels the forecast's day-1
+  timing error for alder is 7.5 d over the two of three starts it calls at
+  all (see [`benchmark-onset`](#benchmark-onset--the-season-starts)).
+
+The review also called the mould series' jump in 2024 an artefact of the
+merge. The second series did dominate `Fungus` in 2020–2025, but the
+official series has its own rise, a year later (yearly median 3 in 2024,
+27 in 2025, 57 in 2026).
