@@ -317,8 +317,17 @@ def replay(
 
 
 def _bucket(ahead: float) -> int:
+    """Index of the :data:`LEAD_BUCKETS` entry *ahead* (days) falls in.
+
+    The buckets are whole days, and so is every lead production looks up: it
+    rounds the projected day to a date first. A replayed lead need not be —
+    the calendar candidate is a median, x.5 with an even number of seasons —
+    and 0.5, 7.5, 14.5 or 30.5 used to fall between two buckets into the
+    last one. So it is rounded to the nearest day here, halves up.
+    """
+    days = float(np.floor(ahead + 0.5))
     for i, (low, high) in enumerate(LEAD_BUCKETS):
-        if low <= ahead <= high:
+        if low <= days <= high:
             return i
     return len(LEAD_BUCKETS) - 1
 

@@ -15,7 +15,9 @@ import pytest
 
 from src.outlook import (
     INTERVAL_COVERAGE,
+    LEAD_BUCKETS,
     SeasonOutlook,
+    _bucket,
     _rule_votes,
     expected_increments,
     project_onset,
@@ -157,6 +159,17 @@ def test_uncertainty_is_conditional_on_not_having_started() -> None:
     assert latest <= 13.0
     assert 0.0 < within_week < 1.0
     assert uncertainty({}, 3.0) is None
+
+
+def test_a_fractional_lead_falls_in_the_bucket_of_its_nearest_day() -> None:
+    # A replayed lead is x.5 whenever the calendar median is; it used to fall
+    # between two buckets and land in the last one (31+ days).
+    last = len(LEAD_BUCKETS) - 1
+    for ahead, expected in [
+        (-3.0, 0), (0.0, 0), (0.4, 0), (0.5, 1), (1.0, 1), (7.0, 1), (7.4, 1),
+        (7.5, 2), (14.5, 3), (30.4, 3), (30.5, last), (90.0, last),
+    ]:
+        assert _bucket(ahead) == expected, ahead
 
 
 def test_uncertainty_scoring_uses_other_years_only() -> None:
