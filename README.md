@@ -55,8 +55,8 @@ release and, with a token, backs them up to it again (see [State](#state)).
 | Source | API | What it provides |
 |--------|-----|------------------|
 | [LGL Bayern ePIN](https://d1ppjuhp1nvtc2.cloudfront.net/measurements) | Pollen and spore measurements | The official station series: 3-hour pollen counts and the fungal-spore aggregate (`Fungus`) for Munich (station DEMUNC, 2019+), plus the four ePIN stations around it (Mindelheim, Altötting, Feucht, Viechtach) as upwind context — see [One station, one series](#one-station-one-series), [Upwind stations](#upwind-stations) and [Mould spores](#mould-spores) |
-| [Open-Meteo](https://open-meteo.com/) | Weather forecast + historical archive | Hourly weather aggregated to 3-hour windows: temperature, precipitation, wind speed and direction, humidity, sunshine, boundary layer height, dew point, day/night, soil temperature + moisture (no API key required) |
-| [MODIS (ORNL DAAC)](https://modis.ornl.gov/rst/api/v1) | NDVI satellite data | MOD13Q1 250 m 16-day vegetation index, cubic-interpolated to daily resolution |
+| [Open-Meteo](https://open-meteo.com/) | Weather forecast + historical archive | Hourly weather aggregated to 3-hour windows: temperature, precipitation, wind speed and direction, humidity, sunshine, boundary layer height, dew point, day/night, soil temperature + moisture (no API key required). When the forecast host fails, the same forecast is asked of the previous-runs API, which runs on the archive's host |
+| [MODIS (ORNL DAAC)](https://modis.ornl.gov/rst/api/v1) | NDVI satellite data | MOD13Q1 250 m 16-day vegetation index, cubic-interpolated to daily resolution. A run asks for the last 150 days (one request); when that fails it carries the NDVI the history holds |
 | [DWD Open Data](https://opendata.dwd.de/) | Pollenflug-Gefahrenindex | Official pollen danger levels for Oberbayern (partregion 121) for seven of the taxa (hazel, alder, birch, ash, grass, mugwort, ragweed) — blended into the days it covers at forecast time; it is not archived, so no benchmark replays it |
 
 ## Model
@@ -1038,7 +1038,8 @@ was built from — the part of the output that used to be silent:
   measurement, and their confidence is the confidence of that horizon (see
   [Forecast Confidence](#forecast-confidence)).
 - `defaulted` names every input group that fell back to a default this run,
-  with the reason: `ndvi` (fetch failed or no composites), `dwd` (no index to
+  with the reason: `ndvi` (no composites from MODIS and none stored in the
+  history), `dwd` (no index to
   blend), `weather_soil` (Open-Meteo answered without soil variables),
   `upwind` (no station readings in the last 7 days, for some or all species),
   `model` (a species with no trained model, forecast by persistence), and
@@ -1162,6 +1163,17 @@ seven days long and carries the `seasons` block.
   hourly weather variables, the window's temperature extremes, EVI,
   `cams_pollen` and seven stored calendar columns — fourteen of the
   history's thirty-three columns. Feature matrices identical.
+- **Pipeline reliability** (`2280e8e`, `b6b9ec3`, `a69487a`, `ac6cc16`) —
+  between 2026-11-14 and 11-17 six of 29 scheduled runs died because
+  api.open-meteo.com did not complete a TLS handshake on any of its four
+  attempts. The previous-runs API on Open-Meteo's other host gives the same
+  forecast (identical in every variable and hour) and is asked when the
+  forecast host fails; the connect phase is capped at 10 s. A run asks MODIS
+  for 150 days of composites, not three years: one request instead of
+  seven, the same NDVI to 0.00005. Without MODIS it carries the history's
+  NDVI, where it used to write zeros (11-14, a 16-minute run). Release
+  downloads are retried on 5xx, and all release calls wait 2/8/30 s (the
+  failures of 11-05 and 11-09). The workflow runs Python unbuffered.
 
 ### Tried, not adopted
 
