@@ -28,6 +28,17 @@ SCALE_FACTOR = 10_000.0  # MODIS stores NDVI as int × 10000
 DATA_DIR = Path(__file__).parent.parent / "data"
 NDVI_CACHE = DATA_DIR / "ndvi_cache.csv"
 
+# How far back a run asks for composites: one ORNL request (the API caps a
+# request at ten 16-day tiles). A run needs NDVI for the last two weeks and
+# the next one, and MODIS publishes a composite two to four weeks late, so
+# every one of those days lies at or after the last composite and takes its
+# value. Replayed over 2025-03..2026-10 against the composites since 2024, a
+# 150-day window changed no day by more than 0.00005, and not at all once a
+# composite was 20 days old. The run used to ask for everything since January
+# two years back — seven requests to a service that drops them under load:
+# on 2026-11-14 all seven timed out three times each and the run took 16 min.
+RECENT_DAYS = 150
+
 
 def _modis_date(d: date) -> str:
     """Convert a Python date to MODIS date format: A{year}{doy:03d}."""
@@ -90,8 +101,7 @@ def fetch_ndvi(
     if end is None:
         end = local_today()
     if start is None:
-        # Default: 2 years back — covers the pollen history range
-        start = date(end.year - 2, 1, 1)
+        start = end - timedelta(days=RECENT_DAYS)
 
     # Load cache
     cached = pd.DataFrame()
@@ -170,6 +180,32 @@ def fetch_ndvi(
     )
 
     return combined
+
+
+def composites_from_history(history_file: Path, days: int = RECENT_DAYS) -> pd.DataFrame:
+    """The NDVI the history already holds, in the shape of composites.
+
+    For a run MODIS did not answer. Its days carry the interpolated curve of
+    the composites earlier runs fetched, so the days after the last one carry
+    that composite's value — the value a successful fetch would give them,
+    unless a new composite has come out since. Zeros are left out: they are
+    what a run without NDVI wrote, not a measurement.
+
+    Returns ``date, ndvi`` for the last *days* days, or an empty frame.
+    """
+    empty = pd.DataFrame(columns=["date", "ndvi"])
+    if not history_file.exists():
+        return empty
+    try:
+        stored = pd.read_csv(history_file, usecols=["date", "ndvi"], parse_dates=["date"])
+    except (ValueError, OSError):
+        return empty
+    stored = stored[stored["ndvi"].notna() & (stored["ndvi"] != 0)]
+    if stored.empty:
+        return empty
+    daily = stored.groupby(stored["date"].dt.normalize())["ndvi"].first()
+    daily = daily[daily.index > daily.index.max() - pd.Timedelta(days=days)]
+    return pd.DataFrame({"date": daily.index, "ndvi": daily.to_numpy()})
 
 
 def interpolate_ndvi(composites: pd.DataFrame, dates: pd.DatetimeIndex) -> pd.DataFrame:

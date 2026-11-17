@@ -10,6 +10,7 @@ Three things are pinned here:
 """
 
 from datetime import date
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -278,6 +279,7 @@ def test_collect_writes_weather_only_rows_for_unreported_windows(monkeypatch) ->
     monkeypatch.setattr(collector, "fetch_historical_weather", lambda s, e: weather.iloc[:0])
     monkeypatch.setattr(collector, "fetch_weather_forecast", lambda days, past_days=0: weather)
     monkeypatch.setattr(collector, "fetch_ndvi", lambda: pd.DataFrame(columns=["date", "ndvi", "evi"]))
+    monkeypatch.setattr(collector, "HISTORY_FILE", Path("/nonexistent/history.csv"))
     monkeypatch.setattr(collector, "set_composites_cache", lambda composites: None)
 
     frame = collector.collect(days=2)
@@ -316,6 +318,7 @@ def test_collect_survives_an_archive_failure(monkeypatch) -> None:
     monkeypatch.setattr(collector, "fetch_historical_weather", failing_archive)
     monkeypatch.setattr(collector, "fetch_weather_forecast", lambda days, past_days=0: weather)
     monkeypatch.setattr(collector, "fetch_ndvi", lambda: pd.DataFrame(columns=["date", "ndvi"]))
+    monkeypatch.setattr(collector, "HISTORY_FILE", Path("/nonexistent/history.csv"))
     monkeypatch.setattr(collector, "set_composites_cache", lambda composites: None)
 
     frame = collector.collect(days=14)

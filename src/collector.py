@@ -18,7 +18,7 @@ import pandas as pd
 from .upwind import UPWIND_STATIONS, fetch_upwind, update_upwind
 from .pollen import fetch_measurements_chunked, fetch_pollen, pivot_pollen
 from .weather import fetch_historical_weather, fetch_weather_forecast
-from .ndvi import fetch_ndvi, interpolate_ndvi, set_composites_cache
+from .ndvi import composites_from_history, fetch_ndvi, interpolate_ndvi, set_composites_cache
 from .types import ALL_SPECIES, LOCATION, RETIRED_COLUMNS, WEATHER_ONLY
 from .clock import local_now, local_today
 
@@ -105,6 +105,15 @@ def collect(days: int = 14) -> pd.DataFrame:
         archive_weather = _archive_result(fut_archive)
         recent_weather_full = fut_forecast.result()
         ndvi_composites = fut_ndvi.result()
+
+    # Without MODIS, the NDVI the history holds rather than zeros: those used
+    # to be written into the history's last two weeks and fed to the
+    # forecast (2026-11-14 14:19, when every ORNL request timed out).
+    if ndvi_composites.empty:
+        ndvi_composites = composites_from_history(HISTORY_FILE)
+        if not ndvi_composites.empty:
+            print(f"  NDVI: MODIS unavailable; carrying the history's value of "
+                  f"{ndvi_composites['date'].max().date()}")
 
     # Populate NDVI in-memory cache for later use by forecaster
     set_composites_cache(ndvi_composites)
