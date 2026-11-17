@@ -34,6 +34,9 @@ jobs:
     timeout-minutes: 90
     env:
       MODE: ${{ inputs.mode || (github.event.schedule == '43 4 1 * *' && 'train' || 'forecast') }}
+      # Without it Python holds its output until exit and every line of the
+      # run carries the same timestamp, so a slow step cannot be told apart.
+      PYTHONUNBUFFERED: '1'
     steps:
       - uses: actions/checkout@v7
 
