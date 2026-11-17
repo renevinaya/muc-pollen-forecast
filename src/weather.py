@@ -17,6 +17,16 @@ from .types import LAT, LON
 FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
 HISTORICAL_URL = "https://archive-api.open-meteo.com/v1/archive"
 
+# The same forecast from Open-Meteo's other server. The previous-runs API
+# answers /v1/forecast with the current run when no `_previous_dayN` variable
+# is asked for: on 2026-11-17 its response to the pipeline's request was
+# identical to api.open-meteo.com's, every variable and every hour. It sits on
+# the archive's host (5.9.98.12), not the forecast's (167.114.211.86) — and
+# between 2026-11-14 and 11-17 six scheduled runs died because the forecast
+# host stopped completing TLS handshakes while the archive host, asked in the
+# same runs, answered. Only asked when the forecast host has failed.
+FORECAST_MIRROR_URL = "https://previous-runs-api.open-meteo.com/v1/forecast"
+
 HOURLY_PARAMS = [
     "temperature_2m",
     "precipitation",
@@ -118,9 +128,13 @@ def _parse_hourly_response(data: dict[str, Any]) -> pd.DataFrame:
     return result
 
 
-# Four attempts, backing off 2s/4s/8s between them. Weather is on the critical
+# Four attempts, backing off 1s/2s/4s between them. Weather is on the critical
 # path: every 3-hourly run dies if this call does.
 _MAX_ATTEMPTS = 4
+
+# A TLS handshake that has not finished in 10 s is not going to: a working one
+# takes well under a second. The read timeout stays the caller's.
+_CONNECT_TIMEOUT = 10.0
 
 # Waits after a 429, in seconds: long enough to outlast a per-minute limit.
 _RATE_LIMIT_DELAYS = (5, 20, 60)
@@ -152,7 +166,11 @@ def _fetch_json(url: str, params: dict[str, Any], timeout: float) -> Any:
     for attempt in range(_MAX_ATTEMPTS):
         rate_limited = False
         try:
-            response = httpx.get(url, params=params, timeout=timeout)
+            response = httpx.get(
+                url,
+                params=params,
+                timeout=httpx.Timeout(timeout, connect=min(timeout, _CONNECT_TIMEOUT)),
+            )
         except httpx.HTTPError as exc:
             last_error = f"{type(exc).__name__}: {exc}"
         else:
@@ -243,7 +261,12 @@ def fetch_weather_forecast(days: int = 5, past_days: int = 0) -> pd.DataFrame:
         }
         if past_days:
             params["past_days"] = past_days
-        result = _get_weather(FORECAST_URL, params, FORECAST_SOIL_PARAMS, timeout=30)
+        try:
+            result = _get_weather(FORECAST_URL, params, FORECAST_SOIL_PARAMS, timeout=30)
+        except RuntimeError as exc:
+            print(f"  Forecast host failed ({exc}); asking the mirror")
+            result = _get_weather(FORECAST_MIRROR_URL, params, FORECAST_SOIL_PARAMS, timeout=30)
+            print(f"  Weather forecast served by {FORECAST_MIRROR_URL}")
         result.index = pd.DatetimeIndex(result.index)
         _forecast_cache = (result, days, past_days)
 

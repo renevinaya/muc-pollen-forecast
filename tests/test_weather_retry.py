@@ -218,3 +218,66 @@ def test_past_days_are_served_from_one_request_and_cut_per_caller(monkeypatch):
     shorter = weather.fetch_weather_forecast(5)
     assert shorter.index.max() == pd.Timestamp("2026-11-14 21:00")
 
+
+
+# --- The mirror -----------------------------------------------------------------
+
+
+def _serve_by_host(monkeypatch, failing_urls):
+    """httpx.get that times out the handshake for *failing_urls* and answers the rest."""
+    calls = []
+
+    def fake_get(url, params=None, timeout=None):
+        calls.append((url, timeout))
+        if url in failing_urls:
+            raise httpx.ConnectTimeout("_ssl.c:994: The handshake operation timed out")
+        days = params["forecast_days"] + params.get("past_days", 0)
+        import json
+
+        return FakeResponse(200, json.dumps(_hourly_payload("2026-11-12", days)))
+
+    monkeypatch.setattr(weather.httpx, "get", fake_get)
+    monkeypatch.setattr(weather, "_forecast_cache", None)
+    return calls
+
+
+def test_an_unreachable_forecast_host_is_replaced_by_the_mirror(monkeypatch):
+    """2026-11-14..17: the forecast host stopped handshaking, the archive's host did not."""
+    calls = _serve_by_host(monkeypatch, [weather.FORECAST_URL])
+
+    forecast = weather.fetch_weather_forecast(7, past_days=5)
+
+    urls = [url for url, _ in calls]
+    assert urls[: weather._MAX_ATTEMPTS] == [weather.FORECAST_URL] * weather._MAX_ATTEMPTS
+    assert urls[weather._MAX_ATTEMPTS:] == [weather.FORECAST_MIRROR_URL]
+    assert len(forecast) == 12 * 8
+    assert set(forecast.columns) >= {"temperature_mean", "soil_temperature_mean"}
+
+
+def test_the_mirror_is_not_asked_while_the_forecast_host_answers(monkeypatch):
+    calls = _serve_by_host(monkeypatch, [])
+
+    weather.fetch_weather_forecast(7)
+
+    assert [url for url, _ in calls] == [weather.FORECAST_URL]
+
+
+def test_the_run_still_fails_when_the_mirror_fails_too(monkeypatch):
+    calls = _serve_by_host(monkeypatch, [weather.FORECAST_URL, weather.FORECAST_MIRROR_URL])
+
+    with pytest.raises(RuntimeError) as excinfo:
+        weather.fetch_weather_forecast(7)
+
+    assert len(calls) == 2 * weather._MAX_ATTEMPTS
+    assert "previous-runs-api" in str(excinfo.value)
+
+
+def test_a_hung_handshake_is_given_up_after_ten_seconds(monkeypatch):
+    """The read timeout stays the caller's; only the connect phase is capped."""
+    calls = _serve_by_host(monkeypatch, [])
+
+    weather.fetch_weather_forecast(7)
+
+    timeout = calls[0][1]
+    assert timeout.connect == weather._CONNECT_TIMEOUT
+    assert timeout.read == 30
