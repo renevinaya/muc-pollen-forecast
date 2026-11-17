@@ -63,10 +63,17 @@ def _headers() -> dict[str, str]:
     return headers
 
 
+# Waits between attempts, in seconds. GitHub's 5xx on release assets come in
+# spells longer than a few seconds: on 2026-11-05 an asset DELETE answered 500
+# four times within 7 s, on 11-09 a download answered 504 once — and each
+# took its run down.
+_RETRY_DELAYS = (2, 8, 30)
+
+
 def _request(method: str, url: str, **kwargs) -> httpx.Response:
-    """Issue a request, retrying transient failures with exponential backoff."""
+    """Issue a request, retrying transient failures with growing waits."""
     last_exc: Exception | None = None
-    for attempt in range(4):
+    for attempt in range(len(_RETRY_DELAYS) + 1):
         try:
             resp = httpx.request(method, url, timeout=_TIMEOUT, **kwargs)
             if resp.status_code < 500:
@@ -76,8 +83,8 @@ def _request(method: str, url: str, **kwargs) -> httpx.Response:
             )
         except httpx.HTTPError as exc:
             last_exc = exc
-        if attempt < 3:
-            time.sleep(2**attempt)
+        if attempt < len(_RETRY_DELAYS):
+            time.sleep(_RETRY_DELAYS[attempt])
     raise last_exc  # type: ignore[misc]
 
 
@@ -130,13 +137,27 @@ def _download_asset(name: str, dest: Path) -> bool:
     dest.parent.mkdir(parents=True, exist_ok=True)
     # browser_download_url is public and redirects to a signed CDN URL; sending
     # our token along would be rejected there, so fetch it without auth.
-    with httpx.stream(
-        "GET", asset["browser_download_url"], follow_redirects=True, timeout=_TIMEOUT
-    ) as resp:
-        resp.raise_for_status()
-        with dest.open("wb") as fh:
-            for chunk in resp.iter_bytes(chunk_size=1 << 20):
-                fh.write(chunk)
+    url = asset["browser_download_url"]
+    for attempt in range(len(_RETRY_DELAYS) + 1):
+        try:
+            with httpx.stream("GET", url, follow_redirects=True, timeout=_TIMEOUT) as resp:
+                resp.raise_for_status()
+                with dest.open("wb") as fh:
+                    for chunk in resp.iter_bytes(chunk_size=1 << 20):
+                        fh.write(chunk)
+            break
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code < 500 or attempt == len(_RETRY_DELAYS):
+                raise
+            error: Exception = exc
+        except httpx.TransportError as exc:
+            if attempt == len(_RETRY_DELAYS):
+                raise
+            error = exc
+        delay = _RETRY_DELAYS[attempt]
+        print(f"Download of {name} failed ({type(error).__name__}: {error}); "
+              f"retrying in {delay}s")
+        time.sleep(delay)
     size_mb = dest.stat().st_size / 1e6
     print(f"Downloaded {name} ({size_mb:.1f} MB)")
     return True
